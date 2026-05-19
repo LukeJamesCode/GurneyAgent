@@ -4,7 +4,9 @@
 
 import { spawn } from 'node:child_process';
 import { readdirSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 function findTests(dir) {
   const out = [];
@@ -33,9 +35,16 @@ if (tests.length === 0) {
   process.exit(0);
 }
 
+// Resolve tsx to an absolute file URL relative to this script so the
+// --import flag works regardless of cwd or how the npm script is invoked.
+// Passing the bare specifier "tsx" relies on Node's runtime resolution from
+// cwd, which fails with ERR_MODULE_NOT_FOUND in some environments.
+const require = createRequire(import.meta.url);
+const tsxLoader = pathToFileURL(require.resolve('tsx')).href;
+
 const child = spawn(
   process.execPath,
-  ['--import', 'tsx', '--test', '--test-reporter=spec', ...tests],
+  ['--import', tsxLoader, '--test', '--test-reporter=spec', ...tests],
   { stdio: 'inherit' },
 );
 child.on('exit', (code) => process.exit(code ?? 0));
