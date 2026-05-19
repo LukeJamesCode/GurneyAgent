@@ -1,6 +1,24 @@
-# Gurney runs alongside Ollama, never bundled with it (cold-loading a 9B on
-# CPU costs 30-60s; a Gurney redeploy must not pay that). FalkorDB is left
-# commented out and is activated by the gurney-memgraph extension.
+# Why Ollama is a separate service (not bundled into the Gurney image):
+#
+#   1. Model load latency. Ollama keeps the model resident in memory between
+#      requests; on CPU, cold-loading a 9B model costs 30-60s. Bundling it
+#      into the Gurney container would make every Gurney redeploy pay that
+#      cost and drop the warm model from memory. Keeping Ollama in its own
+#      container means Gurney can be rebuilt and restarted freely while the
+#      model stays hot.
+#   2. Independent lifecycle. Gurney code changes far more often than the
+#      model runtime. Decoupling them lets each be upgraded, restarted, or
+#      scaled without touching the other.
+#   3. Image size & cache. Ollama's image plus model weights are large;
+#      keeping them out of the Gurney image keeps Gurney builds fast and
+#      avoids re-downloading weights on every rebuild (they live in the
+#      ollama-data volume).
+#   4. Security posture. Gurney runs read-only with all capabilities
+#      dropped; Ollama needs more privileges to manage model files. Separate
+#      services let each have the minimum permissions it needs.
+#
+# FalkorDB is left commented out and is activated by the gurney-memgraph
+# extension.
 #
 # Security note: the default compose file intentionally publishes no host
 # ports. Ollama has no built-in authentication, so keep it reachable only on
