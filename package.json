@@ -1,6 +1,6 @@
 {
   "name": "gurney",
-  "version": "0.7.0",
+  "version": "1.0.0",
   "description": "Small, terminal-first AI agent. CPU-only. Extensions turn it into anything.",
   "license": "Apache-2.0",
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "tsc && node scripts/copy-migrations.mjs",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p extensions/gurney-everyday-assistant && tsc --noEmit -p extensions/gurney-websearch && tsc --noEmit -p extensions/gurney-memgraph && tsc --noEmit -p extensions/gurney-tts && tsc --noEmit -p extensions/gurney-instant-responses && tsc --noEmit -p extensions/gurney-routines",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p extensions/gurney-everyday-assistant && tsc --noEmit -p extensions/gurney-tts && tsc --noEmit -p extensions/gurney-instant-responses && tsc --noEmit -p extensions/gurney-routines",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

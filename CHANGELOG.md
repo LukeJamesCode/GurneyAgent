@@ -6,6 +6,22 @@ Format: `## [version] — YYYY-MM-DD`
 
 ---
 
+## [1.0.0] — 2026-05-19
+
+First stable public release. Host API for extensions is now stable.
+
+### Changed
+
+- Project status moved from "feature-complete, running release checklist" to **1.0 — shipped**.
+- README: trimmed bundled extensions, added a Roadmap section for the 1.x line, and softened pre-1.0 language that implied API providers would never be supported (they're on the roadmap as opt-in, either in core or as an official extension).
+
+### Removed
+
+- `gurney-websearch` extension — pulled to keep the 1.0 bundle lean; planned to return as an official extension during the 1.x line. See the README Roadmap.
+- `gurney-memgraph` extension — same reasoning; planned to return as a heavy-tier official extension during the 1.x line.
+
+---
+
 ## [0.7.0] — 2026-05-05
 
 Phase 7 in progress — feature-complete; running through the release checklist toward 1.0.

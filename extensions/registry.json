@@ -6,18 +6,6 @@
     "description": "Unified everyday assistant: calendar, tasks, reminders, weather, briefings, and day-planning in one extension"
   },
   {
-    "name": "gurney-websearch",
-    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
-    "subpath": "extensions/gurney-websearch",
-    "description": "Web search tool (LLM tool, no slash command)"
-  },
-  {
-    "name": "gurney-memgraph",
-    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
-    "subpath": "extensions/gurney-memgraph",
-    "description": "Long-term memory via FalkorDB (heavy \u2014 Standard/Heavy tier only)"
-  },
-  {
     "name": "gurney-tts",
     "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
     "subpath": "extensions/gurney-tts",
