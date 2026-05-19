@@ -44,7 +44,7 @@ I wanted an assistant that:
 - **Doesn't need a datacenter** — runs full-time at single-digit watts.
 - **Doesn't lock me in** — Apache-2.0, plain SQLite for state, JSON config you can read with `cat`. If Gurney goes away tomorrow, your data is yours.
 
-It started as a private homelab agent called **ATLAS v2**. Gurney is the clean-room, public successor: everything personal stripped out, everything reusable rebuilt as composable extensions.
+It started as a private homelab agent called **ATLAS**. Gurney is the clean-room, public successor: everything personal stripped out, everything reusable rebuilt as composable extensions.
 
 ## Built to be modular
 
@@ -205,8 +205,8 @@ Local Ollama remains the default. Cloud providers stay strictly opt-in.
 
 ### v1.4 — The returning extensions + streaming
 
-- **`gurney-websearch` v2** — DuckDuckGo + SearXNG aggregator, with optional Brave / Kagi backends and a clean cite-as-you-answer prompt fragment.
-- **`gurney-memgraph` v2** — long-term graph memory, rebuilt against the stable 1.0 host API. Heavy tier only.
+- **`gurney-websearch` ** — DuckDuckGo + SearXNG aggregator, with optional Brave / Kagi backends and a clean cite-as-you-answer prompt fragment.
+- **`gurney-memgraph` ** — long-term graph memory, rebuilt against the stable 1.0 host API. Heavy tier only.
 - **Streaming Telegram replies** — token-by-token edits instead of one-shot send, so long answers feel live.
 
 ### v1.5 — Data trust release
