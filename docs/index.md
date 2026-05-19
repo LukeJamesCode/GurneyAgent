@@ -57,11 +57,18 @@ One page per bundled extension. The `extensions/<name>/` folders hold the runtim
 | ---------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | [Google OAuth setup](./google-oauth-setup.md)                          | Step-by-step guide for Google Calendar + Tasks authorization               |
 | [gurney-everyday-assistant](./extensions/gurney-everyday-assistant.md) | Calendar, tasks, reminders, weather, and briefings (Google OAuth required) |
-| [gurney-websearch](./extensions/gurney-websearch.md)                   | Web search via DuckDuckGo / SearXNG                                        |
-| [gurney-memgraph](./extensions/gurney-memgraph.md)                     | Long-term memory via FalkorDB (heavy)                                      |
 | [gurney-tts](./extensions/gurney-tts.md)                               | Voice replies via Piper                                                    |
 | [gurney-instant-responses](./extensions/gurney-instant-responses.md)   | Instant replies for trivial chatter                                        |
 | [gurney-routines](./extensions/gurney-routines.md)                     | Learned routine suggestions (opt-in)                                       |
+
+### Planned (not in the 1.0 bundle)
+
+These extensions shipped during 0.x and are slated to return in v1.4 — see the [Roadmap section in the README](../README.md#roadmap). Their docs are kept here for reference, but they aren't installable from the bundled registry today.
+
+| Doc                                                  | What it covers                                       | Target |
+| ---------------------------------------------------- | ---------------------------------------------------- | ------ |
+| [gurney-websearch](./extensions/gurney-websearch.md) | Web search via DuckDuckGo / SearXNG                  | v1.4   |
+| [gurney-memgraph](./extensions/gurney-memgraph.md)   | Long-term memory via FalkorDB (heavy)                | v1.4   |
 
 ---
 

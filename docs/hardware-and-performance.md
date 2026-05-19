@@ -157,7 +157,7 @@ Run Ollama's model store on a USB SSD, not the SD card. Model files are large; S
 
 ### Model choice
 
-Use `qwen3.5:0.5b` (chat, Q4_K_M) on a 4 GB Pi 4. The 0.8b model is tight but workable if you leave 1.5 GB headroom for the OS. Do **not** enable `gurney-memgraph` or `gurney-tts` on a 4 GB Pi — they need Standard or Heavy tier.
+Use `qwen3.5:0.5b` (chat, Q4_K_M) on a 4 GB Pi 4. The 0.8b model is tight but workable if you leave 1.5 GB headroom for the OS. Do **not** enable heavy extensions like `gurney-tts` on a 4 GB Pi — they need Standard or Heavy tier.
 
 ### Temperature throttling
 

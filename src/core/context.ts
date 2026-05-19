@@ -26,7 +26,8 @@ export interface BuildOptions {
   // Natural-language tool fragment (e.g. an extension's prompt.md). The
   // OpenAI-shaped tool schemas go into ChatOptions.tools, not here.
   toolPrompt?: string;
-  // Long-term memory results retrieved for this turn (gurney-memgraph).
+  // Long-term memory results retrieved for this turn (populated by whichever
+  // extension is providing memory; e.g. gurney-memgraph when it lands).
   memory?: string;
   // Compact running session summary kept between turns.
   session?: string;

@@ -281,7 +281,7 @@ gurney stop
 
 - Switch to `qwen3.5:0.5b`
 - Add zram swap (see [hardware-and-performance.md](./hardware-and-performance.md))
-- Disable heavy extensions (`gurney-memgraph`, `gurney-tts`)
+- Disable heavy extensions (e.g. `gurney-tts`)
 - Set `GURNEY_HEAVY_IDLE_MS=60000` to evict heavy models after 1 minute of idle instead of 5
 
 ---

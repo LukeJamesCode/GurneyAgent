@@ -187,9 +187,9 @@ Per-chat voice preference.
 | `enabled`    | `1` voice on, `0` off |
 | `updated_at` | Unix timestamp (ms)   |
 
-### `gurney-memgraph`: `memgraph_sync_state`
+### `gurney-memgraph`: `memgraph_sync_state` _(planned, v1.4)_
 
-Memory lives in FalkorDB via the HTTP bridge. The local table tracks the background extraction sweep.
+`gurney-memgraph` is not in the 1.0 bundle; it's slated to return in v1.4 — see the [Roadmap](../README.md#roadmap). The schema below documents the 0.x shape for reference; the final schema will be confirmed alongside the v1.4 release.
 
 | Column            | Notes                                       |
 | ----------------- | ------------------------------------------- |

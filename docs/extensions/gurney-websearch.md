@@ -1,5 +1,7 @@
 # gurney-websearch
 
+> **Status — planned for v1.4.** This extension shipped during the 0.x line and was pulled before 1.0 to keep the public release lean. It's slated to return as an official extension rebuilt against the stable 1.0 host API — see the [Roadmap](../../README.md#roadmap). The page below documents the previous (0.x) behaviour for reference; the v1.4 release will document the final shape. If you want it early, the 0.x source is in the git history.
+
 Web search via DuckDuckGo instant answers, with an optional [SearXNG](https://searxng.github.io/searxng/) backend for full result sets. No API key required for the default backend.
 
 ## What it adds

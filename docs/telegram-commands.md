@@ -69,15 +69,9 @@ See [gurney-everyday-assistant docs](./extensions/gurney-everyday-assistant.md) 
 
 ---
 
-## gurney-memgraph
+## gurney-memgraph — planned, v1.4
 
-Requires `gurney-memgraph` installed and the memory bridge running.
-
-| Command     | Arguments | What it does                                                          |
-| ----------- | --------- | --------------------------------------------------------------------- |
-| `/memory`   | `<query>` | Search long-term memory: `/memory what do I use for task management?` |
-| `/remember` | `<text>`  | Store a fact explicitly: `/remember I prefer dark roast coffee`       |
-| `/forget`   | —         | Wipe all long-term memory for this chat (irreversible)                |
+The `/memory`, `/remember`, and `/forget` commands shipped during 0.x and will return when `gurney-memgraph` lands as an official extension again in v1.4. See the [Roadmap](../README.md#roadmap).
 
 ---
 

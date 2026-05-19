@@ -119,35 +119,11 @@ Bundled extensions (in `<repo>/extensions/`) are baked into the image. They don'
 
 ---
 
-## Long-term memory extension (gurney-memgraph)
+## Long-term memory extension (gurney-memgraph) — planned, v1.4
 
-`gurney-memgraph` needs FalkorDB. Uncomment the `falkordb` service block in `docker-compose.yml`:
+`gurney-memgraph` is not in the 1.0 bundle; it's slated to return in v1.4 (see the [Roadmap](../README.md#roadmap)).
 
-```yaml
-falkordb:
-  image: falkordb/falkordb:latest
-  volumes:
-    - falkordb-data:/data
-  restart: unless-stopped
-```
-
-And add the volume:
-
-```yaml
-volumes:
-  falkordb-data:
-```
-
-Then install and configure the extension:
-
-```sh
-docker compose up -d falkordb
-docker compose exec -it gurney node dist/cli/index.js ext install gurney-memgraph
-docker compose exec -it gurney node dist/cli/index.js config
-# → gurney-memgraph → bridge_url → http://falkordb:8765
-```
-
-The FalkorDB service must be running a compatible bridge. See [the gurney-memgraph docs](./extensions/gurney-memgraph.md) for the bridge contract.
+When it ships, deployment will look roughly like the steps below: uncomment a `falkordb` service block in `docker-compose.yml`, add a `falkordb-data` volume, then `docker compose exec gurney gurney ext install gurney-memgraph` and point `bridge_url` at `http://falkordb:8765`. The final shape will be documented alongside the v1.4 release; for the historical (0.x) bridge contract see [the gurney-memgraph docs](./extensions/gurney-memgraph.md).
 
 ---
 

@@ -6,12 +6,12 @@ Gurney is the public successor to ATLAS v2. If you've been running ATLAS on your
 
 ## What carries over
 
-| ATLAS data                  | Gurney equivalent                   | Migration status                                     |
-| --------------------------- | ----------------------------------- | ---------------------------------------------------- |
-| Conversations and messages  | `conversations` + `messages` tables | Via migration tool                                   |
-| Long-term memory (MemGraph) | `gurney-memgraph` extension         | Via migration tool (if gurney-memgraph installed)    |
-| Skills config               | Extensions config                   | Manual — see below                                   |
-| Google OAuth tokens         | None                                | Re-run `gurney auth` — tokens are scoped differently |
+| ATLAS data                  | Gurney equivalent                          | Migration status                                                   |
+| --------------------------- | ------------------------------------------ | ------------------------------------------------------------------ |
+| Conversations and messages  | `conversations` + `messages` tables        | Via migration tool                                                 |
+| Long-term memory (MemGraph) | `gurney-memgraph` extension (planned v1.4) | Deferred — memory migration returns with the extension in v1.4     |
+| Skills config               | Extensions config                          | Manual — see below                                                 |
+| Google OAuth tokens         | None                                       | Re-run `gurney auth` — tokens are scoped differently               |
 
 ---
 
@@ -31,8 +31,9 @@ The migration tool lives in `tools/migrate-from-atlas/`. It reads an ATLAS `atla
 ### Prerequisites
 
 - Gurney installed and `gurney init` completed (so `~/.gurney/gurney.db` exists with the schema applied)
-- `gurney-memgraph` installed and the bridge running (only if you want to migrate memories)
 - A copy of your ATLAS database (`data/atlas.db` in the ATLAS repo)
+
+> MemGraph memories aren't migrated by the 1.0 tool. The memory-migration step returns alongside `gurney-memgraph` itself in v1.4 — see the [Roadmap](../README.md#roadmap).
 
 ### Run the migration
 
@@ -47,11 +48,10 @@ node tools/migrate-from-atlas/index.js \
 
 | Flag              | Default               | Notes                                                          |
 | ----------------- | --------------------- | -------------------------------------------------------------- |
-| `--source`        | (required)            | Path to the ATLAS SQLite database                              |
-| `--target`        | `~/.gurney/gurney.db` | Path to the Gurney SQLite database                             |
-| `--chat-id`       | all                   | Only migrate conversations for this Telegram chat ID           |
-| `--skip-memories` | false                 | Skip MemGraph memory migration even if the bridge is reachable |
-| `--dry-run`       | false                 | Print what would be migrated without writing anything          |
+| `--source`  | (required)            | Path to the ATLAS SQLite database                    |
+| `--target`  | `~/.gurney/gurney.db` | Path to the Gurney SQLite database                   |
+| `--chat-id` | all                   | Only migrate conversations for this Telegram chat ID |
+| `--dry-run` | false                 | Print what would be migrated without writing anything |
 
 **Dry run first:**
 
@@ -86,9 +86,7 @@ ATLAS reminders stored in the database are not automatically migrated — the sc
 
 ### Web search
 
-```sh
-gurney ext install gurney-websearch
-```
+`gurney-websearch` is not in the 1.0 bundle; it's slated to return in v1.4 — see the [Roadmap](../README.md#roadmap). Until then, web search is a manual fallback.
 
 ---
 
@@ -109,7 +107,7 @@ Once Gurney is working to your satisfaction, revoke the ATLAS bot token or stop 
 | -------------- | ---------------------------------- | ---------------------------------------------- |
 | Setup          | Web UI admin panel                 | `gurney init` terminal wizard                  |
 | Extensions     | Skills folder, hot-reload via POST | Extensions folder, filesystem-watch hot-reload |
-| Memory         | MemGraph always on (homelab)       | `gurney-memgraph` extension, opt-in            |
+| Memory         | MemGraph always on (homelab)       | `gurney-memgraph` extension (planned v1.4)     |
 | Telegram bot   | Long-poll                          | Long-poll (same)                               |
 | Config storage | Environment vars + DB              | `~/.gurney/config.json` + env var override     |
 | Multi-model    | Multiple providers wired           | Ollama only; multi-provider stays as interface |
