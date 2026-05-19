@@ -93,10 +93,9 @@ export function register(host: Host): void {
     name: 'tasks_add',
     intentPattern: TASK_ADD_INTENT,
     description:
-      'Add a NEW todo/task to Google Tasks. ' +
-      "Use when the user says 'add X to my todo list', 'I need to do X', 'remind me to buy milk' WITHOUT a specific firing time. " +
-      'Do NOT use for calendar events with a specific time-block (use `calendar_add_event`) or for time-triggered reminders (use `reminder_set`). ' +
-      'Rule of thumb: tasks are open-ended TODOs; events have a start+end on the calendar; reminders fire a notification at one moment.',
+      "Record a NEW todo on the user's Google Tasks list. " +
+      "Call this whenever the user says 'set a todo/task X', 'add X to my todos', 'I need to X', 'remember to X' (no specific firing time). " +
+      "Your job is to RECORD X — copy the user's words into `title`. Do NOT perform X, do not rephrase X as a plan, do not reply with a description of the task. Just call the tool.",
     tier: 'auto',
     selfReplying: true,
     parameters: {
