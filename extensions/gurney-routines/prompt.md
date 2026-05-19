@@ -1,0 +1,1 @@
+Routine learning is opt-in and lightweight. When discussing recurring behavior, explain that Gurney can suggest routines from local extension activity, but it must ask before creating or sending recurring nudges unless the user explicitly enabled automatic acceptance.

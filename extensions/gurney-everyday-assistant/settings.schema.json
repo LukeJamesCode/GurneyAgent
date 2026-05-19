@@ -1,0 +1,81 @@
+{
+  "type": "object",
+  "properties": {
+    "google_client_id": {
+      "type": "string",
+      "description": "Google OAuth 2.0 client ID (shared for Calendar + Tasks)."
+    },
+    "google_client_secret": {
+      "type": "string",
+      "secret": true,
+      "description": "Google OAuth 2.0 client secret."
+    },
+    "google_refresh_token": {
+      "type": "string",
+      "secret": true,
+      "description": "Long-lived refresh token covering both Calendar and Tasks scopes. Run `gurney auth gurney-everyday-assistant` to obtain."
+    },
+    "calendar_id": {
+      "type": "string",
+      "default": "primary",
+      "description": "Google Calendar ID to read/write. Default: primary."
+    },
+    "default_tasklist": {
+      "type": "string",
+      "default": "@default",
+      "description": "Google Tasks list ID to read/write. Default: @default (your primary list)."
+    },
+    "nudge_lookahead_minutes": {
+      "type": "number",
+      "default": 15,
+      "description": "How many minutes ahead to send event reminder nudges."
+    },
+    "nudge_chat_id": {
+      "type": "number",
+      "description": "Telegram chat that receives event reminder nudges. Auto-saved when you use /addevent or /quickadd."
+    },
+    "default_location": {
+      "type": "string",
+      "description": "Default city for weather lookups and briefings (e.g. London, New York, Calgary)."
+    },
+    "morning_time": {
+      "type": "string",
+      "default": "07:00",
+      "description": "Time for morning briefing in HH:MM 24-hour format (weekdays). Default: 07:00."
+    },
+    "night_time": {
+      "type": "string",
+      "default": "21:00",
+      "description": "Time for evening briefing in HH:MM 24-hour format (every day). Default: 21:00."
+    },
+    "time_zone": {
+      "type": "string",
+      "description": "IANA timezone for briefing schedules, date ranges, and displayed calendar times (e.g. America/New_York). Defaults to system timezone."
+    },
+    "include_weather": {
+      "type": "boolean",
+      "default": true,
+      "description": "Include weather in morning briefing."
+    },
+    "include_calendar": {
+      "type": "boolean",
+      "default": true,
+      "description": "Include Google Calendar events in briefings."
+    },
+    "include_tasks": {
+      "type": "boolean",
+      "default": true,
+      "description": "Include Google Tasks in briefings."
+    },
+    "briefing_chat_id": {
+      "type": "number",
+      "description": "Telegram chat that receives scheduled briefings. Auto-saved when you run /morningbrief or /nightbrief."
+    },
+    "weather_reschedule_cron": {
+      "type": "string",
+      "default": "0 6,18 * * *",
+      "description": "Cron for weather-reschedule sweep (flags outdoor events when forecast worsens). Default: 6am and 6pm."
+    }
+  },
+  "required": ["google_client_id", "google_client_secret"]
+}

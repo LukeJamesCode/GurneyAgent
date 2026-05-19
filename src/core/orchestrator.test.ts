@@ -1,0 +1,422 @@
+import { test } from 'node:test';
+import { strict as assert } from 'node:assert';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { open } from '../storage/db.js';
+import { createOrchestrator, type ReplyChunk } from './orchestrator.js';
+import { createToolRegistry } from './tools.js';
+import { createLogger } from '../util/log.js';
+import type { LLM, ChatChunk, ChatOptions } from './llm.js';
+
+function silentLogger() {
+  return createLogger({ level: 'error', out: () => {}, err: () => {} });
+}
+
+function tmp() {
+  return mkdtempSync(join(tmpdir(), 'gurney-orch-'));
+}
+
+function fakeLlm(
+  scripts: Array<AsyncIterable<ChatChunk> | (() => AsyncIterable<ChatChunk>)>,
+): LLM & { calls: ChatOptions[] } {
+  const calls: ChatOptions[] = [];
+  let i = 0;
+  const llm: LLM = {
+    chat(opts) {
+      calls.push(opts);
+      const next = scripts[i++];
+      if (!next) throw new Error('llm script exhausted');
+      return typeof next === 'function' ? next() : next;
+    },
+    async health() {
+      return { ok: true, models: ['fake'] };
+    },
+    listProfiles() {
+      return {
+        chat: { model: 'fake', contextTokens: 4096, heavy: false },
+        reason: null,
+        tools: null,
+      };
+    },
+    resolveModel() {
+      return 'fake';
+    },
+    breakerSnapshot: () => ({
+      state: 'closed',
+      failures: 0,
+      consecutiveSuccesses: 0,
+      openedAt: null,
+      retryAt: null,
+    }),
+    stopIdleEviction: () => {},
+  };
+  return Object.assign(llm, { calls });
+}
+
+async function* stream(parts: string[]): AsyncIterable<ChatChunk> {
+  for (let i = 0; i < parts.length; i++) {
+    const last = i === parts.length - 1;
+    yield {
+      delta: parts[i]!,
+      done: last,
+      ...(last ? { promptTokens: 5, completionTokens: parts.length, model: 'fake' } : {}),
+    };
+  }
+}
+
+test('handleUserMessage streams a reply and persists user+assistant messages', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const llm = fakeLlm([stream(['Hi ', 'there.'])]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    const orch = createOrchestrator({ db, llm, tools, log: silentLogger() });
+
+    const chunks: ReplyChunk[] = [];
+    await orch.handleUserMessage({
+      chatId: 100,
+      userId: 1,
+      text: 'Hello',
+      send: async (c) => {
+        chunks.push(c);
+      },
+    });
+
+    assert.ok(chunks.some((c) => c.delta === 'Hi '));
+    // Regression: Ollama sometimes ships the last token on the same chunk as
+    // done=true. The orchestrator must still forward that delta, otherwise
+    // the Telegram buffer ends up empty and the user sees "(no reply)".
+    assert.ok(chunks.some((c) => c.delta === 'there.'));
+    const final = chunks[chunks.length - 1]!;
+    assert.equal(final.done, true);
+    assert.equal(final.meta?.model, 'fake');
+
+    const messages = db
+      .prepare(
+        `SELECT role, content FROM messages WHERE conversation_id = (
+          SELECT current_conversation_id FROM telegram_chats WHERE chat_id = 100
+        ) ORDER BY id`,
+      )
+      .all() as Array<{ role: string; content: string }>;
+    assert.deepEqual(
+      messages.map((m) => m.role),
+      ['user', 'assistant'],
+    );
+    assert.equal(messages[0]!.content, 'Hello');
+    assert.equal(messages[1]!.content, 'Hi there.');
+    await orch.shutdown();
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('handleUserMessage resolves only after the final reply chunk is sent', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const llm = fakeLlm([stream(['voice ', 'hook'])]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    const orch = createOrchestrator({ db, llm, tools, log: silentLogger() });
+
+    const chunks: ReplyChunk[] = [];
+    await orch.handleUserMessage({
+      chatId: 101,
+      userId: 1,
+      text: 'Hello',
+      send: async (c) => {
+        chunks.push(c);
+      },
+    });
+
+    assert.equal(chunks.at(-1)?.done, true);
+    assert.equal(chunks.map((c) => c.delta).join(''), 'voice hook');
+    await orch.shutdown();
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('newChat ends the current conversation so the next message starts a fresh one', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const llm = fakeLlm([stream(['ok']), stream(['ok2'])]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    const orch = createOrchestrator({ db, llm, tools, log: silentLogger() });
+    await orch.handleUserMessage({ chatId: 1, userId: 1, text: 'a', send: () => {} });
+    await orch.shutdown();
+
+    orch.newChat(1);
+
+    // Re-create orchestrator (simulate restart) so we can issue another message.
+    const orch2 = createOrchestrator({ db, llm, tools, log: silentLogger() });
+    await orch2.handleUserMessage({ chatId: 1, userId: 1, text: 'b', send: () => {} });
+    await orch2.shutdown();
+
+    const convs = db
+      .prepare(`SELECT id, ended_at FROM conversations WHERE telegram_chat_id = 1 ORDER BY id`)
+      .all() as Array<{ id: number; ended_at: number | null }>;
+    assert.equal(convs.length, 2, 'expected two conversations after /newchat');
+    assert.ok(convs[0]!.ended_at !== null);
+    assert.ok(convs[1]!.ended_at === null);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+async function* toolCallStream(
+  name: string,
+  args: Record<string, unknown>,
+): AsyncIterable<ChatChunk> {
+  yield {
+    delta: '',
+    done: true,
+    model: 'fake',
+    toolCalls: [{ id: `call_${name}`, name, arguments: args }],
+    promptTokens: 5,
+    completionTokens: 1,
+  };
+}
+
+// Mirrors Ollama's real wire shape: the tool-call chunk arrives with
+// done=false, then a separate done=true chunk with no tool_calls follows.
+async function* splitToolCallStream(
+  name: string,
+  args: Record<string, unknown>,
+): AsyncIterable<ChatChunk> {
+  yield {
+    delta: '',
+    done: false,
+    model: 'fake',
+    toolCalls: [{ id: `call_${name}`, name, arguments: args }],
+  };
+  yield {
+    delta: '',
+    done: true,
+    model: 'fake',
+    promptTokens: 5,
+    completionTokens: 1,
+  };
+}
+
+test('split tool-call stream: tool_calls on a non-done chunk still trigger the loop', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const llm = fakeLlm([splitToolCallStream('ping', {}), stream(['done.'])]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    let invoked = 0;
+    tools.register({
+      name: 'ping',
+      description: 'noop',
+      tier: 'auto',
+      parameters: { type: 'object', properties: {} },
+      invoke: async () => {
+        invoked += 1;
+        return 'pong';
+      },
+    });
+    const orch = createOrchestrator({ db, llm, tools, log: silentLogger() });
+
+    const chunks: ReplyChunk[] = [];
+    await orch.handleUserMessage({
+      chatId: 9,
+      userId: 1,
+      text: 'hi',
+      send: async (c) => {
+        chunks.push(c);
+      },
+    });
+    await orch.shutdown();
+
+    assert.equal(invoked, 1, 'tool must run even when tool_calls arrive before done=true');
+    assert.ok(
+      chunks.some((c) => c.delta === 'done.'),
+      'follow-up text after the split tool call must reach the sink',
+    );
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('chained tool calls: orchestrator loops until the model produces text', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    // Round 1: tool call. Round 2: tool call again. Round 3: real text reply.
+    const llm = fakeLlm([
+      toolCallStream('ping', { n: 1 }),
+      toolCallStream('ping', { n: 2 }),
+      stream(['done.']),
+    ]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    tools.register({
+      name: 'ping',
+      description: 'noop',
+      tier: 'auto',
+      parameters: { type: 'object', properties: {} },
+      invoke: async () => 'pong',
+    });
+    const orch = createOrchestrator({ db, llm, tools, log: silentLogger() });
+
+    const chunks: ReplyChunk[] = [];
+    await orch.handleUserMessage({
+      chatId: 7,
+      userId: 1,
+      text: 'hi',
+      send: async (c) => {
+        chunks.push(c);
+      },
+    });
+    await orch.shutdown();
+
+    // The text from the third round must reach the Telegram sink.
+    assert.ok(
+      chunks.some((c) => c.delta === 'done.'),
+      'expected the chained-tool follow-up text to be streamed to the sink',
+    );
+    assert.equal(llm.calls.length, 3, 'expected three LLM rounds');
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runaway tool loop: bail out and re-call without tools so the user gets a reply', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    // Five rounds of tool calls (over MAX) then a tool-free fallback reply.
+    const llm = fakeLlm([
+      toolCallStream('ping', {}),
+      toolCallStream('ping', {}),
+      toolCallStream('ping', {}),
+      toolCallStream('ping', {}),
+      toolCallStream('ping', {}),
+      stream(['fallback reply.']),
+    ]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    tools.register({
+      name: 'ping',
+      description: 'noop',
+      tier: 'auto',
+      parameters: { type: 'object', properties: {} },
+      invoke: async () => 'pong',
+    });
+    const orch = createOrchestrator({ db, llm, tools, log: silentLogger() });
+
+    const chunks: ReplyChunk[] = [];
+    await orch.handleUserMessage({
+      chatId: 8,
+      userId: 1,
+      text: 'go',
+      send: async (c) => {
+        chunks.push(c);
+      },
+    });
+    await orch.shutdown();
+
+    assert.ok(
+      chunks.some((c) => c.delta === 'fallback reply.'),
+      'expected the no-tools fallback to deliver text to the sink',
+    );
+    // The last call must have had tools omitted (the safety-net fallback).
+    const last = llm.calls[llm.calls.length - 1]!;
+    assert.equal(last.tools, undefined, 'fallback round must disable tools');
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('final chunk includes after-turn context with summarized tool calls', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const longResult = 'x'.repeat(900);
+    const llm = fakeLlm([toolCallStream('lookup', { q: 'pattern' }), stream(['learned.'])]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    tools.register({
+      name: 'lookup',
+      description: 'lookup pattern',
+      tier: 'auto',
+      parameters: { type: 'object', properties: { q: { type: 'string' } } },
+      invoke: async () => longResult,
+    });
+    const orch = createOrchestrator({ db, llm, tools, log: silentLogger() });
+
+    const chunks: ReplyChunk[] = [];
+    await orch.handleUserMessage({
+      chatId: 77,
+      userId: 11,
+      text: 'find a pattern',
+      send: async (c) => {
+        chunks.push(c);
+      },
+    });
+    await orch.shutdown();
+
+    const turn = chunks.at(-1)?.meta?.afterTurn;
+    assert.ok(turn, 'final chunk should include after-turn context');
+    assert.equal(turn.chatId, 77);
+    assert.equal(turn.userId, 11);
+    assert.equal(turn.userText, 'find a pattern');
+    assert.equal(turn.assistantText, 'learned.');
+    assert.equal(turn.toolCalls.length, 1);
+    assert.equal(turn.toolCalls[0]!.name, 'lookup');
+    assert.deepEqual(turn.toolCalls[0]!.arguments, { q: 'pattern' });
+    assert.equal(turn.toolCalls[0]!.ok, true);
+    assert.ok(turn.toolCalls[0]!.resultSummary.length < longResult.length);
+    assert.match(turn.toolCalls[0]!.resultSummary, /truncated/);
+    assert.ok(turn.startedAt <= turn.finishedAt);
+    assert.ok(turn.conversationId > 0);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('self-replying tool short-circuit persists the assistant turn exactly once', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    // One round: a self-replying tool, no follow-up LLM call needed.
+    const llm = fakeLlm([toolCallStream('add_event', { title: 'lunch' })]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    tools.register({
+      name: 'add_event',
+      description: 'add an event',
+      tier: 'auto',
+      selfReplying: true,
+      parameters: { type: 'object', properties: { title: { type: 'string' } } },
+      invoke: async (args) => `Added: ${(args as { title: string }).title}`,
+    });
+    const orch = createOrchestrator({ db, llm, tools, log: silentLogger() });
+
+    await orch.handleUserMessage({ chatId: 42, userId: 1, text: 'add lunch', send: () => {} });
+    await orch.shutdown();
+
+    const rows = db
+      .prepare(
+        `SELECT role, content FROM messages WHERE conversation_id = (
+          SELECT current_conversation_id FROM telegram_chats WHERE chat_id = 42
+        ) ORDER BY id`,
+      )
+      .all() as Array<{ role: string; content: string }>;
+    // Expected: user, tool, assistant — exactly one assistant row carrying
+    // the self-replying output. Earlier versions wrote the assistant row
+    // twice (once in the short-circuit, once in the post-loop block), which
+    // re-fed the duplicate to the model on the next turn.
+    const assistantRows = rows.filter((r) => r.role === 'assistant');
+    assert.equal(assistantRows.length, 1, 'self-replying short-circuit must persist once');
+    assert.equal(assistantRows[0]!.content, 'Added: lunch');
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

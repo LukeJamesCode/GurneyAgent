@@ -1,0 +1,69 @@
+# Gurney runs alongside Ollama, never bundled with it (cold-loading a 9B on
+# CPU costs 30-60s; a Gurney redeploy must not pay that). FalkorDB is left
+# commented out and is activated by the gurney-memgraph extension.
+#
+# Security note: the default compose file intentionally publishes no host
+# ports. Ollama has no built-in authentication, so keep it reachable only on
+# the private Compose network unless you put an authenticated reverse proxy in
+# front of it.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: gurney-ollama
+    expose:
+      - '11434'
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      OLLAMA_FLASH_ATTENTION: '${OLLAMA_FLASH_ATTENTION:-1}'
+      OLLAMA_NUM_THREADS: '${OLLAMA_NUM_THREADS:-4}'
+      OLLAMA_KEEP_ALIVE: '24h'
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  gurney:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gurney:dev
+    container_name: gurney
+    depends_on:
+      - ollama
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OLLAMA_URL: 'http://ollama:11434'
+      GURNEY_HOME: '/data'
+      GURNEY_LOG_LEVEL: '${GURNEY_LOG_LEVEL:-info}'
+    volumes:
+      - gurney-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  # Activated by the `gurney-memgraph` extension. Uncomment when installed.
+  # Keep FalkorDB on the private Compose network unless you add authentication
+  # at a proxy/firewall layer.
+  # falkordb:
+  #   image: falkordb/falkordb:latest
+  #   container_name: gurney-falkordb
+  #   expose:
+  #     - '6379'
+  #   volumes:
+  #     - falkordb-data:/data
+  #   security_opt:
+  #     - no-new-privileges:true
+  #   restart: unless-stopped
+
+volumes:
+  ollama-data:
+  gurney-data:
+  # falkordb-data:

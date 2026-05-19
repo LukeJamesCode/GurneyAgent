@@ -1,0 +1,11 @@
+{
+  "name": "gurney-instant-responses",
+  "version": "0.1.0",
+  "description": "Templated replies and offload acks. Trivial chatter (hi, thanks, ok…) gets a templated reply with no LLM call; tool/query intent (set an event, what's the weather…) gets an instant 'On it.' / 'Checking.' ack while the orchestrator works. Mirrors ATLAS's instant-reply table.",
+  "gurney": ">=0.1.0",
+  "deps": [],
+  "capabilities": ["telegram"],
+  "entrypoints": {
+    "commands": "./commands.ts"
+  }
+}

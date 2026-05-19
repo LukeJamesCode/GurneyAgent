@@ -1,0 +1,205 @@
+// Persistent CLI config: ~/.gurney/config.json.
+//
+// Phase 1 read everything from environment. Phase 3 introduces a real config
+// file written by `gurney init` and edited by `gurney config`. Environment
+// variables still win, so existing deployments keep working - file values are
+// only read when the matching env var is unset.
+
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+
+export type ProfileKey = 'chat' | 'reason' | 'tools';
+
+export interface GurneyConfig {
+  telegram: {
+    token: string;
+    allowedIds: number[];
+  };
+  ollama: {
+    url: string;
+  };
+  models: {
+    chat: string;
+    reason?: string;
+    // Optional tool-use profile. When set, the orchestrator routes any chat
+    // call that has tool schemas attached through this model instead of
+    // `chat`. Useful when the chat model is small/fast and a separate model
+    // is better at picking the right tool and shaping its arguments.
+    tools?: string;
+  };
+  // Hardware tier hint. Informational only - consumed by `gurney status` /
+  // `gurney doctor` to surface obvious mismatches.
+  tier?: 'small' | 'standard' | 'heavy';
+  logLevel?: 'debug' | 'info' | 'warn' | 'error';
+}
+
+export const CONFIG_VERSION = 3;
+
+interface ConfigOnDisk extends GurneyConfig {
+  version: number;
+}
+
+export type GurneyConfigInput = Partial<GurneyConfig> &
+  Pick<GurneyConfig, 'telegram' | 'ollama' | 'models'>;
+
+const DEFAULTS: GurneyConfig = {
+  telegram: { token: '', allowedIds: [] },
+  ollama: { url: 'http://localhost:11434' },
+  models: { chat: 'qwen3.5:0.8b' },
+  logLevel: 'info',
+};
+
+export function homeDir(): string {
+  return process.env['GURNEY_HOME']?.trim() || join(homedir(), '.gurney');
+}
+
+export function configPath(home: string = homeDir()): string {
+  return join(home, 'config.json');
+}
+
+export function loadConfig(home: string = homeDir()): GurneyConfig {
+  const file = configPath(home);
+  if (!existsSync(file)) return cloneDefaults();
+  const raw = readFileSync(file, 'utf8');
+  let parsed: Partial<ConfigOnDisk>;
+  try {
+    parsed = JSON.parse(raw) as Partial<ConfigOnDisk>;
+  } catch (e) {
+    throw new Error(`config at ${file} is not valid JSON: ${(e as Error).message}`);
+  }
+  return mergeWithDefaults(parsed);
+}
+
+export function saveConfig(cfg: GurneyConfigInput, home: string = homeDir()): void {
+  ensurePrivateDir(home);
+  const merged = mergeWithDefaults(cfg as Partial<ConfigOnDisk>);
+  const out: ConfigOnDisk = { version: CONFIG_VERSION, ...merged };
+  const file = configPath(home);
+  ensurePrivateDir(dirname(file));
+  writeFileSync(file, JSON.stringify(out, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  ensurePrivateFile(file);
+}
+
+// Compose the runtime view: env wins over the file, file wins over defaults.
+export function effectiveConfig(home: string = homeDir()): GurneyConfig {
+  const file = loadConfig(home);
+  const env = process.env;
+  const allowedFromEnv = env['TELEGRAM_ALLOWED_IDS']?.trim();
+  const ollamaUrl = env['OLLAMA_URL']?.trim() || file.ollama.url;
+  validateOllamaUrl(ollamaUrl);
+  return {
+    telegram: {
+      token: env['TELEGRAM_BOT_TOKEN']?.trim() || file.telegram.token,
+      allowedIds: allowedFromEnv ? parseAllowedIds(allowedFromEnv) : file.telegram.allowedIds,
+    },
+    ollama: {
+      url: ollamaUrl,
+    },
+    models: {
+      chat: env['GURNEY_CHAT_MODEL']?.trim() || file.models.chat,
+      ...(env['GURNEY_REASON_MODEL']?.trim() || file.models.reason
+        ? { reason: env['GURNEY_REASON_MODEL']?.trim() || file.models.reason }
+        : {}),
+      ...(env['GURNEY_TOOLS_MODEL']?.trim() || file.models.tools
+        ? { tools: env['GURNEY_TOOLS_MODEL']?.trim() || file.models.tools }
+        : {}),
+    },
+    ...(env['GURNEY_TIER']?.trim() || file.tier
+      ? {
+          tier: ((env['GURNEY_TIER']?.trim() as GurneyConfig['tier']) ||
+            file.tier) as GurneyConfig['tier'],
+        }
+      : {}),
+    logLevel: ((env['GURNEY_LOG_LEVEL']?.trim() as GurneyConfig['logLevel']) ||
+      file.logLevel) as GurneyConfig['logLevel'],
+  };
+}
+
+// SSRF guard for the Ollama base URL. Ollama is always a separate process
+// running locally or on the operator's own network; pointing it at AWS/GCP
+// metadata services or random external IPs has no legitimate use and would
+// leak whatever Ollama proxies (model lists, system info).
+//
+// Allowed: http(s)://, hostnames that are either loopback literals, or DNS
+// names matching a conservative shape. Cloud metadata IPs and 0.0.0.0 are
+// explicitly rejected.
+const METADATA_HOSTS = new Set([
+  '169.254.169.254', // AWS / GCP / Azure metadata
+  'metadata.google.internal',
+  '0.0.0.0',
+]);
+
+export function validateOllamaUrl(raw: string): void {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error(`invalid OLLAMA_URL: ${raw}`);
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error(`OLLAMA_URL must use http(s): ${raw}`);
+  }
+  const host = u.hostname.toLowerCase();
+  if (METADATA_HOSTS.has(host) || host.startsWith('169.254.')) {
+    throw new Error(`OLLAMA_URL points at a metadata / link-local host: ${host}`);
+  }
+  // DNS name OR loopback IP; reject anything weirder (square-bracketed IPv6
+  // literals are allowed because URL parsing normalizes them).
+  const looksLikeDnsOrIp = /^[a-z0-9.\-:[\]]+$/i.test(host);
+  if (!looksLikeDnsOrIp) {
+    throw new Error(`OLLAMA_URL has unusual hostname: ${host}`);
+  }
+}
+
+export function parseAllowedIds(raw: string): number[] {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => {
+      const n = Number.parseInt(s, 10);
+      if (!Number.isFinite(n)) throw new Error(`invalid Telegram user id: ${s}`);
+      return n;
+    });
+}
+
+function cloneDefaults(): GurneyConfig {
+  return JSON.parse(JSON.stringify(DEFAULTS)) as GurneyConfig;
+}
+
+function mergeWithDefaults(input: Partial<ConfigOnDisk>): GurneyConfig {
+  const base = cloneDefaults();
+  if (input.telegram?.token) base.telegram.token = input.telegram.token;
+  if (Array.isArray(input.telegram?.allowedIds)) {
+    base.telegram.allowedIds = input.telegram.allowedIds.filter((n) => Number.isFinite(n));
+  }
+  if (input.ollama?.url) base.ollama.url = input.ollama.url;
+  if (input.models?.chat) base.models.chat = input.models.chat;
+  if (input.models?.reason) base.models.reason = input.models.reason;
+  if (input.models?.tools) base.models.tools = input.models.tools;
+  if (input.tier) base.tier = input.tier;
+  if (input.logLevel) base.logLevel = input.logLevel;
+  return base;
+}
+
+// Secrets live under GURNEY_HOME (~/.gurney by default). Keep that tree
+// owner-only even when the process umask is permissive or the directory/file
+// already existed with wider permissions. chmod can fail on non-POSIX
+// filesystems, so these helpers are best-effort rather than startup-fatal.
+export function ensurePrivateDir(path: string): void {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(path, 0o700);
+  } catch {
+    // Best-effort on filesystems that do not support POSIX permissions.
+  }
+}
+
+export function ensurePrivateFile(path: string): void {
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // Best-effort on filesystems that do not support POSIX permissions.
+  }
+}

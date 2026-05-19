@@ -1,0 +1,22 @@
+# Files graphify should skip when building the knowledge graph.
+# Same syntax as .gitignore.
+
+# Claude Code internals
+CLAUDE.md
+.graphify_python
+
+# Build artifacts
+node_modules/
+dist/
+coverage/
+
+# Lock files (too noisy, no semantic value)
+package-lock.json
+
+# Secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db

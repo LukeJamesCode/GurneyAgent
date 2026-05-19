@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "properties": {
+    "bridge_url": {
+      "type": "string",
+      "default": "http://localhost:8765",
+      "description": "URL of the gurney-memgraph HTTP bridge (the Python service that wraps FalkorDB + Graphiti). IPC and Embedded transports are deliberately not supported."
+    },
+    "bridge_token": {
+      "type": "string",
+      "secret": true,
+      "description": "Optional bearer token sent in the Authorization header. Leave blank for unauthenticated local bridges."
+    },
+    "namespace": {
+      "type": "string",
+      "default": "default",
+      "description": "Logical namespace inside the bridge. One bridge can serve multiple Gurney installs by setting different namespaces."
+    },
+    "recall_top_k": {
+      "type": "number",
+      "default": 5,
+      "description": "Max facts the recall_memory tool returns per query."
+    },
+    "extraction_batch_size": {
+      "type": "number",
+      "default": 10,
+      "description": "Run the extraction sweep once at least this many new messages have accumulated since the last sweep."
+    },
+    "extraction_cron": {
+      "type": "string",
+      "default": "*/15 * * * *",
+      "description": "Cron expression (minute granularity) for the background extraction sweep."
+    }
+  },
+  "required": []
+}

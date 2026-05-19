@@ -1,0 +1,19 @@
+{
+  "name": "gurney-memgraph",
+  "version": "0.1.0",
+  "description": "Long-term memory backed by FalkorDB + Graphiti via an HTTP bridge. Recall past facts, store new ones, and quietly extract memories from conversation history in the background.",
+  "gurney": ">=0.1.0",
+  "deps": [],
+  "capabilities": ["network", "storage", "telegram", "scheduler", "llm"],
+  "entrypoints": {
+    "tools": "./tools.ts",
+    "commands": "./commands.ts",
+    "jobs": "./jobs.ts"
+  },
+  "telegram_commands": [
+    { "command": "memory", "description": "Search long-term memory: /memory <query>" },
+    { "command": "remember", "description": "Store a fact: /remember <text>" },
+    { "command": "forget", "description": "Wipe long-term memory for this chat" }
+  ],
+  "intent_pattern": "\\b(remember|recall|memory|forget|do you know|what do you know|what.*remember|i told you|i mentioned)\\b"
+}

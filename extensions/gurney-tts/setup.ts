@@ -1,0 +1,496 @@
+import { spawnSync } from 'node:child_process';
+import {
+  chmodSync,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import type { ExtensionSetupContext } from '../../src/core/extensions.js';
+
+export interface InstallStep {
+  command: string;
+  args: string[];
+}
+
+export interface InstallerPlan {
+  name: string;
+  steps: InstallStep[];
+}
+
+export interface NativeDepsOptions {
+  binary?: string;
+  voiceId?: string;
+  platform?: NodeJS.Platform;
+  arch?: string;
+  home?: string;
+  getuid?: () => number | undefined;
+  commandExists?: (command: string) => boolean;
+  commandPath?: (command: string) => string | undefined;
+  runStep?: (step: InstallStep) => number | null;
+  downloadFile?: (url: string, destPath: string) => Promise<void>;
+  extractArchive?: (archivePath: string, destDir: string) => Promise<number | null>;
+  confirm?: (message: string, defaultValue: boolean) => Promise<boolean>;
+  stdout?: (text: string) => void;
+}
+
+const PIPER_VERSION = '2023.11.14-2';
+const PIPER_RELEASE_BASE = `https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}`;
+const DEFAULT_VOICE_ID = 'en_GB-northern_english_male-medium';
+
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function isPathLike(command: string): boolean {
+  return command.includes('/') || command.includes('\\');
+}
+
+export function defaultCommandExists(command: string): boolean {
+  const probe = isPathLike(command)
+    ? spawnSync(command, ['-version'], { stdio: 'ignore' })
+    : process.platform === 'win32'
+      ? spawnSync('where', [command], { stdio: 'ignore', shell: true })
+      : spawnSync('sh', ['-c', `command -v ${shQuote(command)}`], { stdio: 'ignore' });
+  return probe.status === 0;
+}
+
+export function defaultCommandPath(command: string): string | undefined {
+  if (isPathLike(command)) return existsSync(command) ? command : undefined;
+  const probe =
+    process.platform === 'win32'
+      ? spawnSync('where', [command], { encoding: 'utf8', shell: true })
+      : spawnSync('sh', ['-c', `command -v ${shQuote(command)}`], { encoding: 'utf8' });
+  if (probe.status !== 0 || !probe.stdout) return undefined;
+  const first = probe.stdout
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .find(Boolean);
+  return first;
+}
+
+function defaultRunStep(step: InstallStep): number | null {
+  const result = spawnSync(step.command, step.args, { stdio: 'inherit' });
+  return result.status;
+}
+
+async function defaultDownloadFile(url: string, destPath: string): Promise<void> {
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok || !res.body) {
+    throw new Error(`download failed: ${url} -> HTTP ${res.status}`);
+  }
+  await pipeline(
+    Readable.fromWeb(res.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>),
+    createWriteStream(destPath),
+  );
+}
+
+async function downloadWithPartFile(
+  url: string,
+  destPath: string,
+  downloadFile: (url: string, destPath: string) => Promise<void>,
+): Promise<void> {
+  const tmp = `${destPath}.part`;
+  try {
+    await downloadFile(url, tmp);
+    renameSync(tmp, destPath);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+
+function defaultExtractArchive(archivePath: string, destDir: string): number | null {
+  if (archivePath.endsWith('.zip')) {
+    const escapedArchive = archivePath.replace(/'/g, "''");
+    const escapedDest = destDir.replace(/'/g, "''");
+    const result = spawnSync(
+      'powershell',
+      [
+        '-NoProfile',
+        '-Command',
+        `Expand-Archive -LiteralPath '${escapedArchive}' -DestinationPath '${escapedDest}' -Force`,
+      ],
+      { stdio: 'inherit' },
+    );
+    return result.status;
+  }
+  const result = spawnSync('tar', ['-xzf', archivePath, '-C', destDir], { stdio: 'inherit' });
+  return result.status;
+}
+
+function withPrivilege(
+  command: string,
+  args: string[],
+  opts: Required<Pick<NativeDepsOptions, 'commandExists' | 'getuid'>>,
+): InstallStep {
+  const uid = opts.getuid();
+  if (uid === 0 || !opts.commandExists('sudo')) return { command, args };
+  return { command: 'sudo', args: [command, ...args] };
+}
+
+export function detectFfmpegInstaller(
+  opts: Pick<NativeDepsOptions, 'platform' | 'commandExists' | 'getuid'> = {},
+): InstallerPlan | null {
+  const platform = opts.platform ?? process.platform;
+  const commandExists = opts.commandExists ?? defaultCommandExists;
+  const getuid = opts.getuid ?? (() => process.getuid?.());
+
+  if (platform === 'win32') {
+    if (commandExists('winget')) {
+      return {
+        name: 'winget',
+        steps: [
+          {
+            command: 'winget',
+            args: [
+              'install',
+              '--id',
+              'Gyan.FFmpeg',
+              '--exact',
+              '--accept-package-agreements',
+              '--accept-source-agreements',
+            ],
+          },
+        ],
+      };
+    }
+    if (commandExists('choco')) {
+      return { name: 'choco', steps: [{ command: 'choco', args: ['install', 'ffmpeg', '-y'] }] };
+    }
+    if (commandExists('scoop')) {
+      return { name: 'scoop', steps: [{ command: 'scoop', args: ['install', 'ffmpeg'] }] };
+    }
+    return null;
+  }
+
+  if (platform === 'darwin' && commandExists('brew')) {
+    return { name: 'brew', steps: [{ command: 'brew', args: ['install', 'ffmpeg'] }] };
+  }
+
+  const priv = (command: string, args: string[]): InstallStep =>
+    withPrivilege(command, args, { commandExists, getuid });
+
+  if (commandExists('apt-get')) {
+    return {
+      name: 'apt-get',
+      steps: [priv('apt-get', ['update']), priv('apt-get', ['install', '-y', 'ffmpeg'])],
+    };
+  }
+  if (commandExists('dnf')) {
+    return { name: 'dnf', steps: [priv('dnf', ['install', '-y', 'ffmpeg'])] };
+  }
+  if (commandExists('pacman')) {
+    return { name: 'pacman', steps: [priv('pacman', ['-Sy', '--noconfirm', 'ffmpeg'])] };
+  }
+  if (commandExists('apk')) {
+    return { name: 'apk', steps: [priv('apk', ['add', 'ffmpeg'])] };
+  }
+  if (commandExists('zypper')) {
+    return { name: 'zypper', steps: [priv('zypper', ['install', '-y', 'ffmpeg'])] };
+  }
+  if (commandExists('brew')) {
+    return { name: 'brew', steps: [{ command: 'brew', args: ['install', 'ffmpeg'] }] };
+  }
+
+  return null;
+}
+
+function formatStep(step: InstallStep): string {
+  return [step.command, ...step.args].join(' ');
+}
+
+function formatPlan(plan: InstallerPlan): string {
+  return plan.steps.map(formatStep).join(' && ');
+}
+
+export async function ensureFfmpegForTts(
+  opts: NativeDepsOptions = {},
+): Promise<string | undefined> {
+  const binary = opts.binary?.trim() || 'ffmpeg';
+  const commandExists = opts.commandExists ?? defaultCommandExists;
+  const commandPath = opts.commandPath ?? defaultCommandPath;
+  const stdout = opts.stdout ?? ((text: string) => process.stdout.write(text));
+  const runStep = opts.runStep ?? defaultRunStep;
+  const confirm =
+    opts.confirm ??
+    (async () => {
+      const { confirm: promptConfirm } = await import('@inquirer/prompts');
+      return promptConfirm({
+        message: `ffmpeg is required for gurney-tts. Install it now?`,
+        default: true,
+      });
+    });
+
+  if (commandExists(binary)) {
+    const found = commandPath(binary) ?? binary;
+    stdout(`  ✓ ffmpeg found (${found}).\n`);
+    return found;
+  }
+
+  const plan = detectFfmpegInstaller({
+    platform: opts.platform,
+    commandExists,
+    getuid: opts.getuid,
+  });
+
+  if (!plan) {
+    stdout(
+      '  ffmpeg was not found, and Gurney could not detect a supported package manager.\n' +
+        '  Install ffmpeg manually or set `ffmpeg_bin` with `gurney config`.\n',
+    );
+    return undefined;
+  }
+
+  const shouldInstall = await confirm(
+    `ffmpeg is required for gurney-tts and was not found. Install it now with ${plan.name}? (${formatPlan(plan)})`,
+    true,
+  );
+  if (!shouldInstall) {
+    stdout('  Skipped ffmpeg install. Voice notes will not work until ffmpeg is available.\n');
+    return undefined;
+  }
+
+  for (const step of plan.steps) {
+    stdout(`  → ${formatStep(step)}\n`);
+    const status = runStep(step);
+    if (status !== 0) {
+      stdout(
+        `  ffmpeg install failed while running \`${formatStep(step)}\` (exit ${status ?? 'unknown'}).\n` +
+          '  Install ffmpeg manually or set `ffmpeg_bin` with `gurney config`.\n',
+      );
+      return undefined;
+    }
+  }
+
+  if (commandExists(binary)) {
+    const found = commandPath(binary) ?? binary;
+    stdout(`  ✓ ffmpeg installed (${found}).\n`);
+    return found;
+  }
+
+  stdout(
+    '  ffmpeg install finished, but this shell still cannot find `ffmpeg`.\n' +
+      '  Restart your terminal or set `ffmpeg_bin` with `gurney config`.\n',
+  );
+  return undefined;
+}
+
+interface PiperAsset {
+  archive: string;
+  executable: string;
+}
+
+function piperAssetFor(platform: NodeJS.Platform, arch: string): PiperAsset | null {
+  if (platform === 'win32' && arch === 'x64') {
+    return { archive: 'piper_windows_amd64.zip', executable: 'piper.exe' };
+  }
+  if (platform === 'linux') {
+    if (arch === 'x64') return { archive: 'piper_linux_x86_64.tar.gz', executable: 'piper' };
+    if (arch === 'arm64') return { archive: 'piper_linux_aarch64.tar.gz', executable: 'piper' };
+    if (arch === 'arm') return { archive: 'piper_linux_armv7l.tar.gz', executable: 'piper' };
+  }
+  if (platform === 'darwin') {
+    if (arch === 'x64') return { archive: 'piper_macos_x64.tar.gz', executable: 'piper' };
+    if (arch === 'arm64') return { archive: 'piper_macos_aarch64.tar.gz', executable: 'piper' };
+  }
+  return null;
+}
+
+function findExecutable(dir: string, name: string): string | undefined {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return undefined;
+  }
+  for (const entry of entries) {
+    const path = join(dir, entry);
+    const s = statSync(path);
+    if (s.isDirectory()) {
+      const found = findExecutable(path, name);
+      if (found) return found;
+    } else if (entry === name) {
+      return path;
+    }
+  }
+  return undefined;
+}
+
+export async function ensurePiperForTts(opts: NativeDepsOptions = {}): Promise<string | undefined> {
+  const binary = opts.binary?.trim() || 'piper';
+  const platform = opts.platform ?? process.platform;
+  const arch = opts.arch ?? process.arch;
+  const commandExists = opts.commandExists ?? defaultCommandExists;
+  const commandPath = opts.commandPath ?? defaultCommandPath;
+  const stdout = opts.stdout ?? ((text: string) => process.stdout.write(text));
+  const downloadFile = opts.downloadFile ?? defaultDownloadFile;
+  const extractArchive = opts.extractArchive ?? defaultExtractArchive;
+  const home = opts.home;
+
+  if (commandExists(binary)) {
+    const found = commandPath(binary) ?? binary;
+    stdout(`  ✓ Piper found (${found}).\n`);
+    return found;
+  }
+
+  if (!home) {
+    stdout('  Piper was not found. Run `gurney ext install gurney-tts` to auto-download it.\n');
+    return undefined;
+  }
+
+  const asset = piperAssetFor(platform, arch);
+  if (!asset) {
+    stdout(
+      `  Piper was not found, and Gurney does not have a Piper binary for ${platform}/${arch}.\n` +
+        '  Install Piper manually or set `piper_bin` with `gurney config`.\n',
+    );
+    return undefined;
+  }
+
+  const installDir = join(
+    home,
+    'extension_state',
+    'gurney-tts',
+    'native',
+    `piper-${PIPER_VERSION}`,
+  );
+  const existing = findExecutable(installDir, asset.executable);
+  if (existing) {
+    stdout(`  ✓ Piper ready (${existing}).\n`);
+    return existing;
+  }
+
+  mkdirSync(installDir, { recursive: true });
+  const archivePath = join(installDir, asset.archive);
+  const url = `${PIPER_RELEASE_BASE}/${asset.archive}`;
+  stdout(`  → Downloading Piper ${PIPER_VERSION} for ${platform}/${arch}...\n`);
+
+  try {
+    await downloadWithPartFile(url, archivePath, downloadFile);
+    const status = await extractArchive(archivePath, installDir);
+    rmSync(archivePath, { force: true });
+    if (status !== 0) {
+      stdout(`  Piper extraction failed (exit ${status ?? 'unknown'}).\n`);
+      return undefined;
+    }
+    const installed = findExecutable(installDir, asset.executable);
+    if (!installed) {
+      stdout('  Piper downloaded, but Gurney could not find the Piper executable.\n');
+      return undefined;
+    }
+    try {
+      chmodSync(installed, 0o755);
+    } catch {
+      /* Windows/no-op */
+    }
+    stdout(`  ✓ Piper installed (${installed}).\n`);
+    return installed;
+  } catch (e) {
+    rmSync(archivePath, { force: true });
+    stdout(
+      `  Piper download failed: ${e instanceof Error ? e.message : String(e)}\n` +
+        '  Install Piper manually or set `piper_bin` with `gurney config`.\n',
+    );
+    return undefined;
+  }
+}
+
+interface VoiceSpec {
+  id: string;
+  modelUrl: string;
+  configUrl: string;
+}
+
+function voiceSpecFor(id: string): VoiceSpec {
+  const parts = id.split('-');
+  if (parts.length !== 3) {
+    throw new Error(
+      `invalid Piper voice id '${id}' - expected '<lang_country>-<voice>-<quality>' (e.g. en_GB-alan-medium)`,
+    );
+  }
+  const [langCountry, voice, quality] = parts as [string, string, string];
+  const lang = langCountry.split('_')[0]!;
+  const base = `https://huggingface.co/rhasspy/piper-voices/resolve/main/${lang}/${langCountry}/${voice}/${quality}/${id}.onnx`;
+  return { id, modelUrl: base, configUrl: `${base}.json` };
+}
+
+export async function ensureVoiceModelForTts(
+  opts: NativeDepsOptions = {},
+): Promise<string | undefined> {
+  const home = opts.home;
+  const stdout = opts.stdout ?? ((text: string) => process.stdout.write(text));
+  const downloadFile = opts.downloadFile ?? defaultDownloadFile;
+  const voiceId = opts.voiceId?.trim() || DEFAULT_VOICE_ID;
+
+  if (!home) {
+    stdout('  Voice model cannot be downloaded without a Gurney home directory.\n');
+    return undefined;
+  }
+
+  let spec: VoiceSpec;
+  try {
+    spec = voiceSpecFor(voiceId);
+  } catch (e) {
+    stdout(
+      `  ${e instanceof Error ? e.message : String(e)}\n` +
+        `  Falling back to ${DEFAULT_VOICE_ID}.\n`,
+    );
+    spec = voiceSpecFor(DEFAULT_VOICE_ID);
+  }
+
+  const dir = join(home, 'extension_state', 'gurney-tts', 'voices');
+  const modelPath = join(dir, `${spec.id}.onnx`);
+  const configPath = `${modelPath}.json`;
+  if (existsSync(modelPath) && existsSync(configPath)) {
+    stdout(`  ✓ Voice model ready (${modelPath}).\n`);
+    return modelPath;
+  }
+
+  mkdirSync(dir, { recursive: true });
+  stdout(`  → Downloading Piper voice model ${spec.id}...\n`);
+  try {
+    await downloadWithPartFile(spec.modelUrl, modelPath, downloadFile);
+    stdout(`  → Downloading Piper voice config ${spec.id}...\n`);
+    await downloadWithPartFile(spec.configUrl, configPath, downloadFile);
+    stdout(`  ✓ Voice model installed (${modelPath}).\n`);
+    return modelPath;
+  } catch (e) {
+    rmSync(modelPath, { force: true });
+    rmSync(configPath, { force: true });
+    stdout(
+      `  Voice model download failed: ${e instanceof Error ? e.message : String(e)}\n` +
+        '  It can still download on first reply, or set `voice_model_path` with `gurney config`.\n',
+    );
+    return undefined;
+  }
+}
+
+export async function setup(ctx: ExtensionSetupContext): Promise<void> {
+  const ffmpeg = await ensureFfmpegForTts({
+    binary: String(ctx.settings.get('ffmpeg_bin', 'ffmpeg')),
+    stdout: ctx.stdout,
+    ...(ctx.interactive ? {} : { confirm: async () => false }),
+  });
+  if (ffmpeg) ctx.settings.set('ffmpeg_bin', ffmpeg);
+
+  const piper = await ensurePiperForTts({
+    binary: String(ctx.settings.get('piper_bin', 'piper')),
+    home: ctx.home,
+    stdout: ctx.stdout,
+  });
+  if (piper) ctx.settings.set('piper_bin', piper);
+
+  const voiceModel = await ensureVoiceModelForTts({
+    voiceId: String(ctx.settings.get('voice_id', '')),
+    home: ctx.home,
+    stdout: ctx.stdout,
+  });
+  if (voiceModel) ctx.settings.set('voice_model_path', voiceModel);
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "name": "gurney-everyday-assistant",
+    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
+    "subpath": "extensions/gurney-everyday-assistant",
+    "description": "Unified everyday assistant: calendar, tasks, reminders, weather, briefings, and day-planning in one extension"
+  },
+  {
+    "name": "gurney-websearch",
+    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
+    "subpath": "extensions/gurney-websearch",
+    "description": "Web search tool (LLM tool, no slash command)"
+  },
+  {
+    "name": "gurney-memgraph",
+    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
+    "subpath": "extensions/gurney-memgraph",
+    "description": "Long-term memory via FalkorDB (heavy \u2014 Standard/Heavy tier only)"
+  },
+  {
+    "name": "gurney-tts",
+    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
+    "subpath": "extensions/gurney-tts",
+    "description": "Voice replies via Piper + ffmpeg"
+  },
+  {
+    "name": "gurney-routines",
+    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
+    "subpath": "extensions/gurney-routines",
+    "description": "Routine suggestions learned from local extension data (asks before recurring nudges)"
+  },
+  {
+    "name": "gurney-instant-responses",
+    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
+    "subpath": "extensions/gurney-instant-responses",
+    "description": "Templated instant replies for trivial chatter and tool-dispatch acknowledgements"
+  }
+]

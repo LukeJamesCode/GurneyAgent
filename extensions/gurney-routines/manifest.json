@@ -1,0 +1,18 @@
+{
+  "name": "gurney-routines",
+  "version": "0.1.0",
+  "description": "Learns lightweight routine candidates from local extension data and asks before recurring nudges.",
+  "gurney": ">=0.1.0",
+  "deps": [],
+  "capabilities": ["storage", "telegram", "scheduler"],
+  "entrypoints": {
+    "tools": "./tools.ts",
+    "commands": "./commands.ts",
+    "jobs": "./jobs.ts"
+  },
+  "telegram_commands": [
+    { "command": "routines", "description": "List routine suggestions and active routines" },
+    { "command": "routine", "description": "Manage routines: accept, pause, delete, why" }
+  ],
+  "intent_pattern": "\\b(routine|routines|habit|recurring|automatic|nightly prep|daily brief|weekly)\\b"
+}

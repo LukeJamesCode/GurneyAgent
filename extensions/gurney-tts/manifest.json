@@ -1,0 +1,17 @@
+{
+  "name": "gurney-tts",
+  "version": "0.1.0",
+  "description": "Voice replies via Piper. /voice on enables a per-chat preference; the bot then sends a voice note alongside every text reply.",
+  "gurney": ">=0.1.0",
+  "deps": [],
+  "capabilities": ["telegram", "storage", "network"],
+  "entrypoints": {
+    "commands": "./commands.ts",
+    "jobs": "./jobs.ts",
+    "auth": "./auth.ts",
+    "setup": "./setup.ts"
+  },
+  "telegram_commands": [
+    { "command": "voice", "description": "Toggle voice replies: /voice on|off|status" }
+  ]
+}
