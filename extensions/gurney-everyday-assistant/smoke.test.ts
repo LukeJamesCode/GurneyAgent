@@ -74,7 +74,7 @@ test('gurney-everyday-assistant: loads cleanly and registers all hooks', async (
     assert.ok(ext, 'extension should appear in loader list');
     assert.equal(ext!.error, undefined, `load error: ${String(ext!.error ?? 'none')}`);
 
-    // ── All 19 tools ─────────────────────────────────────────────────────────
+    // ── All 21 tools ─────────────────────────────────────────────────────────
     const expectedTools = [
       // Calendar (4)
       'calendar_list_events',
@@ -101,6 +101,9 @@ test('gurney-everyday-assistant: loads cleanly and registers all hooks', async (
       'find_free_slot',
       'smart_schedule_task',
       'weather_reschedule_check',
+      // Learned routines (2)
+      'learned_routine_list',
+      'learned_routine_delete',
     ];
     for (const name of expectedTools) {
       assert.ok(tools.get(name), `expected tool "${name}" to be registered`);
@@ -128,11 +131,13 @@ test('gurney-everyday-assistant: loads cleanly and registers all hooks', async (
       'weather',
     ]);
 
-    // ── 5 cron jobs ───────────────────────────────────────────────────────────
+    // ── 7 cron jobs ───────────────────────────────────────────────────────────
     const jobs = sched.list().filter((j) => j.extension === 'gurney-everyday-assistant');
     const jobNames = jobs.map((j) => j.name).sort();
     assert.deepEqual(jobNames, [
       'event-reminder-sweep',
+      'learned-routine-delivery-sweep',
+      'learned-routine-sweep',
       'morning-briefing',
       'night-briefing',
       'reminder-sweep',
@@ -148,7 +153,13 @@ test('gurney-everyday-assistant: loads cleanly and registers all hooks', async (
     assert.equal(flows.length, 1, 'should declare exactly one auth flow');
 
     // ── Migration tables ──────────────────────────────────────────────────────
-    for (const table of ['reminders', 'calendar_nudges_sent', 'smart_scheduled_links']) {
+    for (const table of [
+      'reminders',
+      'calendar_nudges_sent',
+      'smart_scheduled_links',
+      'routine_rules',
+      'routine_events',
+    ]) {
       const row = db
         .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`)
         .get(table) as { name: string } | undefined;

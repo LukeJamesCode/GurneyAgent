@@ -53,13 +53,12 @@ All documentation in one place. Start with [Getting started](./getting-started.m
 
 One page per bundled extension. The `extensions/<name>/` folders hold the runtime code; user-facing docs live here.
 
-| Doc                                                                    | What it covers                                                             |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| [Google OAuth setup](./google-oauth-setup.md)                          | Step-by-step guide for Google Calendar + Tasks authorization               |
-| [gurney-everyday-assistant](./extensions/gurney-everyday-assistant.md) | Calendar, tasks, reminders, weather, and briefings (Google OAuth required) |
-| [gurney-tts](./extensions/gurney-tts.md)                               | Voice replies via Piper                                                    |
-| [gurney-instant-responses](./extensions/gurney-instant-responses.md)   | Instant replies for trivial chatter                                        |
-| [gurney-routines](./extensions/gurney-routines.md)                     | Learned routine suggestions (opt-in)                                       |
+| Doc                                                                    | What it covers                                                                           |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| [Google OAuth setup](./google-oauth-setup.md)                          | Step-by-step guide for Google Calendar + Tasks authorization                             |
+| [gurney-everyday-assistant](./extensions/gurney-everyday-assistant.md) | Calendar, tasks, reminders, weather, briefings, learned routines (Google OAuth required) |
+| [gurney-tts](./extensions/gurney-tts.md)                               | Voice replies via Piper                                                                  |
+| [gurney-instant-responses](./extensions/gurney-instant-responses.md)   | Instant replies for trivial chatter                                                      |
 
 ### Planned (not in the 1.0 bundle)
 

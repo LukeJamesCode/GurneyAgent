@@ -5,6 +5,7 @@ import { register as registerReminders } from './reminders.js';
 import { register as registerWeather } from './weather.js';
 import { register as registerBriefing } from './briefing.js';
 import { register as registerPlanning } from './planning.js';
+import { register as registerLearnedRoutines } from './learned_routines.js';
 
 export function register(host: Host): void {
   registerCalendar(host);
@@ -13,4 +14,5 @@ export function register(host: Host): void {
   registerWeather(host);
   registerBriefing(host);
   registerPlanning(host);
+  registerLearnedRoutines(host);
 }

@@ -6,6 +6,18 @@ Format: `## [version] — YYYY-MM-DD`
 
 ---
 
+## [1.1.0] — 2026-05-20
+
+### Changed
+
+- Folded `gurney-routines` into `gurney-everyday-assistant`. The learner + per-minute delivery crons live in the everyday-assistant now and auto-create recurring nudges from observed patterns (nightly schedule prep, repeated reminders, task-review hours). Two new tools — `learned_routine_list` and `learned_routine_delete` — let the user inspect and remove them. New settings: `learned_routines_enabled`, `learned_routines_suggestion_cron`, `learned_routines_delivery_cron`, `max_routines_per_week` (default 3).
+
+### Removed
+
+- `gurney-routines` extension — merged into `gurney-everyday-assistant`. The opt-in suggestion ask-flow (`/routines`, `/routine accept|pause|delete|why`) and the `routine_candidates` / `routine_suggestions` tables are gone; rules are auto-accepted past a hardcoded 0.7 confidence floor, bounded by `max_routines_per_week`.
+
+---
+
 ## [1.0.0] — 2026-05-19
 
 First stable public release. Host API for extensions is now stable.

@@ -22,3 +22,7 @@ For `tasks_complete` / `tasks_delete`: pass `task_title` directly — no need to
 ## Calendar
 
 Use the user's own words for the event title. Do not append "meeting", "session", or "appointment" unless they said it. `calendar_list_events` is read-only — never claim an event is cancelled based on a list result. Each line begins with the event's date; use that date verbatim. Internal `event_ids` are private — never quote them to the user.
+
+## Learned routines
+
+Gurney learns recurring patterns (nightly schedule check, repeated reminders, task-review hour) from local extension data and turns them into recurring nudges automatically. Reach for `learned_routine_list` when the user asks what routines have been learned, and `learned_routine_delete` when they want to stop one. These are distinct from one-shot `reminder_set` and from `calendar_add_event` — use them only for the auto-created recurring routines.

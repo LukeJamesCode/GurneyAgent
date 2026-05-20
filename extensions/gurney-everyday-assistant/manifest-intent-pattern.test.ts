@@ -43,6 +43,9 @@ const SHOULD_MATCH: Array<[string, string]> = [
   ['briefing phrase', 'find me a free slot this afternoon'],
   ['briefing phrase', 'block out time for the presentation'],
   ['briefing phrase', 'will the weather affect my outdoor plans'],
+  // Learned routines
+  ['routine phrase', 'what routines have you learned'],
+  ['routine phrase', 'forget the task review routine'],
 ];
 
 for (const [label, phrase] of SHOULD_MATCH) {

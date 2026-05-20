@@ -75,6 +75,26 @@
       "type": "string",
       "default": "06:00,18:00",
       "description": "Times (HH:MM, 24-hour, comma-separated) to run the weather-reschedule sweep that flags outdoor events when the forecast worsens. Default: 06:00,18:00."
+    },
+    "learned_routines_enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Auto-learn recurring patterns (nightly schedule check, task reviews, repeated reminders) and fire them on a schedule. Set to false to disable both the learner and delivery."
+    },
+    "learned_routines_suggestion_cron": {
+      "type": "string",
+      "default": "30 8 * * *",
+      "description": "Cron for the slow learner that proposes new routine rules. Don't run more often than hourly — the learner is intentionally slow."
+    },
+    "learned_routines_delivery_cron": {
+      "type": "string",
+      "default": "* * * * *",
+      "description": "Cron for delivering active learned routines when due. Leave at every minute for precise delivery."
+    },
+    "max_routines_per_week": {
+      "type": "number",
+      "default": 3,
+      "description": "Maximum new learned routines auto-created per chat over any rolling seven-day window. Hard ceiling on noise."
     }
   },
   "required": ["google_client_id", "google_client_secret"]

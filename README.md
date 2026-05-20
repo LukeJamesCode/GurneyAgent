@@ -90,9 +90,8 @@ These extensions ship with Gurney. Each is optional — disable any of them with
 
 | Extension                    | What it does                                                          |
 | ---------------------------- | --------------------------------------------------------------------- |
-| `gurney-everyday-assistant`  | Calendar, tasks, reminders, weather, daily briefings (Google OAuth)   |
+| `gurney-everyday-assistant`  | Calendar, tasks, reminders, weather, briefings, learned routines (Google OAuth) |
 | `gurney-tts`                 | Voice replies via Piper + ffmpeg                                      |
-| `gurney-routines`            | Learned routine suggestions, opt-in, asks before recurring nudges     |
 | `gurney-instant-responses`   | Templated instant replies for trivial chatter and tool acks           |
 
 ## Design pillars
@@ -133,7 +132,7 @@ Gurney is designed around the constraint of running on cheap silicon. Rough guid
 | Tier      | Example hardware              | What runs                                 |
 | --------- | ----------------------------- | ----------------------------------------- |
 | Light     | Pi 4 (4 GB), Pi 5 (4 GB)      | Core + everyday-assistant                 |
-| Standard  | Pi 5 (8 GB), N100 mini PC     | Above + TTS + routines                    |
+| Standard  | Pi 5 (8 GB), N100 mini PC     | Above + TTS                               |
 | Heavy     | 5800H / Ryzen mini PC, 16 GB+ | Above + heavier optional extensions       |
 
 ## Documentation
