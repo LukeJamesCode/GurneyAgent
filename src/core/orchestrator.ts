@@ -149,15 +149,24 @@ function dailyContext(now: Date = new Date(), lastUserAt?: number): string {
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowIso = isoDay(tomorrow);
   const tomorrowWeekday = tomorrow.toLocaleDateString('en-US', { weekday: 'long' });
+  const yesterday = new Date(now.getTime());
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayIso = isoDay(yesterday);
+  const yesterdayWeekday = yesterday.toLocaleDateString('en-US', { weekday: 'long' });
   const sinceLine =
     lastUserAt !== undefined
       ? ` Time since the user's previous message: ${humanGap(now.getTime() - lastUserAt)}.`
       : ' This is the first message in the conversation.';
+  // The "authoritative clock" wording exists because qwen3.5:0.8b would
+  // otherwise paraphrase or invent times when asked "what time is it" — it
+  // saw the date line as flavour text, not a fact to report. Telling it
+  // explicitly to quote these values fixes that. Yesterday is included for
+  // the same off-by-one reason as tomorrow (see header comment).
   return (
     `Current local time: ${weekday} ${isoDate} ${hh}:${mm} (offset ${offset}). ` +
-    `Tomorrow: ${tomorrowWeekday} ${tomorrowIso}.` +
+    `Today: ${weekday} ${isoDate}. Tomorrow: ${tomorrowWeekday} ${tomorrowIso}. Yesterday: ${yesterdayWeekday} ${yesterdayIso}.` +
     sinceLine +
-    ` When constructing ISO 8601 timestamps for tool arguments, use these dates and offset to resolve relative phrases like "today", "tomorrow", or "may 5th".`
+    ` This line is the authoritative source for the current date and time. When the user asks what time it is, what day it is, what today/tomorrow/yesterday is, or any date-related question, answer using these exact values — do not estimate, round, or invent. Use the same dates and offset when constructing ISO 8601 timestamps for tool arguments (e.g. resolving "today", "tomorrow", or "may 5th").`
   );
 }
 
