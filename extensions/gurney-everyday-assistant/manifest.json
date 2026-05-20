@@ -29,5 +29,5 @@
     { "command": "morningbrief", "description": "Today's weather, events, and tasks" },
     { "command": "nightbrief", "description": "Evening summary: what's done, what's tomorrow" }
   ],
-  "intent_pattern": "\\b(event|events|meeting|meetings|appointment|appointments|calendar|reschedule|free time|free slot|available|when.*free|move.*event|cancel.*event|delete.*event|schedule\\b.*\\b(at|on|tomorrow|today|next|this|for)|what'?s (on|scheduled)|am i free|do i have|task|tasks|todo|todos|to-do|to do|add.*to.*list|complete|completed|finish(ed)?|check off|mark.*done|need to do|get done|to get done|remind me|set a reminder|reminder|reminders|notify me|ping me|alarm|timer|countdown|weather|temperature|forecast|rain|raining|snow|snowing|sunny|cloud(y)?|wind|windy|hot|cold|degrees|celsius|fahrenheit|humid|humidity|plan my day|day plan|when am i free|find.*free|block.*out|schedule.*task|brief|briefing|what.*today|what.*tomorrow|plan.*day|outdoor|weather alert)\\b"
+  "intent_pattern": "\\b(event(s)?|meeting(s)?|appointment(s)?|calendar|reschedule|free|schedule(d)?|task(s)?|to-?do(s)?|finish(ed)?|mark.*done|remind(er)?s?|ping me|weather|forecast|temperature|rain(ing)?|snow(ing)?|sunny|cloud(y)?|brief(ing)?|plan.*day|block.*out|outdoor)\\b"
 }
