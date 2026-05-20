@@ -71,10 +71,10 @@
       "type": "number",
       "description": "Telegram chat that receives scheduled briefings. Auto-saved when you run /morningbrief or /nightbrief."
     },
-    "weather_reschedule_cron": {
+    "weather_reschedule_times": {
       "type": "string",
-      "default": "0 6,18 * * *",
-      "description": "Cron for weather-reschedule sweep (flags outdoor events when forecast worsens). Default: 6am and 6pm."
+      "default": "06:00,18:00",
+      "description": "Times (HH:MM, 24-hour, comma-separated) to run the weather-reschedule sweep that flags outdoor events when the forecast worsens. Default: 06:00,18:00."
     }
   },
   "required": ["google_client_id", "google_client_secret"]

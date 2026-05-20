@@ -58,7 +58,7 @@ For scheduled private nudges, set `nudge_chat_id` and `briefing_chat_id`, or tri
 | `include_calendar`        | `true`          | no     | Include calendar events in briefings                                 |
 | `include_tasks`           | `true`          | no     | Include tasks in briefings                                           |
 | `briefing_chat_id`        | -               | no     | Single Telegram chat for scheduled briefings                         |
-| `weather_reschedule_cron` | `0 6,18 * * *`  | no     | Advanced: cron for checking outdoor events against worsening weather |
+| `weather_reschedule_times`| `06:00,18:00`   | no     | Times (HH:MM, 24-hour, comma-separated) to check outdoor events against worsening weather |
 
 `morning_cron` and `night_cron` are accepted only as legacy migrated settings. New installs should use `morning_time` and `night_time`.
 

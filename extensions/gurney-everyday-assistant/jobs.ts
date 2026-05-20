@@ -178,9 +178,12 @@ export function register(host: Host): void {
 
   // ── 5. Weather reschedule sweep ─────────────────────────────────────────────
 
-  const weatherCron = host.settings.get<string>('weather_reschedule_cron', '0 6,18 * * *');
-  if (weatherCron?.trim()) {
-    host.scheduler.cron('weather-reschedule-sweep', weatherCron, async ({ log }) => {
+  const weatherCrons = weatherRescheduleCrons(host);
+  weatherCrons.forEach((cron, idx) => {
+    const name = weatherCrons.length === 1
+      ? 'weather-reschedule-sweep'
+      : `weather-reschedule-sweep-${idx + 1}`;
+    host.scheduler.cron(name, cron, async ({ log }) => {
       try {
         return await weatherRescheduleCheckNudges(host);
       } catch (e) {
@@ -190,7 +193,20 @@ export function register(host: Host): void {
         return [];
       }
     });
+  });
+}
+
+function weatherRescheduleCrons(host: Host): string[] {
+  const legacy = host.settings.get<string>('weather_reschedule_cron');
+  if (legacy?.trim()) return [legacy.trim()];
+  const times = host.settings.get<string>('weather_reschedule_times', '06:00,18:00');
+  if (!times?.trim()) return [];
+  const crons: string[] = [];
+  for (const piece of times.split(',')) {
+    const cron = timeToCron(piece, '*');
+    if (cron) crons.push(cron);
   }
+  return crons;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
