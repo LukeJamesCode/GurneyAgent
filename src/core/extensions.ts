@@ -1027,6 +1027,72 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
         }
       };
       watchDir(folder);
+
+      // Polling safety net: fs.watch is unreliable on some platforms /
+      // filesystems (notably GitHub Actions' Linux runners, where an in-place
+      // rewrite of an existing file occasionally doesn't deliver IN_MODIFY).
+      // A 250ms mtime scan ensures we still notice a change within ~half a
+      // second even when the kernel watcher misses the event. scheduleReload
+      // already debounces, so double-triggers from fs.watch + polling collapse
+      // into a single reload.
+      const seenMtimes = new Map<string, number>();
+      const snapshotMtimes = (dir: string): void => {
+        let entries: string[] = [];
+        try {
+          entries = readdirSync(dir);
+        } catch {
+          return;
+        }
+        for (const entry of entries) {
+          const child = join(dir, entry);
+          try {
+            const st = lstatSync(child);
+            if (st.isSymbolicLink()) continue;
+            if (st.isDirectory()) {
+              snapshotMtimes(child);
+            } else if (st.isFile()) {
+              seenMtimes.set(child, st.mtimeMs);
+            }
+          } catch {
+            /* ignore vanished paths */
+          }
+        }
+      };
+      snapshotMtimes(folder);
+      const checkMtimes = (dir: string): boolean => {
+        let entries: string[] = [];
+        try {
+          entries = readdirSync(dir);
+        } catch {
+          return false;
+        }
+        for (const entry of entries) {
+          const child = join(dir, entry);
+          try {
+            const st = lstatSync(child);
+            if (st.isSymbolicLink()) continue;
+            if (st.isDirectory()) {
+              if (checkMtimes(child)) return true;
+            } else if (st.isFile()) {
+              const prev = seenMtimes.get(child);
+              if (prev === undefined || prev !== st.mtimeMs) {
+                seenMtimes.set(child, st.mtimeMs);
+                return true;
+              }
+            }
+          } catch {
+            /* ignore vanished paths */
+          }
+        }
+        return false;
+      };
+      const poll = setInterval(() => {
+        if (shuttingDown) return;
+        if (checkMtimes(folder)) scheduleReload(name, folder);
+      }, 250);
+      poll.unref?.();
+      closes.push(() => clearInterval(poll));
+
       extensionWatchers.set(name, () => {
         for (const close of closes) close();
       });
