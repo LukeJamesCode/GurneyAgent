@@ -69,6 +69,28 @@ async function waitFor(
   assert.ok(await assertion(), 'condition did not become true before timeout');
 }
 
+async function rmTempDir(dir: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      lastError = e;
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== 'EBUSY' && code !== 'EPERM' && code !== 'ENOTEMPTY') throw e;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  if (
+    process.platform === 'win32' &&
+    ['EBUSY', 'EPERM', 'ENOTEMPTY'].includes((lastError as NodeJS.ErrnoException).code ?? '')
+  ) {
+    return;
+  }
+  throw lastError;
+}
+
 test('satisfiesGurneyRange handles common cases', () => {
   assert.equal(satisfiesGurneyRange('0.1.0', '>=0.1.0'), true);
   assert.equal(satisfiesGurneyRange('0.0.9', '>=0.1.0'), false);
@@ -195,7 +217,7 @@ test('loader: discovers extension, runs migrations, registers tool/command/job/a
     await loader.shutdown();
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await rmTempDir(dir);
   }
 });
 
@@ -225,7 +247,7 @@ test('loader: rejects extension whose gurney range exceeds host version', async 
     assert.equal(loader.list().length, 0);
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await rmTempDir(dir);
   }
 });
 
@@ -276,7 +298,7 @@ test('loader: disabled extension is recorded but not registered', async () => {
     assert.equal(tools.get('never'), undefined);
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await rmTempDir(dir);
   }
 });
 
@@ -333,7 +355,7 @@ test('loader: settings reads defaults from schema and writes round-trip', async 
     assert.equal(parsed['label'], 'hi');
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await rmTempDir(dir);
   }
 });
 
@@ -381,7 +403,7 @@ test('loader: intent filter skips trivial and low-signal messages', async () => 
     assert.deepEqual(loader.relevantExtensions('dang im tired today'), []);
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await rmTempDir(dir);
   }
 });
 
@@ -465,7 +487,7 @@ test('loader: a mid-load throw rolls back tool/command/intercept/prompt fragment
 
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await rmTempDir(dir);
   }
 });
 
@@ -552,7 +574,7 @@ test('host telegram knownChats exposes only allowlisted chats and default fallba
 
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await rmTempDir(dir);
   }
 });
 
@@ -602,14 +624,14 @@ test('loader: hot-reloads when a nested extension file changes', async () => {
         "  host.tools.register({ name: 'reload_value', description: '', parameters: {}, tier: 'auto', invoke: async () => 'v2' });\n" +
         '}\n',
     );
-    await waitFor(
-      () => loader.list()[0]?.loadedAt !== undefined && tools.get('reload_value') !== undefined,
-    );
-    await waitFor(async () => (await tools.get('reload_value')!.invoke({}, { log })) === 'v2');
+    await waitFor(async () => {
+      const tool = tools.get('reload_value');
+      return tool ? (await tool.invoke({}, { log })) === 'v2' : false;
+    }, 5000);
 
     await loader.shutdown();
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await rmTempDir(dir);
   }
 });

@@ -6,12 +6,12 @@ Gurney is the public successor to ATLAS v2. If you've been running ATLAS on your
 
 ## What carries over
 
-| ATLAS data                  | Gurney equivalent                          | Migration status                                                   |
-| --------------------------- | ------------------------------------------ | ------------------------------------------------------------------ |
-| Conversations and messages  | `conversations` + `messages` tables        | Via migration tool                                                 |
-| Long-term memory (MemGraph) | `gurney-memgraph` extension (planned v1.4) | Deferred — memory migration returns with the extension in v1.4     |
-| Skills config               | Extensions config                          | Manual — see below                                                 |
-| Google OAuth tokens         | None                                       | Re-run `gurney auth` — tokens are scoped differently               |
+| ATLAS data                  | Gurney equivalent                          | Migration status                                               |
+| --------------------------- | ------------------------------------------ | -------------------------------------------------------------- |
+| Conversations and messages  | `conversations` + `messages` tables        | Via migration tool                                             |
+| Long-term memory (MemGraph) | `gurney-memgraph` extension (planned v1.4) | Deferred — memory migration returns with the extension in v1.4 |
+| Skills config               | Extensions config                          | Manual — see below                                             |
+| Google OAuth tokens         | None                                       | Re-run `gurney auth` — tokens are scoped differently           |
 
 ---
 
@@ -46,11 +46,11 @@ node tools/migrate-from-atlas/index.js \
 
 **Options:**
 
-| Flag              | Default               | Notes                                                          |
-| ----------------- | --------------------- | -------------------------------------------------------------- |
-| `--source`  | (required)            | Path to the ATLAS SQLite database                    |
-| `--target`  | `~/.gurney/gurney.db` | Path to the Gurney SQLite database                   |
-| `--chat-id` | all                   | Only migrate conversations for this Telegram chat ID |
+| Flag        | Default               | Notes                                                 |
+| ----------- | --------------------- | ----------------------------------------------------- |
+| `--source`  | (required)            | Path to the ATLAS SQLite database                     |
+| `--target`  | `~/.gurney/gurney.db` | Path to the Gurney SQLite database                    |
+| `--chat-id` | all                   | Only migrate conversations for this Telegram chat ID  |
 | `--dry-run` | false                 | Print what would be migrated without writing anything |
 
 **Dry run first:**
