@@ -65,10 +65,10 @@ One page per bundled extension. The `extensions/<name>/` folders hold the runtim
 
 These extensions shipped during 0.x and are slated to return in v1.4 — see the [Roadmap section in the README](../README.md#roadmap). Their docs are kept here for reference, but they aren't installable from the bundled registry today.
 
-| Doc                                                  | What it covers                                       | Target |
-| ---------------------------------------------------- | ---------------------------------------------------- | ------ |
-| [gurney-websearch](./extensions/gurney-websearch.md) | Web search via DuckDuckGo / SearXNG                  | v1.4   |
-| [gurney-memgraph](./extensions/gurney-memgraph.md)   | Long-term memory via FalkorDB (heavy)                | v1.4   |
+| Doc                                                  | What it covers                        | Target |
+| ---------------------------------------------------- | ------------------------------------- | ------ |
+| [gurney-websearch](./extensions/gurney-websearch.md) | Web search via DuckDuckGo / SearXNG   | v1.4   |
+| [gurney-memgraph](./extensions/gurney-memgraph.md)   | Long-term memory via FalkorDB (heavy) | v1.4   |
 
 ---
 

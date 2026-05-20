@@ -4,7 +4,7 @@ import prettier from 'eslint-config-prettier';
 
 export default [
   {
-    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'extensions/**/dist/**'],
+    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'extensions/**/dist/**', '.claude/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

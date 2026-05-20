@@ -978,6 +978,14 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
     reloadTimers.set(name, timer);
   }
 
+  function trackReloadTask(task: Promise<void>): void {
+    activeReloads.add(task);
+    task.then(
+      () => activeReloads.delete(task),
+      () => activeReloads.delete(task),
+    );
+  }
+
   function watchExtensionFolder(name: string, folder: string): void {
     if (shuttingDown) return;
     if (extensionWatchers.has(name)) return;
@@ -986,6 +994,14 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
       const watchDir = (dir: string): void => {
         const w = watch(dir, { persistent: false }, () => {
           scheduleReload(name, folder);
+        });
+        w.on('error', (e) => {
+          if (shuttingDown) return;
+          log.warn('extension folder watcher failed', {
+            ext: name,
+            folder: dir,
+            error: e instanceof Error ? e.message : String(e),
+          });
         });
         closes.push(() => w.close());
         let entries: string[] = [];
@@ -1025,6 +1041,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
     for (const root of opts.roots) {
       try {
         const w = watch(root, { persistent: false }, (_event, file) => {
+          if (shuttingDown) return;
           if (!file) return;
           // We only react to top-level folder changes — nested file edits get
           // detected by the per-folder watcher below if we add one. For now
@@ -1033,7 +1050,8 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
           const top = seg[0];
           if (!top) return;
           const folder = join(root, top);
-          (async () => {
+          const reloadTask = (async () => {
+            if (shuttingDown) return;
             if (!existsSync(folder) || !statSync(folder).isDirectory()) {
               const found = [...dirs.entries()].find(([, f]) => f === folder);
               if (found) {
@@ -1053,7 +1071,16 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
                 error: e instanceof Error ? e.message : String(e),
               });
             }
-          })().catch(() => {});
+          })();
+          trackReloadTask(reloadTask);
+          reloadTask.catch(() => {});
+        });
+        w.on('error', (e) => {
+          if (shuttingDown) return;
+          log.warn('extensions root watcher failed', {
+            root,
+            error: e instanceof Error ? e.message : String(e),
+          });
         });
         watchers.push(() => w.close());
       } catch (e) {
