@@ -440,6 +440,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
   const extensionWatchers = new Map<string, () => void>();
   const reloadTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const activeReloads = new Set<Promise<void>>();
+  let importVersion = 0;
   let shuttingDown = false;
 
   function ensureStateRow(manifest: Manifest): boolean {
@@ -549,8 +550,9 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
     }
     if (!existsSync(abs)) throw new Error(`entrypoint missing: ${abs}`);
     const mtime = statSync(abs).mtimeMs;
-    // Cache-bust via query string so hot-reload picks up code changes.
-    const url = `${pathToFileURL(abs).href}?v=${Math.floor(mtime)}`;
+    // Cache-bust via query string so hot-reload picks up code changes. The
+    // counter handles filesystems/runners where rapid rewrites share an mtime.
+    const url = `${pathToFileURL(abs).href}?v=${Math.floor(mtime)}-${++importVersion}`;
     return (await import(url)) as EntrypointModule;
   }
 
