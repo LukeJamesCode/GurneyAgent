@@ -657,6 +657,12 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
               if (chunk.meta.completionTokens !== undefined) {
                 display += `, ${chunk.meta.completionTokens} completion`;
               }
+              const toolCalls = chunk.meta.afterTurn?.toolCalls ?? [];
+              if (toolCalls.length > 0) {
+                display += `\ntools: ${toolCalls.map((c) => `${c.name}${c.ok ? '' : '✗'}`).join(', ')}`;
+              } else {
+                display += `\ntools: none`;
+              }
             }
             try {
               await ctx.reply(display);
