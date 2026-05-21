@@ -582,17 +582,21 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         lastChunk = await drain(followup);
       }
 
-      // Safety net: if the model burned all its rounds on tool calls and still
-      // hasn't produced any text, ask once more with tools disabled so it has
-      // to answer in plain language. Without this the user sees "(no reply)".
-      // The tool-prompt fragment is dropped along with the schemas so the
+      // Safety net: if we got no visible text after the tool loop, retry once
+      // with tools off so the model has to answer in plain language. Two cases
+      // land here and both otherwise surface as silent "(no reply)":
+      //   (a) the model burned all its rounds tool-calling and never produced
+      //       text — the original trigger for this branch
+      //   (b) the model returned an empty done chunk with no text and no tool
+      //       calls — small models occasionally do this when the prompt fragment
+      //       describes tools that aren't in the manifest this turn
+      // Dropping the tool-prompt fragment along with the schemas means the
       // model isn't told about tools that aren't on the wire this round.
-      if (
-        !assistantText &&
-        lastChunk?.toolCalls &&
-        lastChunk.toolCalls.length > 0 &&
-        round >= maxToolRounds
-      ) {
+      if (!assistantText && !abort.signal.aborted) {
+        cl.debug('empty assistant text after tool loop — retrying with tools off', {
+          round,
+          hadToolCalls: !!lastChunk?.toolCalls?.length,
+        });
         const noToolsFollowup = opts.llm.chat({
           profile: defaultProfile,
           messages: buildPromptForTurn(true).messages,
