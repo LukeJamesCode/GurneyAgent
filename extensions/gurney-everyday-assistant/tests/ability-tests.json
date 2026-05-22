@@ -38,7 +38,8 @@
       "tier": "full",
       "kind": "freeform",
       "message": "Schedule lunch with Mum on Friday — I'll figure out the time later",
-      "expects": { "tool": "calendar_add_event" }
+      "note": "No clock time given. Either an all-day calendar_add_event for Friday OR a clarifying question (no tool) is acceptable.",
+      "expects": {}
     },
     {
       "id": "cal.create.slash.full",
@@ -372,7 +373,8 @@
       "ability": "routines:delete",
       "tier": "full",
       "kind": "freeform",
-      "message": "Forget the vitamins routine"
+      "message": "Forget the vitamins routine",
+      "note": "learned_routine_delete is a confirm-tier tool and cannot complete in non-interactive abilitytest. Informational only."
     }
   ]
 }

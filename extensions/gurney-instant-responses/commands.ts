@@ -50,7 +50,7 @@ const TRIVIAL_REPLIES: Array<[RegExp, ReplyPool]> = [
     ['Not much. You?', "All good — what's up?", 'Hey. What do you need?'],
   ],
   [
-    /^(hey|hi|hello)\s+(gurney\s*)?(how'?s?\s+it\s+going|how\s+are\s+you|how\s+you\s+doing)[?!.]*$/i,
+    /^(hey|hi|hello)[\s,!.-]+(gurney[\s,!.-]+)?(how'?s?\s+it\s+going|how\s+are\s+you|how\s+you\s+doing)[?!.]*$/i,
     [
       'Doing alright. You?',
       'Not bad. How about you?',
@@ -59,7 +59,7 @@ const TRIVIAL_REPLIES: Array<[RegExp, ReplyPool]> = [
     ],
   ],
   [
-    /^(hey|hi|hello)\s+(gurney\s*)?(what'?s\s+up|you\s+good|all\s+good)[?!.]*$/i,
+    /^(hey|hi|hello)[\s,!.-]+(gurney[\s,!.-]+)?(what'?s\s+up|you\s+good|all\s+good)[?!.]*$/i,
     ['All good. What do you need?', 'Yeah, all good. You?', "Running fine. What's up?"],
   ],
   [/^(gm|good morning)[\s!?.]*$/i, ['Morning.', 'Hey, morning.']],
@@ -113,6 +113,33 @@ function trivialReplyFor(message: string, chatId: number, hour: number): string 
   return null;
 }
 
+// Deterministic replies that need the current Date. Kept separate from the
+// regex pool because the answer is a computed string, not a fixed variant. The
+// 0.8b chat model gets DOW questions wrong even when the system anchor tells
+// it the answer, so the safest fix is to bypass the LLM entirely.
+function deterministicReplyFor(message: string, now: Date = new Date()): string | null {
+  const m = message
+    .trim()
+    .toLowerCase()
+    .replace(/[?!.\s]+$/, '');
+  if (!m) return null;
+  // "what day (of the week) is it" / "what day is today"
+  if (/^what\s+day(\s+of\s+the\s+week)?\s+is\s+(it|today)$/.test(m)) {
+    return now.toLocaleDateString('en-US', { weekday: 'long' });
+  }
+  // "what day is tomorrow"
+  if (/^what\s+day\s+is\s+tomorrow$/.test(m)) {
+    const t = new Date(now.getTime());
+    t.setDate(t.getDate() + 1);
+    return t.toLocaleDateString('en-US', { weekday: 'long' });
+  }
+  // "what model are you running" / "which model are you on"
+  if (/^(what|which)\s+model\s+(are\s+you|you'?re)\s+(running|using|on)$/.test(m)) {
+    return 'I run on Gurney with the qwen3.5 family — use /model to see the active profile.';
+  }
+  return null;
+}
+
 function offloadAckFor(message: string, chatId: number): string | null {
   const m = message.trim();
   if (!m) return null;
@@ -130,7 +157,16 @@ export function register(host: Host): void {
       return;
     }
 
-    const hour = new Date().getHours();
+    const now = new Date();
+    const hour = now.getHours();
+
+    // Mode 0 — deterministic computed reply (DOW, model name). Bypasses LLM.
+    const deterministic = deterministicReplyFor(ctx.text, now);
+    if (deterministic !== null) {
+      host.log.debug('instant deterministic reply', { chatId: ctx.chatId, reply: deterministic });
+      await ctx.reply(deterministic);
+      return;
+    }
 
     // Mode 1 — trivial chatter. Reply and stop; LLM never runs.
     const trivial = trivialReplyFor(ctx.text, ctx.chatId, hour);

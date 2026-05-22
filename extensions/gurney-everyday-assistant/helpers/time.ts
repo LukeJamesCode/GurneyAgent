@@ -50,6 +50,30 @@ export function parseReminderTime(input: string, now: Date = new Date()): Date |
     return d;
   }
 
+  // Bare "H:MM" (24h clock, e.g. "20:00"). Today; rolls over to tomorrow if past.
+  const hhmmMatch = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (hhmmMatch) {
+    const h = parseInt(hhmmMatch[1]!);
+    const minute = parseInt(hhmmMatch[2]!);
+    if (h < 0 || h > 23 || minute > 59) return null;
+    const d = new Date(now);
+    d.setHours(h, minute, 0, 0);
+    if (d <= now) d.setDate(d.getDate() + 1);
+    return d;
+  }
+
+  // Bare "Hpm" / "H:MMam" (no leading "at"). Today; rolls over if past.
+  const bareAmPm = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/);
+  if (bareAmPm) {
+    const hour = resolveHour(parseInt(bareAmPm[1]!), bareAmPm[3] as 'am' | 'pm');
+    const minute = parseInt(bareAmPm[2] ?? '0');
+    if (hour === null || minute > 59) return null;
+    const d = new Date(now);
+    d.setHours(hour, minute, 0, 0);
+    if (d <= now) d.setDate(d.getDate() + 1);
+    return d;
+  }
+
   return null;
 }
 
@@ -80,6 +104,10 @@ export function splitReminderArgs(input: string): { timeStr: string; message: st
     /^(tomorrow at \d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(.+)/i,
     /^((?:today )?at \d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(.+)/i,
     /^(\d{4}-\d{2}-\d{2}(?:T[\d:]+)?(?:Z|[+-]\d{2}:\d{2})?)\s+(.+)/i,
+    // Bare HH:MM (24h)
+    /^(\d{1,2}:\d{2})\s+(.+)/i,
+    // Bare Hpm / H:MMam
+    /^(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s+(.+)/i,
   ];
 
   for (const pat of patterns) {

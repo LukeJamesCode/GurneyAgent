@@ -8,7 +8,9 @@ const NOT_CONFIGURED =
 const CALENDAR_LIST_INTENT =
   '\\b(calendar|event|events|meeting|meetings|appointment|appointments|free|available|what.*scheduled|what.*on|do i have|am i free)\\b';
 const CALENDAR_ADD_INTENT =
-  '\\b(schedule|add|create|book|put).*(event|meeting|appointment|calendar)|\\b(event|meeting|appointment)\\b.*\\b(at|on|tomorrow|today|next|this|for)\\b';
+  '\\b(schedule|add|create|book|put).*(event|meeting|appointment|calendar)' +
+  '|\\b(event|meeting|appointment)\\b.*\\b(at|on|tomorrow|today|next|this|for)\\b' +
+  '|\\b(add|schedule|book|put|create)\\b.*\\b(\\d{1,2}(:\\d{2})?\\s*(am|pm)|\\d{1,2}\\s*(am|pm)|\\d{1,2}:\\d{2})\\b';
 const CALENDAR_DELETE_INTENT = '\\b(cancel|delete|remove).*(event|meeting|appointment|calendar)\\b';
 
 export function register(host: Host): void {
@@ -200,8 +202,10 @@ export function register(host: Host): void {
     intentPattern: CALENDAR_DELETE_INTENT,
     description:
       'Delete a Google Calendar event by its id. ' +
-      'Use after the user confirms cancellation. ' +
-      'Get the id from a prior `calendar_list_events` call — never invent one. ' +
+      'If you do not already have the id from a prior `calendar_list_events` result in this turn, ' +
+      'FIRST call `calendar_list_events` over the relevant date range, find the matching event in its `event_ids` block, ' +
+      'then call this tool with that id. ' +
+      'Never tell the user the event does not exist without listing first. Never invent an id. ' +
       'Tier is `confirm`, so the user is re-prompted before the delete fires.',
     tier: 'confirm',
     selfReplying: true,

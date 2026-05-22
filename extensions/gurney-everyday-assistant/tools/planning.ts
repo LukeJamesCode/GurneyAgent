@@ -9,13 +9,19 @@ import { getClient as getTasksClient, findTaskByTitle, formatTask } from '../hel
 import { geocode, fetchWeatherReport } from '../api/weather.js';
 import { dateRangeForOffsetDays, dateRangeForDate } from '../helpers/range.js';
 
-const PLAN_INTENT = '\\b(plan my day|day plan|what.*day look like|day overview)\\b';
+const PLAN_INTENT =
+  '\\b(plan my day|day plan|what.*day look like|day overview|block out (tomorrow|today|my day|the day))\\b';
 const FREE_SLOT_INTENT =
   '\\b(free time|free slot|available|when am i free|find.*free|open slot)\\b';
 const SCHEDULE_TASK_INTENT =
-  '\\b(block out|schedule.*task|put.*task.*calendar|place.*task.*calendar)\\b';
+  '\\b(block out (time|an hour|a few hours|\\d+\\s*(min|minutes?|hours?))' +
+  '|schedule.*task|put.*task.*calendar|place.*task.*calendar' +
+  '|(schedule|fit in|find time for)\\b.*\\b(report|project|work|study|chore|errand|task)' +
+  '|(schedule|fit in|put|place)\\b.*\\b(\\d+\\s*(min|minutes?|hours?))\\b.*\\b(this week|next week|tomorrow|today|somewhere|mornings?|afternoons?|evenings?))\\b';
 const WEATHER_RESCHEDULE_INTENT =
-  '\\b(weather.*(affect|plans|reschedule)|reschedule.*weather|outdoor.*weather)\\b';
+  '\\b(weather.*(affect|plans|reschedule)|reschedule.*weather|outdoor.*weather' +
+  '|outdoor.*(rain|snow|storm)|(rain|snow|storm).*outdoor|rained on|get wet' +
+  '|will.*rain.*event|will.*weather.*event|going to get rained)\\b';
 
 // Outdoor-activity heuristic: match common outdoor activities in event title/description.
 const OUTDOOR_REGEX =
@@ -174,7 +180,7 @@ export function register(host: Host): void {
     intentPattern: SCHEDULE_TASK_INTENT,
     description:
       'Schedule a Google Task into a free calendar slot. ' +
-      "Use ONLY when the user explicitly asks to 'block out time', 'schedule the task', 'put it on my calendar'. " +
+      "Use when the user explicitly asks to 'block out time for X', 'schedule the report for 2 hours this week', 'find time for project work tomorrow morning', 'put it on my calendar'. " +
       'Do NOT call this automatically — always wait for an explicit user request to place a task on the calendar.',
     tier: 'auto',
     selfReplying: true,
@@ -285,7 +291,8 @@ export function register(host: Host): void {
     intentPattern: WEATHER_RESCHEDULE_INTENT,
     description:
       'Check upcoming outdoor calendar events against the weather forecast and flag ones that may need rescheduling due to bad weather. ' +
-      "Use when the user asks 'will the weather affect my plans', 'should I reschedule my outdoor event'. " +
+      "Use when the user asks 'will the weather affect my plans', 'should I reschedule my outdoor event', 'anything outdoor that's going to get rained on'. " +
+      'Prefer this over chaining `briefing_tomorrow` + `weather_get` — it cross-references calendar events with the forecast in one call. ' +
       'Also runs automatically via cron (6am and 6pm) — those nudges appear in Telegram without prompting.',
     tier: 'auto',
     parameters: { type: 'object', properties: {} },

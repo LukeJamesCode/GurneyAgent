@@ -91,6 +91,35 @@ export type TitleMatch =
   | { kind: 'none' }
   | { kind: 'many'; matches: Task[] };
 
+// Common filler words the 0.8b model often prepends to a task title ("the project
+// report", "my groceries list"). Stripping them before matching lets a query like
+// "the project report" still hit a stored task titled "Finish project report".
+const TASK_QUERY_STOPWORDS = new Set([
+  'the',
+  'a',
+  'an',
+  'my',
+  'our',
+  'that',
+  'this',
+  'task',
+  'todo',
+  'to-do',
+  'item',
+]);
+
+function tokenizeForTask(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 0);
+}
+
+function contentTokens(s: string): string[] {
+  return tokenizeForTask(s).filter((w) => !TASK_QUERY_STOPWORDS.has(w));
+}
+
 export async function findTaskByTitle(
   client: TasksClient,
   query: string,
@@ -100,12 +129,33 @@ export async function findTaskByTitle(
   const tasks = await client.listTasks(includeCompleted, tasklistId);
   const needle = query.trim().toLowerCase();
   if (!needle) return { kind: 'none' };
+
+  // 1. Exact match on the full title.
   const exact = tasks.filter((t) => t.title.toLowerCase() === needle);
-  const candidates =
-    exact.length > 0 ? exact : tasks.filter((t) => t.title.toLowerCase().includes(needle));
-  if (candidates.length === 0) return { kind: 'none' };
-  if (candidates.length === 1) return { kind: 'one', task: candidates[0]! };
-  return { kind: 'many', matches: candidates };
+  if (exact.length > 0) {
+    return exact.length === 1 ? { kind: 'one', task: exact[0]! } : { kind: 'many', matches: exact };
+  }
+
+  // 2. Substring match (covers most LLM phrasings verbatim).
+  const substring = tasks.filter((t) => t.title.toLowerCase().includes(needle));
+  if (substring.length > 0) {
+    return substring.length === 1
+      ? { kind: 'one', task: substring[0]! }
+      : { kind: 'many', matches: substring };
+  }
+
+  // 3. Content-token subset: drop filler words from the query, require every
+  // remaining token to appear in the task title. Catches "the project report"
+  // against "Finish project report" and "groceries" against "Buy groceries".
+  const needleTokens = contentTokens(needle);
+  if (needleTokens.length === 0) return { kind: 'none' };
+  const tokenMatches = tasks.filter((t) => {
+    const titleTokens = new Set(tokenizeForTask(t.title));
+    return needleTokens.every((w) => titleTokens.has(w));
+  });
+  if (tokenMatches.length === 0) return { kind: 'none' };
+  if (tokenMatches.length === 1) return { kind: 'one', task: tokenMatches[0]! };
+  return { kind: 'many', matches: tokenMatches };
 }
 
 // Translate Google Tasks API failures into something a small model can act on.

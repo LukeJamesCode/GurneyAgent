@@ -14,7 +14,7 @@ const NOT_CONFIGURED =
 const TASK_LIST_INTENT =
   '\\b(list|show|review|check|what|whats|which)\\b.*\\b(task|tasks|todo|todos|to-do|to do|get done|need to do)\\b|^\\s*(tasks|todos|to-dos)\\s*\\??\\s*$';
 const TASK_ADD_INTENT =
-  '\\b(add|create|new|set|make)\\b(?!.*\\b(event|meeting|appointment|calendar|reminder|alarm|timer)\\b).*\\b(task|tasks|todo|todos|to-do|to do|list)\\b|\\b(need to|remember to)\\b(?!.*\\b(at|in \\d+\\s*(minutes?|hours?|days?))\\b)|\\b(task|todo|to-do)\\s*:';
+  '\\b(add|create|new|set|make|put)\\b(?!.*\\b(event|meeting|appointment|calendar|reminder|alarm|timer)\\b).*\\b(task|tasks|todo|todos|to-do|to do|list)\\b|\\b(need to|remember to)\\b(?!.*\\b(at|in \\d+\\s*(minutes?|hours?|days?))\\b)|\\b(task|todo|to-do)\\s*:';
 const TASK_DONE_INTENT = '\\b(done|complete|completed|finish|finished|check off|mark.*done|did)\\b';
 const TASK_DELETE_INTENT = '\\b(delete|remove|abandon|drop|cancel).*(task|todo|to-do|to do)\\b';
 const TASK_LISTS_INTENT = '\\b(task lists?|google task lists?)\\b';
@@ -94,7 +94,8 @@ export function register(host: Host): void {
     intentPattern: TASK_ADD_INTENT,
     description:
       "Record a NEW todo on the user's Google Tasks list. " +
-      "Call this whenever the user says 'set a todo/task X', 'add X to my todos', 'I need to X', 'remember to X' (no specific firing time). " +
+      "This is the DEFAULT for 'add X to my list', 'add X to my todos', 'put X on my list', 'set a todo/task X', 'I need to X', 'remember to X' (no specific firing time). " +
+      'Always call this — never reply that no tool is available for adding a task. ' +
       "Your job is to RECORD X — copy the user's words into `title`. Do NOT perform X, do not rephrase X as a plan, do not reply with a description of the task. Just call the tool.",
     tier: 'auto',
     selfReplying: true,
