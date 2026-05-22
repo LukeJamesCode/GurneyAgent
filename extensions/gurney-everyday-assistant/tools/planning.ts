@@ -179,9 +179,15 @@ export function register(host: Host): void {
     name: 'smart_schedule_task',
     intentPattern: SCHEDULE_TASK_INTENT,
     description:
-      'Schedule a Google Task into a free calendar slot. ' +
-      "Use when the user explicitly asks to 'block out time for X', 'schedule the report for 2 hours this week', 'find time for project work tomorrow morning', 'put it on my calendar'. " +
-      'Do NOT call this automatically — always wait for an explicit user request to place a task on the calendar.',
+      "Place an EXISTING Google Task on the calendar in a free slot. " +
+      "Use when the user explicitly asks to 'block out time for X', 'schedule the project report for 2 hours this week, mornings preferred', 'find time for project work tomorrow morning', 'put my task on the calendar'. " +
+      "The X must be a task that exists (or that the user is asking you to fit in) — this tool fails if no matching task is found. " +
+      "Do NOT use this for: " +
+      "(a) creating a new calendar event from scratch (use `calendar_add_event`); " +
+      "(b) 'plan my day' / 'block out my day' / 'block out tomorrow' (use `plan_day`); " +
+      "(c) followup check-ins (use `schedule_followup`); " +
+      "(d) recording a todo with no calendar slot (use `tasks_add`). " +
+      "Do NOT call this automatically — always wait for an explicit user request to place a task on the calendar.",
     tier: 'auto',
     selfReplying: true,
     parameters: {
@@ -232,7 +238,11 @@ export function register(host: Host): void {
         taskTitle = a.task_title?.trim() || taskId;
       } else if (a.task_title?.trim()) {
         const match = await findTaskByTitle(tasks, a.task_title, undefined, false);
-        if (match.kind === 'none') return `No task matching "${a.task_title}".`;
+        if (match.kind === 'none')
+          return (
+            `[tool-internal] smart_schedule_task: no Google Task title contains "${a.task_title}". ` +
+            `Tell the user that task isn't on their list yet, or offer to create it with tasks_add first.`
+          );
         if (match.kind === 'many') {
           return (
             `"${a.task_title}" matches multiple tasks — be more specific:\n` +

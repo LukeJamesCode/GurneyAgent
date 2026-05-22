@@ -49,6 +49,17 @@ import {
 } from '../../src/adapters/telegram.js';
 import { collectDoctorReply } from '../../src/adapters/telegram-maintenance.js';
 
+import {
+  createCalendarClient,
+  type CalendarClient,
+  type CalendarCredentials,
+} from '../gurney-everyday-assistant/api/calendar.js';
+import {
+  createTasksClient,
+  type TasksClient,
+  type TasksCredentials,
+} from '../gurney-everyday-assistant/api/tasks.js';
+
 import { loadCatalog, type TestCase, type TestTier } from './catalog.js';
 import {
   formatRow,
@@ -219,13 +230,15 @@ export async function run(opts: RunOptions): Promise<void> {
 
   const startedAt = Date.now();
 
+  const baseline = await captureBaseline(ctx);
+
   writeLine('');
   writeLine('══ Gurney ability test ══════════════════════════════════════════════════════');
   writeLine(
     `tier: ${opts.tier} · ${tests.length} tests · started ${new Date(startedAt).toISOString()}`,
   );
   writeLine(
-    `chat: ${chatId} · NO CLEANUP — created events, tasks, reminders and quiet windows remain in your accounts`,
+    `chat: ${chatId} · cleanup ON — reminders, followups, tasks, events created during this run will be deleted at the end`,
   );
   if (opts.filter) writeLine(`filter: /${opts.filter}/`);
   writeLine('');
@@ -318,7 +331,301 @@ export async function run(opts: RunOptions): Promise<void> {
   writeLine(`report saved: ${outPath}`);
   writeLine('');
 
+  await cleanup(ctx, baseline);
+
   await teardown(ctx);
+}
+
+// ── cleanup ─────────────────────────────────────────────────────────────────
+//
+// The runner exercises real tools against real Google accounts and the local
+// SQLite db. Without cleanup, every run leaves duplicate "Buy milk" tasks,
+// half a dozen "Camping" events and orphan reminders behind — which then
+// poisons the next run (the model gets "matches multiple tasks" on every
+// complete, the calendar listing fills with junk, etc.).
+//
+// Strategy: snapshot pre-existing artifact ids before the test loop runs,
+// then after the loop, delete everything created since. Pre-existing junk
+// is left alone — the runner only cleans up what THIS run added.
+
+interface Baseline {
+  reminderMaxId: number;
+  followupMaxId: number;
+  routineMaxId: number;
+  smartLinks: Set<string>;
+  calClient: CalendarClient | null;
+  tasksClient: TasksClient | null;
+  calendarEventIds: Set<string>;
+  taskIds: Set<string>;
+  prefs: {
+    quietStartMinute: number | null;
+    quietEndMinute: number | null;
+    pausedUntilMs: number | null;
+  };
+}
+
+function readAssistantCreds(ctx: RunnerCtx): {
+  calendar: CalendarCredentials | null;
+  tasks: TasksCredentials | null;
+} {
+  const rows = ctx.db
+    .prepare(`SELECT key, value FROM extension_settings WHERE extension = ?`)
+    .all('gurney-everyday-assistant') as Array<{ key: string; value: string }>;
+  const s = new Map(rows.map((r) => [r.key, r.value]));
+  const id = s.get('google_client_id');
+  const secret = s.get('google_client_secret');
+  const refresh = s.get('google_refresh_token');
+  if (!id || !secret || !refresh) return { calendar: null, tasks: null };
+  return {
+    calendar: {
+      client_id: id,
+      client_secret: secret,
+      refresh_token: refresh,
+      calendar_id: s.get('calendar_id') ?? 'primary',
+    },
+    tasks: {
+      client_id: id,
+      client_secret: secret,
+      refresh_token: refresh,
+      default_tasklist: s.get('default_tasklist') ?? '@default',
+    },
+  };
+}
+
+function cleanupWindow(): { timeMin: string; timeMax: string } {
+  const now = new Date();
+  const start = new Date(now);
+  start.setDate(start.getDate() - 7);
+  const end = new Date(now);
+  end.setDate(end.getDate() + 90);
+  return { timeMin: start.toISOString(), timeMax: end.toISOString() };
+}
+
+async function captureBaseline(ctx: RunnerCtx): Promise<Baseline> {
+  const reminderMaxId = pickMaxId(ctx, 'reminders', ctx.chatId);
+  const followupMaxId = pickMaxId(ctx, 'followups', ctx.chatId);
+  const routineMaxId = pickRoutineMaxId(ctx);
+
+  const smartLinks = new Set<string>();
+  try {
+    const rows = ctx.db
+      .prepare(`SELECT task_id, event_id FROM smart_scheduled_links`)
+      .all() as Array<{ task_id: string; event_id: string }>;
+    for (const r of rows) smartLinks.add(`${r.task_id}|${r.event_id}`);
+  } catch {
+    /* table may not exist on a partial install */
+  }
+
+  const creds = readAssistantCreds(ctx);
+  let calClient: CalendarClient | null = null;
+  let tasksClient: TasksClient | null = null;
+  const calendarEventIds = new Set<string>();
+  const taskIds = new Set<string>();
+
+  if (creds.calendar) {
+    try {
+      calClient = createCalendarClient({ creds: creds.calendar });
+      const events = await calClient.listEvents({ ...cleanupWindow(), max: 2500 });
+      for (const ev of events) calendarEventIds.add(ev.id);
+    } catch (e) {
+      ctx.log.warn('baseline: calendar snapshot failed', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+      calClient = null;
+    }
+  }
+
+  if (creds.tasks) {
+    try {
+      tasksClient = createTasksClient({ creds: creds.tasks });
+      const tasks = await tasksClient.listTasks(true);
+      for (const t of tasks) taskIds.add(t.id);
+    } catch (e) {
+      ctx.log.warn('baseline: tasks snapshot failed', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+      tasksClient = null;
+    }
+  }
+
+  const p = ctx.prefs.get(ctx.chatId);
+  const prefs = {
+    quietStartMinute: p.quietStartMinute,
+    quietEndMinute: p.quietEndMinute,
+    pausedUntilMs: p.pausedUntilMs,
+  };
+
+  return {
+    reminderMaxId,
+    followupMaxId,
+    routineMaxId,
+    smartLinks,
+    calClient,
+    tasksClient,
+    calendarEventIds,
+    taskIds,
+    prefs,
+  };
+}
+
+function pickMaxId(ctx: RunnerCtx, table: 'reminders' | 'followups', chatId: number): number {
+  try {
+    const row = ctx.db
+      .prepare(`SELECT COALESCE(MAX(id), 0) AS m FROM ${table} WHERE chat_id = ?`)
+      .get(chatId) as { m: number } | undefined;
+    return row?.m ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function pickRoutineMaxId(ctx: RunnerCtx): number {
+  try {
+    const row = ctx.db
+      .prepare(`SELECT COALESCE(MAX(id), 0) AS m FROM routine_rules WHERE chat_id = ?`)
+      .get(ctx.chatId) as { m: number } | undefined;
+    return row?.m ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function cleanup(ctx: RunnerCtx, baseline: Baseline): Promise<void> {
+  const lines: string[] = ['🧹 Cleanup'];
+
+  // Reminders
+  try {
+    const r = ctx.db
+      .prepare(`DELETE FROM reminders WHERE chat_id = ? AND id > ?`)
+      .run(ctx.chatId, baseline.reminderMaxId);
+    lines.push(`  reminders deleted: ${r.changes}`);
+  } catch (e) {
+    lines.push(`  reminders: failed (${e instanceof Error ? e.message : String(e)})`);
+  }
+
+  // Followups
+  try {
+    const r = ctx.db
+      .prepare(`DELETE FROM followups WHERE chat_id = ? AND id > ?`)
+      .run(ctx.chatId, baseline.followupMaxId);
+    lines.push(`  followups deleted: ${r.changes}`);
+  } catch (e) {
+    lines.push(`  followups: failed (${e instanceof Error ? e.message : String(e)})`);
+  }
+
+  // Learned routines (the runner only LISTS / DELETES, but be defensive)
+  try {
+    const r = ctx.db
+      .prepare(`DELETE FROM routine_rules WHERE chat_id = ? AND id > ?`)
+      .run(ctx.chatId, baseline.routineMaxId);
+    if (r.changes > 0) lines.push(`  learned routines deleted: ${r.changes}`);
+  } catch {
+    /* table may not exist */
+  }
+
+  // smart_scheduled_links — also drop the calendar events they reference
+  // (those will already be caught by the calendar diff below, but the link
+  // rows must go regardless so the table doesn't grow unbounded).
+  try {
+    const rows = ctx.db
+      .prepare(`SELECT task_id, event_id FROM smart_scheduled_links`)
+      .all() as Array<{ task_id: string; event_id: string }>;
+    let removed = 0;
+    for (const r of rows) {
+      const key = `${r.task_id}|${r.event_id}`;
+      if (baseline.smartLinks.has(key)) continue;
+      ctx.db
+        .prepare(`DELETE FROM smart_scheduled_links WHERE task_id = ? AND event_id = ?`)
+        .run(r.task_id, r.event_id);
+      removed += 1;
+    }
+    if (removed > 0) lines.push(`  smart-schedule links deleted: ${removed}`);
+  } catch {
+    /* ignore */
+  }
+
+  // Calendar events created during the run
+  if (baseline.calClient) {
+    let deleted = 0;
+    let failed = 0;
+    try {
+      const after = await baseline.calClient.listEvents({ ...cleanupWindow(), max: 2500 });
+      for (const ev of after) {
+        if (baseline.calendarEventIds.has(ev.id)) continue;
+        try {
+          await baseline.calClient.deleteEvent(ev.id);
+          deleted += 1;
+        } catch (e) {
+          failed += 1;
+          ctx.log.warn('cleanup: delete event failed', {
+            id: ev.id,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
+      lines.push(
+        `  calendar events deleted: ${deleted}` + (failed > 0 ? ` (${failed} failed)` : ''),
+      );
+    } catch (e) {
+      lines.push(`  calendar: list failed (${e instanceof Error ? e.message : String(e)})`);
+    }
+  } else {
+    lines.push('  calendar: not configured — skipped');
+  }
+
+  // Tasks created during the run (default list only — that's where tasks_add writes)
+  if (baseline.tasksClient) {
+    let deleted = 0;
+    let failed = 0;
+    try {
+      const after = await baseline.tasksClient.listTasks(true);
+      for (const t of after) {
+        if (baseline.taskIds.has(t.id)) continue;
+        try {
+          await baseline.tasksClient.deleteTask(t.id);
+          deleted += 1;
+        } catch (e) {
+          failed += 1;
+          ctx.log.warn('cleanup: delete task failed', {
+            id: t.id,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
+      lines.push(`  tasks deleted: ${deleted}` + (failed > 0 ? ` (${failed} failed)` : ''));
+    } catch (e) {
+      lines.push(`  tasks: list failed (${e instanceof Error ? e.message : String(e)})`);
+    }
+  } else {
+    lines.push('  tasks: not configured — skipped');
+  }
+
+  // Quiet window / snooze prefs — restore to whatever the user had before.
+  try {
+    const now = ctx.prefs.get(ctx.chatId);
+    let changed = 0;
+    if (
+      now.quietStartMinute !== baseline.prefs.quietStartMinute ||
+      now.quietEndMinute !== baseline.prefs.quietEndMinute
+    ) {
+      ctx.prefs.setQuietWindow(
+        ctx.chatId,
+        baseline.prefs.quietStartMinute,
+        baseline.prefs.quietEndMinute,
+      );
+      changed += 1;
+    }
+    if (now.pausedUntilMs !== baseline.prefs.pausedUntilMs) {
+      ctx.prefs.setPausedUntil(ctx.chatId, baseline.prefs.pausedUntilMs);
+      changed += 1;
+    }
+    if (changed > 0) lines.push(`  quiet/snooze prefs: restored (${changed} fields)`);
+  } catch (e) {
+    lines.push(`  prefs: failed (${e instanceof Error ? e.message : String(e)})`);
+  }
+
+  writeLine(lines.join('\n'));
+  writeLine('');
 }
 
 async function teardown(ctx: RunnerCtx): Promise<void> {

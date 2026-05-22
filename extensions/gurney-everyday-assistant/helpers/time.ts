@@ -37,6 +37,40 @@ export function parseReminderTime(input: string, now: Date = new Date()): Date |
     return d;
   }
 
+  // "tomorrow morning" / "tomorrow afternoon" / "tomorrow evening" / "tomorrow night"
+  // Map to a sensible default hour. The 0.8b model gives up rather than picking
+  // one, so a deterministic default lets the reminder land instead of bouncing
+  // the user with a clarifying question.
+  const tomPart = s.match(/^tomorrow\s+(morning|afternoon|evening|night)$/);
+  if (tomPart) {
+    const hourByPart: Record<string, number> = {
+      morning: 9,
+      afternoon: 14,
+      evening: 18,
+      night: 20,
+    };
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    d.setHours(hourByPart[tomPart[1]!]!, 0, 0, 0);
+    return d;
+  }
+
+  // Bare "morning" / "afternoon" / "evening" / "night" — today, rolling over to
+  // tomorrow if the default hour is already past.
+  const partOfDay = s.match(/^(morning|afternoon|evening|night)$/);
+  if (partOfDay) {
+    const hourByPart: Record<string, number> = {
+      morning: 9,
+      afternoon: 14,
+      evening: 18,
+      night: 20,
+    };
+    const d = new Date(now);
+    d.setHours(hourByPart[partOfDay[1]!]!, 0, 0, 0);
+    if (d <= now) d.setDate(d.getDate() + 1);
+    return d;
+  }
+
   // "at H[:mm] [am|pm]"
   const atMatch = s.match(/^(?:today )?at (\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
   if (atMatch) {
@@ -102,12 +136,15 @@ export function splitReminderArgs(input: string): { timeStr: string; message: st
   const patterns: RegExp[] = [
     /^(in \d+\s*(?:minutes?|hours?|days?))\s+(.+)/i,
     /^(tomorrow at \d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(.+)/i,
+    /^(tomorrow\s+(?:morning|afternoon|evening|night))\s+(.+)/i,
     /^((?:today )?at \d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(.+)/i,
     /^(\d{4}-\d{2}-\d{2}(?:T[\d:]+)?(?:Z|[+-]\d{2}:\d{2})?)\s+(.+)/i,
     // Bare HH:MM (24h)
     /^(\d{1,2}:\d{2})\s+(.+)/i,
     // Bare Hpm / H:MMam
     /^(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s+(.+)/i,
+    // Bare "morning" / "afternoon" / "evening" / "night"
+    /^(morning|afternoon|evening|night)\s+(.+)/i,
   ];
 
   for (const pat of patterns) {

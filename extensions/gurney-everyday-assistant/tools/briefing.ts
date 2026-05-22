@@ -27,8 +27,11 @@ export function register(host: Host): void {
     intentPattern: TOMORROW_BRIEF_INTENT,
     description:
       "Generate tomorrow's briefing on demand: tomorrow's calendar and outstanding tasks. " +
-      "Use when the user says 'what does tomorrow look like', 'evening briefing', 'what's tomorrow'. " +
-      'Prefer this over chaining calendar and tasks calls separately.',
+      "Use when the user says 'what does tomorrow look like', 'how does tomorrow look', 'evening briefing', 'night brief', 'what's tomorrow'. " +
+      "Prefer this over chaining calendar and tasks calls separately. " +
+      "ALWAYS call this tool for those phrasings — never compose a hallucinated agenda template (no '[Local Time]' / '[Upcoming Activity]' placeholders). " +
+      "Do NOT use when the user asks to PLAN, SCHEDULE or BLOCK OUT tomorrow — that's `plan_day`. " +
+      "Do NOT use when the user is cancelling, adding, or asking about a specific event — that's `calendar_*`.",
     tier: 'auto',
     parameters: { type: 'object', properties: {} },
     invoke: async (_args, ctx) => buildNightBrief(host, { signal: ctx.signal }),

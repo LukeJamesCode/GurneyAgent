@@ -118,10 +118,15 @@ function trivialReplyFor(message: string, chatId: number, hour: number): string 
 // 0.8b chat model gets DOW questions wrong even when the system anchor tells
 // it the answer, so the safest fix is to bypass the LLM entirely.
 function deterministicReplyFor(message: string, now: Date = new Date()): string | null {
-  const m = message
+  const raw = message
     .trim()
     .toLowerCase()
     .replace(/[?!.\s]+$/, '');
+  if (!raw) return null;
+  // Strip an optional leading vocative / greeting so "Hey, what model are you running?"
+  // matches the same patterns as "what model are you running". The 0.8b model
+  // hallucinates these answers if we let them through to the LLM.
+  const m = raw.replace(/^(hey|hi|hello|yo|gurney)[\s,!.-]+/, '').trim();
   if (!m) return null;
   // "what day (of the week) is it" / "what day is today"
   if (/^what\s+day(\s+of\s+the\s+week)?\s+is\s+(it|today)$/.test(m)) {
@@ -136,6 +141,60 @@ function deterministicReplyFor(message: string, now: Date = new Date()): string 
   // "what model are you running" / "which model are you on"
   if (/^(what|which)\s+model\s+(are\s+you|you'?re)\s+(running|using|on)$/.test(m)) {
     return 'I run on Gurney with the qwen3.5 family — use /model to see the active profile.';
+  }
+  // "what time is it (right now)" / "what's the time" — the 0.8b model hallucinates
+  // GMT offsets and clock times if asked, so answer deterministically.
+  if (
+    /^(what'?s\s+the\s+time|what\s+time\s+is\s+it(\s+right\s+now)?|what'?s\s+the\s+current\s+time)$/.test(
+      m,
+    )
+  ) {
+    const time = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    const day = now.toLocaleDateString(undefined, { weekday: 'long' });
+    return `${time} (${day}).`;
+  }
+  // "what's today's date"
+  if (/^what'?s\s+(today'?s\s+date|the\s+date(\s+today)?)$/.test(m)) {
+    return now.toLocaleDateString(undefined, {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  }
+  // "what's the date next monday" / "what day is next friday" / "when is next tuesday" —
+  // 0.8b consistently mis-computes "next <DOW>" by a few days. Answer deterministically.
+  const nextDow = /^(what'?s\s+the\s+date\s+|what\s+day\s+is\s+|when\s+is\s+)(next|this)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/.exec(
+    m,
+  );
+  if (nextDow) {
+    const target = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'].indexOf(
+      nextDow[3]!,
+    );
+    const today = now.getDay();
+    // "next <DOW>": always the upcoming DOW in 1..7 days (never today).
+    // "this <DOW>": same week — also use 1..7 days, identical semantics for our purposes.
+    let delta = target - today;
+    if (delta <= 0) delta += 7;
+    const d = new Date(now.getTime());
+    d.setDate(d.getDate() + delta);
+    return d.toLocaleDateString(undefined, {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  }
+  // "what's the date tomorrow" / "what's tomorrow's date"
+  if (/^what'?s\s+(the\s+date\s+tomorrow|tomorrow'?s\s+date)$/.test(m)) {
+    const d = new Date(now.getTime());
+    d.setDate(d.getDate() + 1);
+    return d.toLocaleDateString(undefined, {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
   }
   return null;
 }

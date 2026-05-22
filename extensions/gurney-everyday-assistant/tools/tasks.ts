@@ -35,7 +35,12 @@ async function resolveTaskId(
   }
   const match = await findTaskByTitle(client, args.task_title, args.tasklist_id, true);
   if (match.kind === 'none') {
-    return { ok: false, message: `No task matching "${args.task_title}".` };
+    return {
+      ok: false,
+      message:
+        `[tool-internal] resolveTaskId: no Google Task title contains "${args.task_title}". ` +
+        `Tell the user there's no such task on their list — do NOT echo this raw message.`,
+    };
   }
   if (match.kind === 'many') {
     const titles = match.matches.map((t) => `• ${t.title}`).join('\n');
@@ -95,7 +100,7 @@ export function register(host: Host): void {
     description:
       "Record a NEW todo on the user's Google Tasks list. " +
       "This is the DEFAULT for 'add X to my list', 'add X to my todos', 'put X on my list', 'set a todo/task X', 'I need to X', 'remember to X' (no specific firing time). " +
-      'Always call this — never reply that no tool is available for adding a task. ' +
+      "ALWAYS call this for those phrasings. NEVER reply with 'No task matching X' to an ADD request — that string is only valid as a TOOL RESULT for complete/delete lookups, never as your own reply to the user. Duplicates are fine; when in doubt, add. " +
       "Your job is to RECORD X — copy the user's words into `title`. Do NOT perform X, do not rephrase X as a plan, do not reply with a description of the task. Just call the tool.",
     tier: 'auto',
     selfReplying: true,

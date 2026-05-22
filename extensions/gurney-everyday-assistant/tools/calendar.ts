@@ -88,11 +88,7 @@ export function register(host: Host): void {
       }
       const lines = events.map((ev) => formatEventLine(ev)).join('\n');
       const idMap = events.map((ev) => `${ev.summary}=${ev.id}`).join('; ');
-      return (
-        `${lines}\n\n` +
-        `[internal — for tool calls only, never include in your reply to the user]\n` +
-        `event_ids: ${idMap}`
-      );
+      return `${lines}\nevent_ids: ${idMap}`;
     },
   });
 
@@ -167,7 +163,12 @@ export function register(host: Host): void {
       "FALLBACK ONLY. Prefer `calendar_add_event` in almost every case — Google's natural-language parser mangles compound titles like 'quiz for atomic physics' (it produced 'Quiz at'). " +
       "Acceptable only for a very short, single-noun phrase with an explicit clock time, e.g. 'Lunch Friday 1pm', 'Gym at 6pm'. " +
       "If the user phrase contains 'for', 'about', 'with', a duration like '8 to 10am', or any complex structure, DO NOT use this tool — use `calendar_add_event` instead. " +
-      "Also DO NOT use for date-only phrases like 'grad rehearsal on may 19th' — Google's parser silently drops the date.",
+      "Also DO NOT use when the phrase contains: " +
+      "(a) the words 'appointment', 'session', or 'meeting' (Google drops everything before them — 'dentist appointment at 9' becomes title 'at'); " +
+      "(b) a relative day phrase like 'next Tuesday', 'this Friday', 'tomorrow' (Google treats 'next' / 'this' as the title); " +
+      "(c) a time-of-day word like 'morning', 'afternoon', 'evening' before the clock time (Google takes the word as the title — 'Tuesday morning at 9' became 'morning'); " +
+      "(d) any date-only phrasing like 'grad rehearsal on may 19th' (Google silently drops the date). " +
+      "For any of these, switch to `calendar_add_event` with a resolved ISO 8601 start/end.",
     tier: 'auto',
     selfReplying: true,
     parameters: {
@@ -201,12 +202,13 @@ export function register(host: Host): void {
     name: 'calendar_delete_event',
     intentPattern: CALENDAR_DELETE_INTENT,
     description:
-      'Delete a Google Calendar event by its id. ' +
-      'If you do not already have the id from a prior `calendar_list_events` result in this turn, ' +
-      'FIRST call `calendar_list_events` over the relevant date range, find the matching event in its `event_ids` block, ' +
-      'then call this tool with that id. ' +
-      'Never tell the user the event does not exist without listing first. Never invent an id. ' +
-      'Tier is `confirm`, so the user is re-prompted before the delete fires.',
+      "USE THIS to cancel or delete a calendar event the user named — phrases like " +
+      "'cancel the camping event', 'remove tomorrow's meeting', 'delete that 3pm', 'drop the gym session from my calendar'. " +
+      "This is THE tool for cancelling a calendar event. Do NOT call tasks_complete, tasks_delete, or any 'task_cancel' for a calendar event — those work on TODOs only. " +
+      "How to use: if you already have the event id from a `calendar_list_events` result earlier in this turn, pass it directly. " +
+      "If you do NOT yet have the id, call `calendar_list_events` FIRST in the same turn over the relevant date range, find the matching summary in the `event_ids:` line, then call this tool with that id. " +
+      "Never tell the user the event does not exist without listing first. Never invent an id. " +
+      "Tier is `confirm`, so the user is re-prompted before the delete fires.",
     tier: 'confirm',
     selfReplying: true,
     parameters: {

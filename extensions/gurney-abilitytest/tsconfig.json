@@ -15,6 +15,11 @@
     "rootDir": "../..",
     "types": ["node"]
   },
-  "include": ["./**/*.ts", "../../src/**/*.ts"],
+  "include": [
+    "./**/*.ts",
+    "../../src/**/*.ts",
+    "../gurney-everyday-assistant/api/calendar.ts",
+    "../gurney-everyday-assistant/api/tasks.ts"
+  ],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
