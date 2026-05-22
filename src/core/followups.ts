@@ -152,11 +152,16 @@ export function setupFollowups(opts: FollowupsOptions): Followups {
   const tool: ToolHandler = {
     name: 'schedule_followup',
     description:
-      'Schedule a future message from yourself to the user. Use this when ' +
-      'the user asks you to remind them, check in, or follow up on something. ' +
-      'The text in `topic` is sent verbatim to the user when the time arrives, ' +
-      'so phrase it as the message they should see (e.g. "Take the chicken ' +
-      'out of the oven"). Time must be ISO 8601 in the future, within one year.',
+      'Schedule a future CHAT MESSAGE from yourself to the user — a self-issued ' +
+      "check-in like 'how did the interview go?' or 'did you take the chicken out?'. " +
+      'The text in `topic` is sent verbatim to the user when the time arrives. ' +
+      'Do NOT use this for: ' +
+      '(a) calendar events (use `calendar_add_event` — those have a start/end and live on a calendar); ' +
+      "(b) one-shot reminders to do something (use `reminder_set` — those say 'remind me to X at Y'); " +
+      '(c) recording a todo (use `tasks_add`); ' +
+      '(d) blocking out task time on the calendar (use `smart_schedule_task`). ' +
+      'Only reach for this when the user explicitly asks you to follow up or check in later. ' +
+      'Time must be ISO 8601 in the future, within one year.',
     parameters: {
       type: 'object',
       required: ['when_iso', 'topic'],

@@ -504,7 +504,36 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         // event!", which doubles wall-clock for an action turn.
         let allSelfReplying = true;
         const selfReplyingOutputs: string[] = [];
+        // Per-turn dispatch gate. The registry's execute() looks up handlers
+        // by global name, so a small model can bypass intent pruning entirely
+        // by emitting a name it memorized in training. That defeats the whole
+        // pruning strategy and routes "Plan my day" to briefing_today,
+        // "Cancel the camping event" to tasks_complete, etc. Enforce the
+        // per-turn schema as the source of truth for what's callable.
+        const allowedToolNames = new Set(toolSchemas.map((s) => s.function.name));
         for (const call of lastChunk.toolCalls) {
+          if (!allowedToolNames.has(call.name)) {
+            const available = allowedToolNames.size
+              ? [...allowedToolNames].join(', ')
+              : '(none — this turn does not expose any tools)';
+            const rejectionMsg = `Tool '${call.name}' is not available for this turn. Available tools: ${available}. Pick one of those or answer in plain text.`;
+            cl.warn('rejected tool call outside per-turn schema', {
+              name: call.name,
+              allowedCount: allowedToolNames.size,
+            });
+            afterTurnToolCalls.push({
+              name: call.name,
+              arguments: call.arguments,
+              ok: false,
+              resultSummary: summarizeToolResult(rejectionMsg),
+            });
+            trackingAppend('tool', rejectionMsg, {
+              tool_call_id: call.id,
+              tool_name: call.name,
+            });
+            allSelfReplying = false;
+            continue;
+          }
           const handler = opts.tools.get(call.name);
           const isSelfReplying = handler?.selfReplying === true;
           const result = await opts.tools.execute(call, {

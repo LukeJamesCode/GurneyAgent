@@ -2,7 +2,7 @@ import type { Host } from '../../../src/core/extensions.js';
 import { getWeather } from '../api/weather.js';
 
 const WEATHER_INTENT =
-  '\\b(weather|temperature|forecast|rain|raining|snow|snowing|sunny|cloud|cloudy|wind|windy|hot|cold|degrees|celsius|fahrenheit|humid|humidity|outdoor)\\b';
+  '\\b(weather|temperature|forecast|rain|raining|snow|snowing|sunny|cloud|cloudy|wind|windy|hot|cold|degrees|celsius|fahrenheit|humid|humidity|outdoor|run|jog|walk|hike|workout|gym|good day (to|for))\\b';
 
 export function register(host: Host): void {
   host.tools.register({
