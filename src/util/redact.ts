@@ -15,12 +15,25 @@ const BEARER_RE = /\bBearer\s+[A-Za-z0-9._\-+/=]{8,}/gi;
 // Generic name=value where name looks secret-y.
 const ASSIGN_RE =
   /\b(token|secret|key|password|passwd|authorization|bearer|api[_-]?key)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;)}\]]+)/gi;
+// Common vendor token shapes. These leak through `ASSIGN_RE` when they appear
+// as bare values (e.g. inside an error message body), so we redact the literal
+// token shape too. Patterns are intentionally narrow to avoid false-positives.
+const VENDOR_TOKEN_RES: RegExp[] = [
+  /\bya29\.[A-Za-z0-9_-]{20,}/g, // Google OAuth access token
+  /\b1\/\/[A-Za-z0-9_-]{20,}/g, // Google OAuth refresh token
+  /\bAIza[A-Za-z0-9_-]{30,}/g, // Google API key
+  /\bgh[pousr]_[A-Za-z0-9]{30,}/g, // GitHub PAT / app token
+  /\bsk-(?:ant|proj|live|test)?-?[A-Za-z0-9_-]{20,}/g, // OpenAI / Anthropic keys
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, // Slack tokens
+];
 
 export function redactString(input: string): string {
-  return input
+  let out = input
     .replace(TELEGRAM_TOKEN_RE, PLACEHOLDER)
     .replace(BEARER_RE, `Bearer ${PLACEHOLDER}`)
     .replace(ASSIGN_RE, (_, name: string) => `${name}=${PLACEHOLDER}`);
+  for (const re of VENDOR_TOKEN_RES) out = out.replace(re, PLACEHOLDER);
+  return out;
 }
 
 export function redact<T>(value: T): T {

@@ -28,3 +28,12 @@ test('validateOllamaUrl rejects garbage', () => {
   assert.throws(() => validateOllamaUrl('not a url'));
   assert.throws(() => validateOllamaUrl(''));
 });
+
+test('validateOllamaUrl rejects IPv4-mapped IPv6 metadata host', () => {
+  assert.throws(() => validateOllamaUrl('http://[::ffff:169.254.169.254]:11434'));
+  assert.throws(() => validateOllamaUrl('http://[::ffff:0.0.0.0]:11434'));
+});
+
+test('validateOllamaUrl rejects IPv6 link-local', () => {
+  assert.throws(() => validateOllamaUrl('http://[fe80::1]:11434'));
+});

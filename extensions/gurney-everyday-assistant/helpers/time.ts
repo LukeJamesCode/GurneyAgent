@@ -28,27 +28,23 @@ export function parseReminderTime(input: string, now: Date = new Date()): Date |
   // "tomorrow at H[:mm] [am|pm]"
   const tomMatch = s.match(/^tomorrow at (\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
   if (tomMatch) {
+    const hour = resolveHour(parseInt(tomMatch[1]!), tomMatch[3] as 'am' | 'pm' | undefined);
+    const minute = parseInt(tomMatch[2] ?? '0');
+    if (hour === null || minute > 59) return null;
     const d = new Date(now);
     d.setDate(d.getDate() + 1);
-    d.setHours(
-      resolveHour(parseInt(tomMatch[1]!), tomMatch[3] as 'am' | 'pm' | undefined),
-      parseInt(tomMatch[2] ?? '0'),
-      0,
-      0,
-    );
+    d.setHours(hour, minute, 0, 0);
     return d;
   }
 
   // "at H[:mm] [am|pm]"
   const atMatch = s.match(/^(?:today )?at (\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
   if (atMatch) {
+    const hour = resolveHour(parseInt(atMatch[1]!), atMatch[3] as 'am' | 'pm' | undefined);
+    const minute = parseInt(atMatch[2] ?? '0');
+    if (hour === null || minute > 59) return null;
     const d = new Date(now);
-    d.setHours(
-      resolveHour(parseInt(atMatch[1]!), atMatch[3] as 'am' | 'pm' | undefined),
-      parseInt(atMatch[2] ?? '0'),
-      0,
-      0,
-    );
+    d.setHours(hour, minute, 0, 0);
     // If already past, push to tomorrow
     if (d <= now) d.setDate(d.getDate() + 1);
     return d;
@@ -57,9 +53,17 @@ export function parseReminderTime(input: string, now: Date = new Date()): Date |
   return null;
 }
 
-function resolveHour(h: number, ampm?: 'am' | 'pm'): number {
-  if (ampm === 'pm' && h < 12) return h + 12;
-  if (ampm === 'am' && h === 12) return 0;
+// Returns the 24h hour, or null if the input is out of range. With am/pm
+// the hour must be 1-12; without it, 0-23. "25:00" or "13pm" return null
+// instead of silently rolling into a wrong time.
+function resolveHour(h: number, ampm?: 'am' | 'pm'): number | null {
+  if (ampm) {
+    if (h < 1 || h > 12) return null;
+    if (ampm === 'pm' && h < 12) return h + 12;
+    if (ampm === 'am' && h === 12) return 0;
+    return h;
+  }
+  if (h < 0 || h > 23) return null;
   return h;
 }
 

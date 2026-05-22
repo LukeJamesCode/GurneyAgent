@@ -40,12 +40,82 @@ export function getClient(host: Host, signal?: AbortSignal): CalendarClient | nu
   return createCalendarClient({ creds, cache, ...(signal ? { signal } : {}) });
 }
 
-export function todayRangeIso(now: Date = new Date()): { timeMin: string; timeMax: string } {
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
+export function todayRangeIso(
+  now: Date = new Date(),
+  timeZone?: string,
+): { timeMin: string; timeMax: string } {
+  if (!timeZone) {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { timeMin: start.toISOString(), timeMax: end.toISOString() };
+  }
+  const start = startOfDayInZone(now, timeZone);
+  const end = new Date(start.getTime());
+  // Re-anchor in the target zone so we cross exactly one local midnight,
+  // not exactly 24h (which would be wrong on DST days).
+  const startParts = zonedYmd(start, timeZone);
+  end.setTime(
+    instantForZonedWallClock(
+      { ...startParts, day: startParts.day + 1, hour: 0, minute: 0, second: 0 },
+      timeZone,
+    ).getTime(),
+  );
   return { timeMin: start.toISOString(), timeMax: end.toISOString() };
+}
+
+interface YmdHms {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+function zonedYmd(d: Date, timeZone: string): YmdHms {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const o: Record<string, string> = {};
+  for (const p of parts) if (p.type !== 'literal') o[p.type] = p.value;
+  return {
+    year: Number(o.year),
+    month: Number(o.month),
+    day: Number(o.day),
+    hour: o.hour === '24' ? 0 : Number(o.hour),
+    minute: Number(o.minute),
+    second: Number(o.second),
+  };
+}
+
+// Resolve a wall-clock time in a target zone to a UTC instant. Iterates twice
+// to settle DST near the hour-of-change; sufficient for any IANA zone.
+function instantForZonedWallClock(wall: YmdHms, timeZone: string): Date {
+  const naive = Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute, wall.second);
+  let guess = new Date(naive);
+  for (let i = 0; i < 2; i++) {
+    const got = zonedYmd(guess, timeZone);
+    const gotUtc = Date.UTC(got.year, got.month - 1, got.day, got.hour, got.minute, got.second);
+    guess = new Date(guess.getTime() + (naive - gotUtc));
+  }
+  return guess;
+}
+
+function startOfDayInZone(now: Date, timeZone: string): Date {
+  const { year, month, day } = zonedYmd(now, timeZone);
+  return instantForZonedWallClock(
+    { year, month, day, hour: 0, minute: 0, second: 0 },
+    timeZone,
+  );
 }
 
 // `calendar_quick_add` forwards the user's phrase to Google's natural-language

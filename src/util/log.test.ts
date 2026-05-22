@@ -52,6 +52,20 @@ test('redactString masks Telegram tokens and Bearer headers', () => {
   assert.match(out, /Bearer \[redacted\]/);
 });
 
+test('redactString masks vendor token shapes', () => {
+  const cases = [
+    'oops: ya29.a0AfH6SMBxabcdefghijklmnopqrstuvwxyz1234',
+    'refresh 1//0ab_-cdefghijklmnopqrstuvwxyz1234567890',
+    'gmaps AIzaSyA1234567890abcdefghijklmnopqrstuvwx',
+    'ci ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+    'oa sk-ant-abcdefghijklmnopqrstuvwxyz1234',
+    'slack xoxb-1234567890-abcdefgh',
+  ];
+  for (const raw of cases) {
+    assert.match(redactString(raw), /\[redacted\]/, `expected redaction in: ${raw}`);
+  }
+});
+
 test('redact() handles cycles', () => {
   const a: Record<string, unknown> = { x: 1 };
   a['self'] = a;

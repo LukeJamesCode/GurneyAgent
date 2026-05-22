@@ -62,6 +62,21 @@ test('parseReminderTime: unrecognised input returns null', () => {
   assert.equal(parseReminderTime('', BASE), null);
 });
 
+test('parseReminderTime: rejects out-of-range hour', () => {
+  assert.equal(parseReminderTime('at 25:00', BASE), null);
+  assert.equal(parseReminderTime('tomorrow at 25:00', BASE), null);
+});
+
+test('parseReminderTime: rejects out-of-range minute', () => {
+  assert.equal(parseReminderTime('at 9:99', BASE), null);
+  assert.equal(parseReminderTime('tomorrow at 9:60', BASE), null);
+});
+
+test('parseReminderTime: rejects 13pm / 0pm', () => {
+  assert.equal(parseReminderTime('at 13pm', BASE), null);
+  assert.equal(parseReminderTime('at 0pm', BASE), null);
+});
+
 test('splitReminderArgs: "in 30 minutes Call doctor"', () => {
   const r = splitReminderArgs('in 30 minutes Call doctor');
   assert.ok(r);

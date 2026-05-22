@@ -1,5 +1,6 @@
 import type { Host } from '../../../src/core/extensions.js';
 import { formatEventLine, getClient, hasClockTime, todayRangeIso } from '../helpers/calendar.js';
+import { briefingTimeZone } from '../gather.js';
 
 const NOT_CONFIGURED =
   'Google Calendar is not configured. Run `gurney auth gurney-everyday-assistant`.';
@@ -74,7 +75,7 @@ export function register(host: Host): void {
         start.setDate(start.getDate() - 1);
         range = { timeMin: start.toISOString(), timeMax: end.toISOString() };
       } else {
-        range = todayRangeIso();
+        range = todayRangeIso(new Date(), briefingTimeZone(host));
       }
       const events = await c.listEvents({
         ...range,

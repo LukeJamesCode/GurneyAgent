@@ -180,10 +180,6 @@ interface DeferredNudgeRow {
   expires_at: number | null;
 }
 
-function priorityRank(priority: NudgePriority): number {
-  return priority === 'high' ? 3 : priority === 'normal' ? 2 : 1;
-}
-
 export function createScheduler(opts: SchedulerOptions): Scheduler {
   const log = opts.log.child({ mod: 'scheduler' });
   const now = opts.now ?? (() => new Date());
@@ -272,6 +268,18 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     return (row?.n ?? 0) + pending >= rateLimit.max;
   }
 
+  // jobLabel is built by buildAndRunJob as `${extension}:${name}` and stored
+  // in nudge_log / deferred_nudges as a (extension, job) pair. Splitting it
+  // anywhere else is a bug — fail loud rather than silently writing empty
+  // strings to columns that downstream queries filter on.
+  function parseJobLabel(jobLabel: string): { extension: string; job: string } {
+    const idx = jobLabel.indexOf(':');
+    if (idx <= 0 || idx === jobLabel.length - 1) {
+      throw new Error(`malformed job label: ${JSON.stringify(jobLabel)}`);
+    }
+    return { extension: jobLabel.slice(0, idx), job: jobLabel.slice(idx + 1) };
+  }
+
   function recordSent(n: Nudge, jobLabel: string): void {
     const t = now().getTime();
     if (n.key) {
@@ -282,7 +290,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       }
     }
     if (opts.db) {
-      const [extension, job] = jobLabel.split(':', 2);
+      const { extension, job } = parseJobLabel(jobLabel);
       opts.db
         .prepare(
           `INSERT INTO nudge_log
@@ -292,8 +300,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         )
         .run(
           n.chatId,
-          extension ?? '',
-          job ?? '',
+          extension,
+          job,
           n.key ?? null,
           n.reason ?? null,
           t,
@@ -324,7 +332,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   ): void {
     if (!opts.db) return;
     const t = now().getTime();
-    const [extension, job] = jobLabel.split(':', 2);
+    const { extension, job } = parseJobLabel(jobLabel);
     const expiresAt = toEpochMs(n.expiresAt);
     const priority: NudgePriority = n.priority ?? 'normal';
 
@@ -499,7 +507,9 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       )
       .all(t, t, DEFERRED_SWEEP_LIMIT) as DeferredNudgeRow[];
 
-    for (const row of rows.sort((a, b) => priorityRank(b.priority) - priorityRank(a.priority))) {
+    // SQL already orders by priority DESC, created_at ASC, id ASC — re-sorting
+    // in JS would discard the created_at tiebreaker.
+    for (const row of rows) {
       const delivered = await dispatchNudge(
         {
           chatId: row.chat_id,

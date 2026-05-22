@@ -144,6 +144,26 @@ export function validateOllamaUrl(raw: string): void {
   if (METADATA_HOSTS.has(host) || host.startsWith('169.254.')) {
     throw new Error(`OLLAMA_URL points at a metadata / link-local host: ${host}`);
   }
+  // Catch IPv4-mapped IPv6 forms of metadata / link-local. WHATWG URL parsing
+  // normalizes `::ffff:169.254.169.254` to `[::ffff:a9fe:a9fe]`, so we have to
+  // recognize both the decimal-tail form and the hex form. Anything mapping
+  // into 169.254/16 is link-local and reachable from this box.
+  const v6 = host.replace(/^\[|\]$/g, '');
+  const v4Tail = v6.match(/(?:^|:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+  if (v4Tail?.[1]) {
+    const ipv4 = v4Tail[1].toLowerCase();
+    if (ipv4.startsWith('169.254.') || METADATA_HOSTS.has(ipv4)) {
+      throw new Error(`OLLAMA_URL points at a metadata / link-local host: ${host}`);
+    }
+  }
+  // a9fe == 169.254 — any `::ffff:a9fe:*` is inside link-local.
+  if (/(^|:):ffff:a9fe:[0-9a-f]{1,4}$/i.test(v6) || /(^|:):ffff:0:0$/i.test(v6)) {
+    throw new Error(`OLLAMA_URL points at a metadata / link-local host: ${host}`);
+  }
+  // Plain IPv6 link-local fe80::/10 — no Ollama lives on link-local.
+  if (/^fe[89ab][0-9a-f]?:/i.test(v6)) {
+    throw new Error(`OLLAMA_URL points at an IPv6 link-local host: ${host}`);
+  }
   // DNS name OR loopback IP; reject anything weirder (square-bracketed IPv6
   // literals are allowed because URL parsing normalizes them).
   const looksLikeDnsOrIp = /^[a-z0-9.\-:[\]]+$/i.test(host);

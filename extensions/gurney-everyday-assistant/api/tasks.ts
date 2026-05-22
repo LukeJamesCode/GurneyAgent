@@ -63,6 +63,28 @@ export interface TasksClientOptions {
   signal?: AbortSignal;
 }
 
+function isTransient(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+async function fetchWithRetry(
+  fetchImpl: FetchLike,
+  url: string,
+  init: Parameters<FetchLike>[1],
+  attempts = 3,
+  baseDelayMs = 250,
+): Promise<Awaited<ReturnType<FetchLike>>> {
+  let last: Awaited<ReturnType<FetchLike>> | null = null;
+  for (let i = 0; i < attempts; i++) {
+    const res = await fetchImpl(url, init);
+    if (!isTransient(res.status) || i === attempts - 1) return res;
+    last = res;
+    const delay = baseDelayMs * Math.pow(2, i) + Math.floor(Math.random() * 100);
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  return last!;
+}
+
 export function createTasksClient(opts: TasksClientOptions) {
   const fetchImpl = (opts.fetchImpl ?? (fetch as unknown as FetchLike)) as FetchLike;
   const now = opts.now ?? Date.now;
@@ -115,7 +137,7 @@ export function createTasksClient(opts: TasksClientOptions) {
       init.headers['content-type'] = 'application/json';
       init.body = JSON.stringify(body);
     }
-    const res = await fetchImpl(url, init);
+    const res = await fetchWithRetry(fetchImpl, url, init);
     if (!res.ok) {
       throw new TasksApiError(res.status, `tasks ${method} ${path} failed (${res.status})`);
     }

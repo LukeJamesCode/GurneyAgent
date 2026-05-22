@@ -75,6 +75,22 @@ function pushFulfilled(parts: string[], results: Array<PromiseSettledResult<stri
   }
 }
 
+// If every child gather rejected, the user otherwise sees just the header and
+// has no idea their integrations are down. Surface a single warning so a
+// broken Google or Open-Meteo run is visible without spamming details.
+function appendAllFailedNotice(
+  parts: string[],
+  results: Array<PromiseSettledResult<string | null>>,
+): void {
+  if (results.length === 0) return;
+  const anyFulfilled = results.some((r) => r.status === 'fulfilled' && r.value);
+  if (anyFulfilled) return;
+  const anyRejected = results.some((r) => r.status === 'rejected');
+  if (anyRejected) {
+    parts.push('⚠️ Could not reach your calendar / tasks / weather sources this run.');
+  }
+}
+
 export async function buildMorningBrief(host: Host, opts: GatherOptions = {}): Promise<string> {
   const timeZone = briefingTimeZone(host);
   const today = new Date().toLocaleDateString(undefined, {
@@ -95,7 +111,9 @@ export async function buildMorningBrief(host: Host, opts: GatherOptions = {}): P
   if (host.settings.get<boolean>('include_tasks', true)) {
     gathers.push(gatherTasks(host, opts));
   }
-  pushFulfilled(parts, await Promise.allSettled(gathers));
+  const results = await Promise.allSettled(gathers);
+  pushFulfilled(parts, results);
+  appendAllFailedNotice(parts, results);
 
   return parts.join('\n\n');
 }
@@ -116,7 +134,9 @@ export async function buildNightBrief(host: Host, opts: GatherOptions = {}): Pro
   if (host.settings.get<boolean>('include_tasks', true)) {
     gathers.push(gatherTasks(host, opts));
   }
-  pushFulfilled(parts, await Promise.allSettled(gathers));
+  const results = await Promise.allSettled(gathers);
+  pushFulfilled(parts, results);
+  appendAllFailedNotice(parts, results);
 
   return parts.join('\n\n');
 }

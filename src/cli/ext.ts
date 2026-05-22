@@ -252,6 +252,34 @@ function isLocalPath(s: string): boolean {
   return s.startsWith('.') || s.startsWith('/') || isAbsolute(s) || s.startsWith('~');
 }
 
+// Extension names land in `~/.gurney/extensions/<name>/`. The manifest is
+// untrusted (it's whatever a public repo or local folder shipped), so before
+// we join it into a path we have to refuse anything that could escape the
+// extensions root: path separators, parent references, leading dots, or
+// anything that isn't a sensible package-name shape.
+const EXT_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/i;
+function assertSafeExtName(name: string): void {
+  if (!EXT_NAME_RE.test(name) || name.includes('..')) {
+    process.stderr.write(
+      `Manifest 'name' is not a safe extension identifier: ${JSON.stringify(name)}\n`,
+    );
+    process.exit(1);
+  }
+}
+
+// Belt-and-braces: even with a safe-looking name, make sure the joined
+// destination really sits under destRoot. Symlinks in destRoot itself would
+// be a separate concern; this guards the string-level traversal.
+function assertContained(child: string, parent: string): void {
+  const c = resolve(child);
+  const p = resolve(parent);
+  const rel = c.startsWith(p + (process.platform === 'win32' ? '\\' : '/'));
+  if (!rel || c === p) {
+    process.stderr.write(`Refusing to write outside extensions root: ${c}\n`);
+    process.exit(1);
+  }
+}
+
 function looksLikeGitUrl(s: string): boolean {
   return (
     s.endsWith('.git') ||
@@ -272,7 +300,9 @@ function installFromFolder(src: string, destRoot: string): string {
     process.stderr.write(`Manifest at '${manifestPath}' has no name.\n`);
     process.exit(1);
   }
+  assertSafeExtName(m.name);
   const dest = join(destRoot, m.name);
+  assertContained(dest, destRoot);
   if (existsSync(dest)) {
     process.stderr.write(
       `Destination already exists: ${dest}. Uninstall first or pick another name.\n`,
@@ -316,6 +346,7 @@ function installFromGit(url: string, destRoot: string, subpath?: string): string
     process.exit(1);
   }
   const sourceRoot = subpath ? join(tmp, subpath) : tmp;
+  if (subpath) assertContained(sourceRoot, tmp);
   const manifestPath = join(sourceRoot, 'manifest.json');
   if (!existsSync(manifestPath)) {
     rmSync(tmp, { recursive: true, force: true });
@@ -332,7 +363,9 @@ function installFromGit(url: string, destRoot: string, subpath?: string): string
     process.stderr.write(`Cloned manifest has no name.\n`);
     process.exit(1);
   }
+  assertSafeExtName(m.name);
   const dest = join(destRoot, m.name);
+  assertContained(dest, destRoot);
   if (existsSync(dest)) {
     rmSync(tmp, { recursive: true, force: true });
     process.stderr.write(`Destination already exists: ${dest}.\n`);
