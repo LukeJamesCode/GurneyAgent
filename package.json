@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "tsc && node scripts/copy-migrations.mjs",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p extensions/gurney-everyday-assistant && tsc --noEmit -p extensions/gurney-tts && tsc --noEmit -p extensions/gurney-instant-responses",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p extensions/gurney-everyday-assistant && tsc --noEmit -p extensions/gurney-tts && tsc --noEmit -p extensions/gurney-instant-responses && tsc --noEmit -p extensions/gurney-abilitytest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

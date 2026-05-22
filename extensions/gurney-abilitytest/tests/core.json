@@ -1,0 +1,207 @@
+{
+  "tests": [
+    {
+      "id": "chat.plain.smoke",
+      "ability": "core:chat",
+      "tier": "smoke",
+      "kind": "freeform",
+      "message": "Hey, what model are you running?"
+    },
+    {
+      "id": "chat.plain.std1",
+      "ability": "core:chat",
+      "tier": "standard",
+      "kind": "freeform",
+      "message": "Briefly: what's the capital of Australia?"
+    },
+    {
+      "id": "chat.plain.std2",
+      "ability": "core:chat",
+      "tier": "standard",
+      "kind": "freeform",
+      "message": "What's 17 times 23?"
+    },
+    {
+      "id": "chat.plain.full1",
+      "ability": "core:chat",
+      "tier": "full",
+      "kind": "freeform",
+      "message": "Tell me a one-sentence joke."
+    },
+    {
+      "id": "chat.empty.full",
+      "ability": "core:chat",
+      "tier": "full",
+      "kind": "freeform",
+      "message": "."
+    },
+    {
+      "id": "time.now.smoke",
+      "ability": "core:time",
+      "tier": "smoke",
+      "kind": "freeform",
+      "message": "What time is it right now?"
+    },
+    {
+      "id": "time.today.std",
+      "ability": "core:time",
+      "tier": "standard",
+      "kind": "freeform",
+      "message": "What's today's date?"
+    },
+    {
+      "id": "time.dow.std",
+      "ability": "core:time",
+      "tier": "standard",
+      "kind": "freeform",
+      "message": "What day of the week is it?"
+    },
+    {
+      "id": "time.relative.full",
+      "ability": "core:time",
+      "tier": "full",
+      "kind": "freeform",
+      "message": "What's the date next Friday?"
+    },
+    {
+      "id": "devmode.on.smoke",
+      "ability": "core:devmode",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/devmode on"
+    },
+    {
+      "id": "devmode.off.smoke",
+      "ability": "core:devmode",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/devmode off"
+    },
+    {
+      "id": "status.smoke",
+      "ability": "core:status",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/status"
+    },
+    {
+      "id": "model.smoke",
+      "ability": "core:model",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/model"
+    },
+    {
+      "id": "help.smoke",
+      "ability": "core:help",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/help"
+    },
+    {
+      "id": "extensions.smoke",
+      "ability": "core:extensions",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/extensions"
+    },
+    {
+      "id": "newchat.smoke",
+      "ability": "core:newchat",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/newchat"
+    },
+    {
+      "id": "lasterror.smoke",
+      "ability": "core:lasterror",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/lasterror"
+    },
+    {
+      "id": "quiet.show.std",
+      "ability": "core:quiet",
+      "tier": "standard",
+      "kind": "slash",
+      "message": "/quiet"
+    },
+    {
+      "id": "quiet.window.std",
+      "ability": "core:quiet",
+      "tier": "standard",
+      "kind": "slash",
+      "message": "/quiet 22:00-07:00"
+    },
+    {
+      "id": "quiet.snooze.std",
+      "ability": "core:quiet",
+      "tier": "standard",
+      "kind": "slash",
+      "message": "/quiet 30m"
+    },
+    {
+      "id": "quiet.off.std",
+      "ability": "core:quiet",
+      "tier": "standard",
+      "kind": "slash",
+      "message": "/quiet off"
+    },
+    {
+      "id": "proactive.smoke",
+      "ability": "core:proactive",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/proactive"
+    },
+    {
+      "id": "nudges.smoke",
+      "ability": "core:nudges",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/nudges"
+    },
+    {
+      "id": "why.smoke",
+      "ability": "core:why",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/why"
+    },
+    {
+      "id": "doctor.std",
+      "ability": "core:doctor",
+      "tier": "standard",
+      "kind": "slash",
+      "message": "/doctor"
+    },
+    {
+      "id": "logs.std",
+      "ability": "core:logs",
+      "tier": "standard",
+      "kind": "slash",
+      "message": "/logs 5"
+    },
+    {
+      "id": "followups.smoke",
+      "ability": "core:followups",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/followups"
+    },
+    {
+      "id": "followups.clear.std",
+      "ability": "core:followups",
+      "tier": "standard",
+      "kind": "slash",
+      "message": "/followup_clear"
+    },
+    {
+      "id": "followup.create.full",
+      "ability": "core:followups",
+      "tier": "full",
+      "kind": "freeform",
+      "message": "Ping me in 2 minutes to drink water"
+    }
+  ]
+}

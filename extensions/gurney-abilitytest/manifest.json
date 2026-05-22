@@ -1,0 +1,9 @@
+{
+  "name": "gurney-abilitytest",
+  "version": "0.1.0",
+  "description": "Scripted end-to-end ability tests. Boots a one-shot in-process Gurney (no Telegram), drives messages through the orchestrator, and prints a pass/fail/timing report. Invoked via 'gurney abilitytest'.",
+  "gurney": ">=0.1.0",
+  "deps": [],
+  "capabilities": [],
+  "entrypoints": {}
+}

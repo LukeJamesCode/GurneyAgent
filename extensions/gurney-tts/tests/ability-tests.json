@@ -1,0 +1,33 @@
+{
+  "tests": [
+    {
+      "id": "tts.status.smoke",
+      "ability": "tts:status",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/voice status"
+    },
+    {
+      "id": "tts.on.smoke",
+      "ability": "tts:toggle",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/voice on"
+    },
+    {
+      "id": "tts.sample.std",
+      "ability": "tts:voice_reply",
+      "tier": "standard",
+      "kind": "freeform",
+      "message": "Say a one-line hello out loud",
+      "expects": { "voice": true }
+    },
+    {
+      "id": "tts.off.smoke",
+      "ability": "tts:toggle",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/voice off"
+    }
+  ]
+}

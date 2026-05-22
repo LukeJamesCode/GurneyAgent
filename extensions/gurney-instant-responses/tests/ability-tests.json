@@ -1,0 +1,68 @@
+{
+  "tests": [
+    {
+      "id": "inst.greet.smoke",
+      "ability": "instant:greeting",
+      "tier": "smoke",
+      "kind": "freeform",
+      "message": "Hey",
+      "expects": { "interceptReply": true }
+    },
+    {
+      "id": "inst.thanks.smoke",
+      "ability": "instant:trivial",
+      "tier": "smoke",
+      "kind": "freeform",
+      "message": "thanks",
+      "expects": { "interceptReply": true }
+    },
+    {
+      "id": "inst.ok.std",
+      "ability": "instant:trivial",
+      "tier": "standard",
+      "kind": "freeform",
+      "message": "ok",
+      "expects": { "interceptReply": true }
+    },
+    {
+      "id": "inst.bye.std",
+      "ability": "instant:trivial",
+      "tier": "standard",
+      "kind": "freeform",
+      "message": "bye",
+      "expects": { "interceptReply": true }
+    },
+    {
+      "id": "inst.howareyou.full",
+      "ability": "instant:trivial",
+      "tier": "full",
+      "kind": "freeform",
+      "message": "Hey gurney, how's it going?",
+      "expects": { "interceptReply": true }
+    },
+    {
+      "id": "inst.gm.std",
+      "ability": "instant:trivial",
+      "tier": "standard",
+      "kind": "freeform",
+      "message": "gm",
+      "expects": { "interceptReply": true }
+    },
+    {
+      "id": "inst.ack.weather.smoke",
+      "ability": "instant:offload_ack",
+      "tier": "smoke",
+      "kind": "freeform",
+      "message": "What's the weather?",
+      "expects": { "interceptReply": true, "tool": "weather_get" }
+    },
+    {
+      "id": "inst.ack.action.std",
+      "ability": "instant:offload_ack",
+      "tier": "standard",
+      "kind": "freeform",
+      "message": "Add buy milk to my list",
+      "expects": { "interceptReply": true, "tool": "tasks_add" }
+    }
+  ]
+}

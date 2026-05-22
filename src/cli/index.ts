@@ -10,6 +10,8 @@ import './color.js';
 import { register } from 'tsx/esm/api';
 register();
 
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Command } from 'commander';
 
 // Subcommands are pulled in lazily. Keeping the top of the CLI free of heavy
@@ -137,6 +139,37 @@ program
   .action(async () => {
     const { run } = await import('./fresh.js');
     await call('fresh', run);
+  });
+
+program
+  .command('abilitytest')
+  .description('Run scripted ability tests against a fresh in-process Gurney (no Telegram)')
+  .option('--tier <tier>', 'smoke | standard | full', 'standard')
+  .option('--filter <regex>', 'only run tests whose id or ability matches this regex')
+  .option('--out <path>', 'where to write the markdown report')
+  .action(async (opts: { tier?: string; filter?: string; out?: string }) => {
+    // The runner lives in the gurney-abilitytest extension (so it can ship,
+    // be hot-reloaded, and own its catalog). The CLI is a thin shim that
+    // resolves the .ts file by absolute path and dynamically imports it —
+    // tsx handles the on-the-fly transpile.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const runnerPath = resolve(here, '..', '..', 'extensions', 'gurney-abilitytest', 'runner.ts');
+    const mod = (await import(pathToFileURL(runnerPath).href)) as {
+      run: (opts: {
+        tier: 'smoke' | 'standard' | 'full';
+        filter?: string;
+        outFile?: string;
+      }) => Promise<void>;
+    };
+    const tier = (opts.tier ?? 'standard') as 'smoke' | 'standard' | 'full';
+    if (tier !== 'smoke' && tier !== 'standard' && tier !== 'full') {
+      throw new Error(`Unknown tier '${tier}'. Use smoke | standard | full.`);
+    }
+    await call('abilitytest', mod.run, {
+      tier,
+      ...(opts.filter !== undefined ? { filter: opts.filter } : {}),
+      ...(opts.out !== undefined ? { outFile: opts.out } : {}),
+    });
   });
 
 const extCmd = program.command('ext').description('Manage extensions');
