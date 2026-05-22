@@ -23,37 +23,52 @@ export function register(host: Host): void {
       'Do NOT use for open-ended TODOs (use `tasks_add`) or for time-blocked appointments on the calendar (use `calendar_quick_add`). ' +
       'Rule of thumb: a reminder fires a notification at one moment and then is done; a task is a TODO with no notification; an event takes up time on the calendar.',
     tier: 'auto',
+    // `text` and `time` are conceptually required, but we let the tool run with
+    // them missing and return a friendly error string. The 0.8b model recovers
+    // from "I need both text and time" cleanly; it spirals when the schema
+    // validator rejects with "invalid arguments for 'reminder_set'".
     parameters: {
       type: 'object',
-      required: ['text', 'time'],
       properties: {
         text: {
           type: 'string',
-          description: "What to remind the user about. Examples: 'take out the trash', 'call mom'.",
+          description:
+            "REQUIRED. What to remind the user about. Examples: 'take out the trash', 'call mom'. " +
+            'Must be a non-empty string copied from the user message.',
         },
         time: {
           type: 'string',
           description:
-            "When to fire the reminder. Pass the user's phrase verbatim — the tool parses it. " +
-            "Accepted: 'in 30 minutes', 'in 2 hours', 'at 3pm', 'tomorrow at 9am', or an ISO 8601 timestamp.",
+            "REQUIRED. When to fire the reminder. Pass the user's phrase verbatim — the tool parses it. " +
+            "Accepted: 'in 30 minutes', 'in 2 hours', 'at 3pm', '8pm', '20:00', 'tomorrow at 9am', or an ISO 8601 timestamp. " +
+            'Must be a non-empty string.',
         },
       },
     },
     invoke: async (args, ctx) => {
-      const a = args as { text: string; time: string };
+      const a = args as { text?: string; time?: string };
+      const text = a.text?.trim();
+      const time = a.time?.trim();
+      if (!text && !time) {
+        return 'reminder_set needs both `text` (what to remind about) and `time` (when to fire). Re-call with both.';
+      }
+      if (!text)
+        return 'reminder_set is missing `text` — what should the reminder say? Re-call with both `text` and `time`.';
+      if (!time)
+        return 'reminder_set is missing `time` — when should it fire? Re-call with both `text` and `time`.';
       const chatId = ctx.chatId ?? host.telegram.chatId;
-      const fireAt = parseReminderTime(a.time);
+      const fireAt = parseReminderTime(time);
       if (!fireAt) {
         return (
-          `Could not parse time: "${a.time}".\n` +
-          'Try: "in 30 minutes", "in 2 hours", "tomorrow at 9am", "at 3pm", or an ISO date.'
+          `Could not parse time: "${time}".\n` +
+          'Try: "in 30 minutes", "in 2 hours", "tomorrow at 9am", "at 3pm", "8pm", or an ISO date.'
         );
       }
       if (fireAt <= new Date()) return 'Reminder time is in the past.';
       host.db
         .prepare(`INSERT INTO reminders (chat_id, text, fire_at, created_at) VALUES (?,?,?,?)`)
-        .run(chatId, a.text, fireAt.getTime(), Date.now());
-      return `Reminder set for ${fireAt.toLocaleString()}: ${a.text}`;
+        .run(chatId, text, fireAt.getTime(), Date.now());
+      return `Reminder set for ${fireAt.toLocaleString()}: ${text}`;
     },
   });
 
