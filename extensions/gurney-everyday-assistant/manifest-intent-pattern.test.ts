@@ -58,3 +58,14 @@ test('intent_pattern is a valid RegExp', () => {
   assert.ok(pattern instanceof RegExp);
   assert.ok(pattern.source.length > 10, 'pattern should be non-trivial');
 });
+
+test('intent_pattern stays under the 256-char extension loader limit', () => {
+  // src/core/extensions.ts silently drops any intent_pattern longer than 256
+  // chars, which disables intent pruning entirely and exposes every tool on
+  // every turn (a ~3x prompt-token blowup that turned a 40s turn into 100s).
+  // Catch this in CI instead of on the next abilitytest run.
+  assert.ok(
+    manifest.intent_pattern.length <= 256,
+    `intent_pattern is ${manifest.intent_pattern.length} chars; limit is 256`,
+  );
+});
