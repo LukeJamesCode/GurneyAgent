@@ -46,6 +46,32 @@ export function looksLikeFakeToolCall(text: string, allowedTools: ReadonlySet<st
   return false;
 }
 
+// Detect the "I removed that for you" hallucination. qwen3.5:0.8b/2b will
+// regularly answer a delete/cancel request by printing a confirmation in
+// plaintext WITHOUT calling the destructive tool — leaving the user thinking
+// the event/task/reminder is gone when it's still on the calendar. We catch
+// this when three things line up:
+//   - the user message contained a delete-shaped verb
+//   - no destructive tool ran this turn (matched by name suffix)
+//   - the model's reply contains a past-tense completion claim
+// Both halves are necessary — the model legitimately uses "removed/deleted"
+// when describing what it CAN do, or when summarizing a real delete result.
+const DESTRUCTIVE_TOOL_PATTERN = /(?:_|^)(delete|cancel|remove|clear|wipe|drop)(?:_|$)/i;
+const USER_DELETE_VERB_PATTERN =
+  /\b(cancel|delete|remove|drop|wipe|clear|nuke|get rid of)\b/i;
+const ASSISTANT_FAKE_CONFIRM_PATTERN =
+  /\b(removed|deleted|cancell?ed|cleared|wiped|dropped|gone|nuked)\b/i;
+export function looksLikeFakeActionConfirmation(args: {
+  userText: string;
+  assistantText: string;
+  toolCallNames: readonly string[];
+}): boolean {
+  if (!USER_DELETE_VERB_PATTERN.test(args.userText)) return false;
+  if (!ASSISTANT_FAKE_CONFIRM_PATTERN.test(args.assistantText)) return false;
+  const ranDestructive = args.toolCallNames.some((n) => DESTRUCTIVE_TOOL_PATTERN.test(n));
+  return !ranDestructive;
+}
+
 // Ollama returns HTTP 500 with an XML/JSON parse error message when the model
 // emits a malformed tool-call payload that its parser can't decode. This is
 // not a backend outage — it's a model misfire, so we recover the same way we
@@ -79,6 +105,11 @@ export const AFTER_TURN_TOOL_RESULT_SUMMARY_MAX_CHARS = 500;
 export interface ReplyChunk {
   delta: string;
   done: boolean;
+  // When set, the adapter should discard the streamed buffer for this turn
+  // and render this string in its place. Used by the hallucination guard to
+  // overwrite an "I removed that for you" plaintext claim that wasn't backed
+  // by an actual delete-tool call. Only honoured on the final (done) chunk.
+  replace?: string;
   // Set once on the final chunk.
   meta?: {
     model: string;
@@ -773,6 +804,30 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
       slot.abort = null;
     }
 
+    // Hallucination guard. If the user asked to delete something and the
+    // model replied with "I removed it" but never actually called a
+    // destructive tool, scrub the reply so the user knows the action didn't
+    // happen. The corrected text REPLACES whatever streamed (the Telegram
+    // adapter only renders on done) and gets persisted so the next turn's
+    // context doesn't carry the lie forward.
+    let replacement: string | undefined;
+    if (
+      assistantText &&
+      looksLikeFakeActionConfirmation({
+        userText: msg.text,
+        assistantText,
+        toolCallNames: afterTurnToolCalls.filter((c) => c.ok).map((c) => c.name),
+      })
+    ) {
+      cl.warn('blocked fake action confirmation — model claimed delete with no tool call', {
+        userSample: msg.text.slice(0, 120),
+        assistantSample: assistantText.slice(0, 200),
+        ranTools: afterTurnToolCalls.map((c) => c.name),
+      });
+      replacement =
+        "I didn't actually run the delete — I can see the item but the action didn't go through. Try the request again, ideally naming the date or id.";
+      assistantText = replacement;
+    }
     if (assistantText) {
       trackingAppend('assistant', assistantText, {
         ...(lastChunk?.completionTokens !== undefined
@@ -800,7 +855,12 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         toolCalls: afterTurnToolCalls,
       },
     };
-    await msg.send({ delta: '', done: true, meta });
+    await msg.send({
+      delta: '',
+      done: true,
+      meta,
+      ...(replacement !== undefined ? { replace: replacement } : {}),
+    });
   }
 
   async function pump(chatId: number): Promise<void> {

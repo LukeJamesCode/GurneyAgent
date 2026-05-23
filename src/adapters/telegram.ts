@@ -706,6 +706,10 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
         send: async (chunk: ReplyChunk) => {
           if (chunk.delta) buffer += chunk.delta;
           if (chunk.done) {
+            // Hallucination guard (see orchestrator): orchestrator can replace
+            // the streamed buffer wholesale when the model claimed a delete
+            // that never ran.
+            if (chunk.replace !== undefined) buffer = chunk.replace;
             const reply = buffer.length > 0 ? buffer : '(no reply)';
             let display = reply;
             if (devmode && chunk.meta) {
