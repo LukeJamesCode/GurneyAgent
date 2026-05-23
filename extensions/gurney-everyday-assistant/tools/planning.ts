@@ -35,9 +35,7 @@ export function register(host: Host): void {
     name: 'plan_day',
     intentPattern: PLAN_INTENT,
     description:
-      'Synthesise a full day plan: calendar events + due tasks + weather in one reply. ' +
-      "Use when the user says 'plan my day', 'what does my day look like', 'give me a day overview'. " +
-      'Prefer this over chaining calendar_list_events + tasks_list + weather_get separately.',
+      "Synthesise calendar + due tasks + weather into a day plan. Use for 'plan my day / what does my day look like / block out my day or tomorrow / day overview'.",
     tier: 'auto',
     parameters: {
       type: 'object',
@@ -133,9 +131,7 @@ export function register(host: Host): void {
     name: 'find_free_slot',
     intentPattern: FREE_SLOT_INTENT,
     description:
-      'Find free time slots in the calendar. ' +
-      "Use when the user asks 'when am I free', 'find me a free hour', 'what time slots do I have today'. " +
-      'Returns the N largest free gaps between calendar events within the given bounds.',
+      "Find free time slots in the calendar. Use for 'when am I free / find me a free hour / what time slots do I have'. Returns the N largest free gaps within bounds.",
     tier: 'auto',
     parameters: {
       type: 'object',
@@ -180,14 +176,8 @@ export function register(host: Host): void {
     intentPattern: SCHEDULE_TASK_INTENT,
     description:
       "Place an EXISTING Google Task on the calendar in a free slot. " +
-      "Use when the user explicitly asks to 'block out time for X', 'schedule the project report for 2 hours this week, mornings preferred', 'find time for project work tomorrow morning', 'put my task on the calendar'. " +
-      "The X must be a task that exists (or that the user is asking you to fit in) — this tool fails if no matching task is found. " +
-      "Do NOT use this for: " +
-      "(a) creating a new calendar event from scratch (use `calendar_add_event`); " +
-      "(b) 'plan my day' / 'block out my day' / 'block out tomorrow' (use `plan_day`); " +
-      "(c) followup check-ins (use `schedule_followup`); " +
-      "(d) recording a todo with no calendar slot (use `tasks_add`). " +
-      "Do NOT call this automatically — always wait for an explicit user request to place a task on the calendar.",
+      "Use only when the user explicitly asks to fit/schedule/block out time for a NAMED task they already have ('schedule the project report for 2 hours this week, mornings preferred'). " +
+      "Fails if no matching task exists. Not for new event creation or generic 'plan my day'.",
     tier: 'auto',
     selfReplying: true,
     parameters: {
@@ -240,7 +230,7 @@ export function register(host: Host): void {
         const match = await findTaskByTitle(tasks, a.task_title, undefined, false);
         if (match.kind === 'none')
           return (
-            `[tool-internal] smart_schedule_task: no Google Task title contains "${a.task_title}". ` +
+            `No Google Task title contains "${a.task_title}". ` +
             `Tell the user that task isn't on their list yet, or offer to create it with tasks_add first.`
           );
         if (match.kind === 'many') {
@@ -291,7 +281,7 @@ export function register(host: Host): void {
       return (
         `Scheduled "${taskTitle}" for ${slot.label}.\n` +
         `Mark it done with /done or tasks_complete when finished.\n` +
-        `[internal] event_id: ${ev.id}`
+        `event_id: ${ev.id}`
       );
     },
   });
@@ -300,10 +290,7 @@ export function register(host: Host): void {
     name: 'weather_reschedule_check',
     intentPattern: WEATHER_RESCHEDULE_INTENT,
     description:
-      'Check upcoming outdoor calendar events against the weather forecast and flag ones that may need rescheduling due to bad weather. ' +
-      "Use when the user asks 'will the weather affect my plans', 'should I reschedule my outdoor event', 'anything outdoor that's going to get rained on'. " +
-      'Prefer this over chaining `briefing_tomorrow` + `weather_get` — it cross-references calendar events with the forecast in one call. ' +
-      'Also runs automatically via cron (6am and 6pm) — those nudges appear in Telegram without prompting.',
+      "Cross-reference outdoor calendar events with the forecast and flag any at risk of bad weather. Use for 'will the weather affect my plans / anything outdoor going to get rained on'.",
     tier: 'auto',
     parameters: { type: 'object', properties: {} },
     invoke: async (_args, ctx) => {

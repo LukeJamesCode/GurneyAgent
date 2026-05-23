@@ -12,6 +12,7 @@
 import type { DB } from '../storage/db.js';
 import type { Logger } from '../util/log.js';
 import type { LLM, ChatChunk, ProfileName, ToolCall } from './llm.js';
+import { LLMEmptyResponseError } from './llm.js';
 import type { ToolRegistry } from './tools.js';
 import { build as buildContext, type HistoryMessage } from './context.js';
 import type { AfterTurnContext, AfterTurnToolCallSummary } from './extensions.js';
@@ -174,16 +175,19 @@ function dailyContext(now: Date = new Date(), lastUserAt?: number): string {
 // coarse on purpose — exact seconds add noise to the prompt and don't change
 // behaviour. Negative or zero gaps (clock skew, same-millisecond) collapse to
 // "just now".
+// Bucketed so the system prompt prefix changes rarely — every per-second tick
+// in this string invalidates Ollama's KV prompt cache on the next turn, which
+// on CPU costs full prefill on the next call. The model only needs coarse
+// "how long since the user talked to me" awareness; precise seconds add no
+// agent-side value.
 export function humanGap(ms: number): string {
-  if (ms <= 1000) return 'just now';
-  const sec = Math.floor(ms / 1000);
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min} minute${min === 1 ? '' : 's'}`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} hour${hr === 1 ? '' : 's'}`;
+  if (ms < 2 * 60_000) return 'just now';
+  if (ms < 15 * 60_000) return 'a few minutes';
+  if (ms < 60 * 60_000) return 'under an hour';
+  const hr = Math.floor(ms / (60 * 60_000));
+  if (hr < 24) return hr === 1 ? 'about an hour' : `${hr} hours`;
   const day = Math.floor(hr / 24);
-  return `${day} day${day === 1 ? '' : 's'}`;
+  return day === 1 ? 'a day' : `${day} days`;
 }
 
 function isoDay(d: Date): string {
@@ -602,10 +606,20 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           break;
         }
         assistantText = '';
+        // Follow-up paraphrase round. The model has the tool result; its only
+        // job now is to summarize it in one or two sentences. That's a chat
+        // task, not a tool-routing task — so we drop the tool schemas AND
+        // switch to the lighter `defaultProfile` (chat / 0.8b) instead of the
+        // tools profile (2b). On a CPU host the smaller model halves the
+        // prefill+decode time of every non-self-replying tool turn (weather,
+        // reminder_set, tasks_complete, briefings, plan_day, etc.). We keep
+        // tools available only if the prior round explicitly chained another
+        // tool call, otherwise the small model would be lured by them.
+        const FOLLOWUP_MAX_TOKENS = 256;
         const followup = opts.llm.chat({
-          profile: profileForTurn,
-          messages: buildPromptForTurn().messages,
-          ...(toolSchemas.length > 0 ? { tools: toolSchemas } : {}),
+          profile: defaultProfile,
+          messages: buildPromptForTurn(true).messages,
+          maxTokens: FOLLOWUP_MAX_TOKENS,
           signal: abort.signal,
         });
         lastChunk = await drain(followup);
@@ -639,14 +653,40 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         await msg.send({ delta: '', done: true });
         return;
       }
-      const m = e instanceof Error ? e.message : String(e);
-      lastErrors.set(msg.chatId, m);
-      cl.warn('llm chat failed', { error: m });
-      await msg.send({
-        delta: assistantText ? '' : `Sorry — I hit an error: ${m}`,
-        done: true,
-      });
-      return;
+      // The model returned an empty stream — same root condition as the
+      // empty-text safety net below. Recover by retrying once with tools
+      // disabled so the model is forced to produce plain language. Without
+      // this branch the user sees "Sorry — I hit an error: model returned an
+      // empty response" on a read-only query that just needed a tool call.
+      if (e instanceof LLMEmptyResponseError && !assistantText && !abort.signal.aborted) {
+        cl.debug('empty LLM response — retrying with tools off');
+        try {
+          const noToolsFollowup = opts.llm.chat({
+            profile: defaultProfile,
+            messages: buildPromptForTurn(true).messages,
+            signal: abort.signal,
+          });
+          lastChunk = await drain(noToolsFollowup);
+        } catch (e2) {
+          const m = e2 instanceof Error ? e2.message : String(e2);
+          lastErrors.set(msg.chatId, m);
+          cl.warn('llm chat failed on empty-response retry', { error: m });
+          await msg.send({
+            delta: assistantText ? '' : `Sorry — I hit an error: ${m}`,
+            done: true,
+          });
+          return;
+        }
+      } else {
+        const m = e instanceof Error ? e.message : String(e);
+        lastErrors.set(msg.chatId, m);
+        cl.warn('llm chat failed', { error: m });
+        await msg.send({
+          delta: assistantText ? '' : `Sorry — I hit an error: ${m}`,
+          done: true,
+        });
+        return;
+      }
     } finally {
       slot.abort = null;
     }

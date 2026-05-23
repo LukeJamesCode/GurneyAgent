@@ -18,9 +18,7 @@ export function register(host: Host): void {
     name: 'learned_routine_list',
     intentPattern: LEARNED_ROUTINE_LIST_INTENT,
     description:
-      'List active learned routines — recurring nudges Gurney auto-created from observed patterns. ' +
-      "Use when the user asks 'what routines have you learned', 'list my routines', 'what's recurring'. " +
-      'Do NOT use this for one-shot reminders (use `reminder_list`) or for calendar events (`calendar_list_events`).',
+      "List active learned routines (recurring nudges Gurney auto-created from observed patterns). Use for 'what routines have you learned / list my routines'.",
     tier: 'auto',
     parameters: { type: 'object', properties: {} },
     invoke: async (_args, ctx) => {
@@ -45,10 +43,7 @@ export function register(host: Host): void {
     name: 'learned_routine_delete',
     intentPattern: LEARNED_ROUTINE_DELETE_INTENT,
     description:
-      'Delete an active learned routine by id or by title. ' +
-      "Use when the user says 'forget the X routine', 'stop the recurring nudge', 'delete the X routine'. " +
-      "Prefer matching by title from the user's phrasing; resolve numeric ids only when the user explicitly gives one. " +
-      'Tier is `confirm` — the model must confirm before running.',
+      "Delete an active learned routine by id or title. Use for 'forget the X routine / stop the recurring nudge'. Prefer matching by title.",
     tier: 'confirm',
     parameters: {
       type: 'object',

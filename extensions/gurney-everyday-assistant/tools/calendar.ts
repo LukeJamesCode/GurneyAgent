@@ -18,13 +18,9 @@ export function register(host: Host): void {
     name: 'calendar_list_events',
     intentPattern: CALENDAR_LIST_INTENT,
     description:
-      'List Google Calendar EVENTS (appointments, meetings, time-blocked activities) for a day or date range. ' +
-      "Use when the user asks 'what's on my calendar', 'what do I have today/tomorrow/this week', 'am I free at 3pm'. " +
-      'Do NOT use this for tasks/todos — those live in `tasks_list`. ' +
-      'Defaults to today if no range is given. ' +
-      'For a SPECIFIC DATE the user named (e.g. "may 5th"), pass `time_min` as the start of that local day and `time_max` as the start of the next day — DO NOT widen the range to adjacent days. ' +
-      'Each result line is prefixed with its own date — repeat that date back to the user verbatim. ' +
-      'When you reply, list EVERY event from the result. Do not invent cancellations, reschedules, or status changes — the listing is read-only.',
+      "List Google Calendar events for a day or range. Defaults to today. " +
+      "For a specific date the user named, set `time_min` to the start of that local day and `time_max` to the start of the next — do not widen. " +
+      "Read-only: list every event in the result, repeat each line's date verbatim, never claim an event is cancelled.",
     tier: 'auto',
     parameters: {
       type: 'object',
@@ -96,12 +92,9 @@ export function register(host: Host): void {
     name: 'calendar_add_event',
     intentPattern: CALENDAR_ADD_INTENT,
     description:
-      'Create a NEW Google Calendar event with structured start/end values. ' +
-      'This is the DEFAULT calendar creation tool — use it for nearly all event-add requests, including timed events. ' +
-      'Resolve the date and time yourself from the user phrase and pass them as ISO 8601 with the local timezone offset. ' +
-      "Extract the event title as a clean noun phrase from the user's words (e.g. 'quiz for atomic physics' → 'Atomic Physics Quiz', 'lunch with Sam' → 'Lunch with Sam'). Do not append words the user did not say. " +
-      'For all-day events, set `all_day: true`, pass YYYY-MM-DD dates, and treat `end` as the final calendar date the user wants included. ' +
-      'Do NOT use this for tasks/todos (use `tasks_add`) or one-shot timed reminders (use `reminder_set`).',
+      "Create a Google Calendar event with structured start/end. DEFAULT for any event-add request, including dentist/doctor/haircut/DMV/school appointments (you record on the user's calendar, you don't book with the provider). " +
+      "Resolve the date yourself from the system prompt's current date; default morning=09:00, afternoon=14:00, evening=18:00 when no clock time. Title = user's noun phrase verbatim. " +
+      "For all-day events: `all_day: true`, YYYY-MM-DD start/end, `end` = final included date.",
     tier: 'auto',
     selfReplying: true,
     parameters: {
@@ -160,15 +153,8 @@ export function register(host: Host): void {
     name: 'calendar_quick_add',
     intentPattern: CALENDAR_ADD_INTENT,
     description:
-      "FALLBACK ONLY. Prefer `calendar_add_event` in almost every case — Google's natural-language parser mangles compound titles like 'quiz for atomic physics' (it produced 'Quiz at'). " +
-      "Acceptable only for a very short, single-noun phrase with an explicit clock time, e.g. 'Lunch Friday 1pm', 'Gym at 6pm'. " +
-      "If the user phrase contains 'for', 'about', 'with', a duration like '8 to 10am', or any complex structure, DO NOT use this tool — use `calendar_add_event` instead. " +
-      "Also DO NOT use when the phrase contains: " +
-      "(a) the words 'appointment', 'session', or 'meeting' (Google drops everything before them — 'dentist appointment at 9' becomes title 'at'); " +
-      "(b) a relative day phrase like 'next Tuesday', 'this Friday', 'tomorrow' (Google treats 'next' / 'this' as the title); " +
-      "(c) a time-of-day word like 'morning', 'afternoon', 'evening' before the clock time (Google takes the word as the title — 'Tuesday morning at 9' became 'morning'); " +
-      "(d) any date-only phrasing like 'grad rehearsal on may 19th' (Google silently drops the date). " +
-      "For any of these, switch to `calendar_add_event` with a resolved ISO 8601 start/end.",
+      "FALLBACK only. Google's NL parser mangles anything beyond a single-noun event with an explicit clock time ('Lunch Friday 1pm', 'Gym at 6pm'). " +
+      "Skip if the phrase has 'for/about/with', a duration, the words 'appointment/session/meeting', a relative day ('next Tuesday'), a time-of-day word ('morning'), or no clock time — use `calendar_add_event` instead.",
     tier: 'auto',
     selfReplying: true,
     parameters: {
@@ -202,13 +188,8 @@ export function register(host: Host): void {
     name: 'calendar_delete_event',
     intentPattern: CALENDAR_DELETE_INTENT,
     description:
-      "USE THIS to cancel or delete a calendar event the user named — phrases like " +
-      "'cancel the camping event', 'remove tomorrow's meeting', 'delete that 3pm', 'drop the gym session from my calendar'. " +
-      "This is THE tool for cancelling a calendar event. Do NOT call tasks_complete, tasks_delete, or any 'task_cancel' for a calendar event — those work on TODOs only. " +
-      "How to use: if you already have the event id from a `calendar_list_events` result earlier in this turn, pass it directly. " +
-      "If you do NOT yet have the id, call `calendar_list_events` FIRST in the same turn over the relevant date range, find the matching summary in the `event_ids:` line, then call this tool with that id. " +
-      "Never tell the user the event does not exist without listing first. Never invent an id. " +
-      "Tier is `confirm`, so the user is re-prompted before the delete fires.",
+      "Cancel/delete a calendar event the user named ('cancel the camping event', 'remove tomorrow's 3pm'). " +
+      "If you don't have the id yet, call `calendar_list_events` first in this turn and read the id from the `event_ids:` line. Never invent an id; never say the event doesn't exist without listing first.",
     tier: 'confirm',
     selfReplying: true,
     parameters: {

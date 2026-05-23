@@ -152,16 +152,8 @@ export function setupFollowups(opts: FollowupsOptions): Followups {
   const tool: ToolHandler = {
     name: 'schedule_followup',
     description:
-      "Self-issued check-in message tool. Sends a future CHAT MESSAGE from yourself to the user — only when the user explicitly asks you to follow up later or check back in (e.g. 'check on me about the interview tomorrow', 'ask me later if I took the chicken out'). " +
-      "The text in `topic` is sent verbatim to the user when the time arrives. " +
-      "Do NOT use this tool when the user says 'schedule the X', 'fit in the X', or 'block out time for X' — those are `smart_schedule_task` (for an existing todo) or `calendar_add_event` (for a new event). The word 'schedule' alone is NOT a trigger for this tool. " +
-      "Also do NOT use for: " +
-      "(a) calendar events with a start/end (use `calendar_add_event`); " +
-      "(b) one-shot 'remind me to X at Y' (use `reminder_set`); " +
-      "(c) recording a todo (use `tasks_add`); " +
-      "(d) blocking out task time on the calendar (use `smart_schedule_task`); " +
-      "(e) any question phrased as 'what / when / do I / show / list' (those are read tools, not followups). " +
-      "Time must be ISO 8601 in the future, within one year.",
+      "Self-issued check-in: send a future chat MESSAGE from yourself to the user, only when they explicitly ask you to follow up or check in later ('check on me about the interview tomorrow'). " +
+      "The bare word 'schedule' is NOT a trigger — 'schedule the report' is `smart_schedule_task`, not this. Time = ISO 8601 future, within one year.",
     parameters: {
       type: 'object',
       required: ['when_iso', 'topic'],

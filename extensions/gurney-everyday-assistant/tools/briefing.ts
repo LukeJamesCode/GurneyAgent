@@ -14,9 +14,7 @@ export function register(host: Host): void {
     name: 'briefing_today',
     intentPattern: TODAY_BRIEF_INTENT,
     description:
-      "Generate today's briefing on demand: weather, calendar events, and tasks. " +
-      "Use when the user says 'give me my morning briefing', 'what does today look like', 'brief me', 'what's on today'. " +
-      'Prefer this over chaining three separate weather/calendar/tasks tool calls — it synthesises them in one formatted reply.',
+      "Today's briefing: weather + calendar + tasks in one formatted reply. Use for 'morning briefing / what does today look like / brief me / what's on today'.",
     tier: 'auto',
     parameters: { type: 'object', properties: {} },
     invoke: async (_args, ctx) => buildMorningBrief(host, { signal: ctx.signal }),
@@ -26,12 +24,8 @@ export function register(host: Host): void {
     name: 'briefing_tomorrow',
     intentPattern: TOMORROW_BRIEF_INTENT,
     description:
-      "Generate tomorrow's briefing on demand: tomorrow's calendar and outstanding tasks. " +
-      "Use when the user says 'what does tomorrow look like', 'how does tomorrow look', 'evening briefing', 'night brief', 'what's tomorrow'. " +
-      "Prefer this over chaining calendar and tasks calls separately. " +
-      "ALWAYS call this tool for those phrasings — never compose a hallucinated agenda template (no '[Local Time]' / '[Upcoming Activity]' placeholders). " +
-      "Do NOT use when the user asks to PLAN, SCHEDULE or BLOCK OUT tomorrow — that's `plan_day`. " +
-      "Do NOT use when the user is cancelling, adding, or asking about a specific event — that's `calendar_*`.",
+      "Tomorrow's briefing: tomorrow's calendar + outstanding tasks. Use for 'what does tomorrow look like / how does tomorrow look / evening briefing / night brief / what's tomorrow'. " +
+      "Always call — never refuse or compose a hallucinated agenda template.",
     tier: 'auto',
     parameters: { type: 'object', properties: {} },
     invoke: async (_args, ctx) => buildNightBrief(host, { signal: ctx.signal }),

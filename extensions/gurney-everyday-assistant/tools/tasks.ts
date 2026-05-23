@@ -37,9 +37,7 @@ async function resolveTaskId(
   if (match.kind === 'none') {
     return {
       ok: false,
-      message:
-        `[tool-internal] resolveTaskId: no Google Task title contains "${args.task_title}". ` +
-        `Tell the user there's no such task on their list — do NOT echo this raw message.`,
+      message: `No Google Task title contains "${args.task_title}". Tell the user there's no such task on their list yet.`,
     };
   }
   if (match.kind === 'many') {
@@ -59,11 +57,8 @@ export function register(host: Host): void {
     name: 'tasks_list',
     intentPattern: TASK_LIST_INTENT,
     description:
-      'List Google Tasks (TODOs, action items, things to do). ' +
-      "Use when the user asks 'what are my tasks', 'what's on my todo list', 'what do I need to do'. " +
-      'Do NOT use this for calendar events/appointments (use `calendar_list_events`) or for one-shot timed reminders (use `reminder_list`). ' +
-      'Defaults to incomplete tasks only. ' +
-      'You do NOT need to call this before tasks_complete/tasks_delete — those tools accept task_title directly.',
+      "List Google Tasks (TODOs). Use for 'what are my tasks / what's on my todo list / what do I need to do'. Defaults to incomplete only. " +
+      "Call the tool via the structured protocol — never write `[tasks_list]` as plain-text reply.",
     tier: 'auto',
     parameters: {
       type: 'object',
@@ -98,10 +93,8 @@ export function register(host: Host): void {
     name: 'tasks_add',
     intentPattern: TASK_ADD_INTENT,
     description:
-      "Record a NEW todo on the user's Google Tasks list. " +
-      "This is the DEFAULT for 'add X to my list', 'add X to my todos', 'put X on my list', 'set a todo/task X', 'I need to X', 'remember to X' (no specific firing time). " +
-      "ALWAYS call this for those phrasings. NEVER reply with 'No task matching X' to an ADD request — that string is only valid as a TOOL RESULT for complete/delete lookups, never as your own reply to the user. Duplicates are fine; when in doubt, add. " +
-      "Your job is to RECORD X — copy the user's words into `title`. Do NOT perform X, do not rephrase X as a plan, do not reply with a description of the task. Just call the tool.",
+      "Record a NEW todo on the user's Google Tasks list. DEFAULT for 'add X to my list / put X on my todos / set a task X / I need to X / remember to X' with no specific firing time. " +
+      "Copy the user's words into `title` (lightly cleaned). Duplicates are fine — when in doubt, ADD; never refuse the request.",
     tier: 'auto',
     selfReplying: true,
     parameters: {
@@ -156,9 +149,7 @@ export function register(host: Host): void {
     name: 'tasks_complete',
     intentPattern: TASK_DONE_INTENT,
     description:
-      'Mark a Google Task as DONE. ' +
-      "Use when the user says 'I finished X', 'mark X done', 'check off X'. " +
-      'Pass `task_title` (the task name or a unique substring — preferred) OR `task_id` from a prior `tasks_list` call.',
+      "Mark a Google Task as DONE. Use for 'I finished X / mark X done / check off X'. Pass `task_title` (preferred) or `task_id`.",
     tier: 'auto',
     parameters: {
       type: 'object',
@@ -193,9 +184,7 @@ export function register(host: Host): void {
     name: 'tasks_delete',
     intentPattern: TASK_DELETE_INTENT,
     description:
-      'Permanently delete a Google Task. ' +
-      "Use only when the user wants to ABANDON a task (not finish it). For 'I did X', use `tasks_complete` instead. " +
-      'Tier is `confirm`, so the user re-confirms before the delete fires.',
+      "Permanently delete a Google Task. Use only when the user ABANDONS a task; for 'I did X' use `tasks_complete`.",
     tier: 'confirm',
     parameters: {
       type: 'object',
@@ -227,8 +216,7 @@ export function register(host: Host): void {
     name: 'tasks_list_tasklists',
     intentPattern: TASK_LISTS_INTENT,
     description:
-      'List all available Google Task lists. ' +
-      "Rarely needed — only call this if the user explicitly asks 'what task lists do I have'.",
+      "List the user's Google Task lists. Only call when the user explicitly asks 'what task lists do I have'.",
     tier: 'auto',
     parameters: { type: 'object', properties: {} },
     invoke: async (_args, ctx) => {

@@ -144,13 +144,20 @@ export async function run(opts: RunOptions): Promise<void> {
       model: cfg.models.tools,
       contextTokens: 4096,
       heavy: false,
-      numPredict: 2048,
+      numPredict: 1024,
       keepAlive: '10m',
     };
   }
 
   const llm = createOllama({ baseUrl: cfg.ollama.url, profiles, log });
-  const tools = createToolRegistry({ log });
+  // Auto-confirm any `tier: 'confirm'` tool call in the test runner — in real
+  // Telegram the user taps a button; here there's no user, so without this
+  // every confirm-tier call would fail with "not confirmed" and tests like
+  // `cal.delete.std` would never reflect whether the model routed correctly.
+  const tools = createToolRegistry({
+    log,
+    confirm: async () => true,
+  });
   const prefs = createPrefsStore(db);
 
   // Scheduler is wired but nudges go nowhere — there's no Telegram. Followup
@@ -231,6 +238,14 @@ export async function run(opts: RunOptions): Promise<void> {
   const startedAt = Date.now();
 
   const baseline = await captureBaseline(ctx);
+
+  // Pre-warm both LLM profiles before timed tests begin. Without this the
+  // first chat-only turn and the first tool turn each pay a 30–60s cold-load
+  // tax that bleeds into the wall time of whichever test happens to be first
+  // (last run: chat.plain.std1 99s, followup.create.full 96s). The warmup
+  // sends a 1-token completion through each profile so Ollama keeps them
+  // resident through the rest of the suite.
+  await preWarm(ctx, profiles);
 
   writeLine('');
   writeLine('══ Gurney ability test ══════════════════════════════════════════════════════');
@@ -334,6 +349,40 @@ export async function run(opts: RunOptions): Promise<void> {
   await cleanup(ctx, baseline);
 
   await teardown(ctx);
+}
+
+// ── pre-warm ───────────────────────────────────────────────────────────────
+
+async function preWarm(
+  ctx: RunnerCtx,
+  profiles: Partial<Record<ProfileName, ProfileConfig | null>>,
+): Promise<void> {
+  const names = (Object.keys(profiles) as ProfileName[]).filter((n) => profiles[n]);
+  const tStart = Date.now();
+  writeLine(`pre-warming ${names.length} model profile(s): ${names.join(', ')}…`);
+  for (const name of names) {
+    try {
+      const stream = ctx.llm.chat({
+        profile: name,
+        messages: [
+          { role: 'system', content: 'You are warming up.' },
+          { role: 'user', content: 'ping' },
+        ],
+        maxTokens: 1,
+      });
+      // Drain to completion so the model load actually finishes before we
+      // return — without consuming the stream Ollama may not have loaded yet.
+      for await (const _chunk of stream) {
+        void _chunk;
+      }
+    } catch (e) {
+      ctx.log.warn('pre-warm failed', {
+        profile: name,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  writeLine(`pre-warm done in ${Math.round((Date.now() - tStart) / 1000)}s`);
 }
 
 // ── cleanup ─────────────────────────────────────────────────────────────────

@@ -153,17 +153,16 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   }
   if (cfg.models.tools) {
     // Tool-use profile. heavy=false so it doesn't fight the reasoning model
-    // for the single heavy slot. num_predict + keep_alive lifted from ATLAS's
-    // `task` profile (qwen3.5:2b) — that's the profile ATLAS routes every
-    // tool intent through, so the tuning is already proven against this exact
-    // model. 2048 sounds generous but it's a hard cap, not a target — qwen3.5
-    // routinely stops well short once it has produced the tool call + reply.
-    // Earlier 256/512 caps were clipping mid-tool-call on 2b-class models.
+    // for the single heavy slot. num_predict capped at 1024 — earlier 256/512
+    // caps clipped mid-tool-call on 2b-class models, but 2048 left so much
+    // ramble headroom that a single turn routinely cost ~60s on CPU. 1024 is
+    // ~4x a typical tool-call payload (~250 tokens) and the orchestrator's
+    // follow-up paraphrase round uses its own tighter per-call cap.
     profiles.tools = {
       model: cfg.models.tools,
       contextTokens: 4096,
       heavy: false,
-      numPredict: 2048,
+      numPredict: 1024,
       keepAlive: '10m',
     };
   }

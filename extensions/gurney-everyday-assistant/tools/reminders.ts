@@ -18,10 +18,8 @@ export function register(host: Host): void {
     name: 'reminder_set',
     intentPattern: REMINDER_SET_INTENT,
     description:
-      'Schedule a one-shot reminder that pings the user at a specific moment. ' +
-      "Use when the user says 'remind me to X in 30 minutes', 'remind me to X at 4pm', 'ping me when ...'. " +
-      'Do NOT use for open-ended TODOs (use `tasks_add`) or for time-blocked appointments on the calendar (use `calendar_quick_add`). ' +
-      'Rule of thumb: a reminder fires a notification at one moment and then is done; a task is a TODO with no notification; an event takes up time on the calendar.',
+      "Schedule a one-shot reminder that pings the user at a moment. Use for 'remind me to X in 30 minutes / at 4pm / tomorrow morning'. " +
+      "Reminder = one notification; task = open TODO; event = calendar time-block.",
     tier: 'auto',
     // `text` and `time` are conceptually required, but we let the tool run with
     // them missing and return a friendly error string. The 0.8b model recovers
@@ -76,9 +74,7 @@ export function register(host: Host): void {
     name: 'reminder_list',
     intentPattern: REMINDER_LIST_INTENT,
     description:
-      "List the user's upcoming (not-yet-fired) reminders. " +
-      "Use when the user asks 'what reminders do I have', 'what's coming up'. " +
-      'Do NOT use this to list calendar events (`calendar_list_events`) or todos (`tasks_list`).',
+      "List the user's upcoming reminders. Use for 'what reminders do I have'.",
     tier: 'auto',
     parameters: { type: 'object', properties: {} },
     invoke: async (_args, ctx) => {
@@ -99,9 +95,7 @@ export function register(host: Host): void {
     name: 'reminder_cancel',
     intentPattern: REMINDER_CANCEL_INTENT,
     description:
-      'Cancel a pending reminder by its numeric id. ' +
-      "Use when the user says 'cancel the reminder about X'. " +
-      'Resolve the id from a prior `reminder_list` call — never invent one. Tier is `confirm`.',
+      "Cancel a pending reminder by id. Resolve the id from a prior `reminder_list` — never invent one.",
     tier: 'confirm',
     parameters: {
       type: 'object',
