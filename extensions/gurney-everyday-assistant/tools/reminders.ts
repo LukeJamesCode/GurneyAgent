@@ -4,7 +4,11 @@ import { parseReminderTime, splitReminderArgs } from '../helpers/time.js';
 const REMINDER_SET_INTENT =
   '\\b(remind me|set a reminder|reminder|notify me|ping me|alarm|timer|countdown)\\b';
 const REMINDER_LIST_INTENT = '\\b(reminders|what reminders|upcoming reminders)\\b';
-const REMINDER_CANCEL_INTENT = '\\b(cancel|delete|remove).*(reminder|alarm|timer)\\b';
+const REMINDER_CANCEL_INTENT =
+  '\\b(cancel|delete|remove|clear|wipe|drop|get rid of|nuke).*(reminder|alarm|timer)\\b';
+const REMINDER_CLEAR_ALL_INTENT =
+  '\\b(cancel|delete|remove|clear|wipe|drop|get rid of|nuke).{0,30}\\b(all|every|everything|each)\\b.{0,20}(reminder|alarm|timer)' +
+  '|\\b(all|every)\\b.{0,20}(reminder|alarm|timer).{0,20}(cancel|delete|remove|clear|wipe|drop|gone)';
 
 interface ReminderRow {
   id: number;
@@ -113,6 +117,25 @@ export function register(host: Host): void {
         .prepare(`DELETE FROM reminders WHERE id=? AND chat_id=? AND fired=0`)
         .run((args as { id: number }).id, chatId);
       return changes > 0 ? 'Reminder cancelled.' : 'Reminder not found or already fired.';
+    },
+  });
+
+  host.tools.register({
+    name: 'reminder_clear_all',
+    intentPattern: REMINDER_CLEAR_ALL_INTENT,
+    description:
+      "Cancel ALL pending reminders for this chat at once. Use for 'clear all reminders', 'cancel every reminder', 'get rid of all my reminders', 'wipe my reminders'. " +
+      "DO NOT chain `reminder_list` + repeated `reminder_cancel` for a bulk clear — call this single tool instead.",
+    tier: 'auto',
+    selfReplying: true,
+    parameters: { type: 'object', properties: {} },
+    invoke: async (_args, ctx) => {
+      const chatId = ctx.chatId ?? host.telegram.chatId;
+      const { changes } = host.db
+        .prepare(`DELETE FROM reminders WHERE chat_id=? AND fired=0`)
+        .run(chatId);
+      if (changes === 0) return 'No pending reminders to clear.';
+      return `Cleared ${changes} reminder${changes === 1 ? '' : 's'}.`;
     },
   });
 }

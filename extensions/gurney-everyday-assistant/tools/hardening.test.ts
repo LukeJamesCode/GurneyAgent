@@ -284,6 +284,48 @@ test('calendar_add_event leaves the start alone when no am/pm in the user messag
   }
 });
 
+test('reminder_clear_all deletes all unfired reminders for the originating chat', async () => {
+  // Before this tool existed, "get rid of all my reminders" forced the model
+  // to chain reminder_list + repeated reminder_cancel — qwen3.5:2b just
+  // hallucinated success after the list call and left every row intact.
+  const tmp = mkdtempSync(join(tmpdir(), 'ged-hardening-clear-all-'));
+  try {
+    const db = open({ path: join(tmp, 'g.db') });
+    db.prepare(
+      `CREATE TABLE reminders (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         chat_id INTEGER NOT NULL,
+         text TEXT NOT NULL,
+         fire_at INTEGER NOT NULL,
+         fired INTEGER NOT NULL DEFAULT 0,
+         created_at INTEGER NOT NULL
+       )`,
+    ).run();
+    const insert = db.prepare(
+      `INSERT INTO reminders (chat_id, text, fire_at, fired, created_at) VALUES (?,?,?,?,?)`,
+    );
+    insert.run(111, 'email landlord', Date.now() + 60_000, 0, Date.now());
+    insert.run(111, 'take vitamins', Date.now() + 120_000, 0, Date.now());
+    insert.run(111, 'already fired', Date.now() - 60_000, 1, Date.now()); // preserved
+    insert.run(222, 'other chat', Date.now() + 60_000, 0, Date.now()); // preserved
+    const host = makeHost(db);
+    const tools = registerTools(registerReminders, host);
+    const result = await tools.get('reminder_clear_all')!({}, { chatId: 111, log: fakeLog });
+    assert.match(String(result), /Cleared 2 reminders/);
+    const remaining = db.prepare(`SELECT chat_id, fired FROM reminders ORDER BY id`).all() as Array<{
+      chat_id: number;
+      fired: number;
+    }>;
+    assert.deepEqual(remaining, [
+      { chat_id: 111, fired: 1 }, // fired row kept
+      { chat_id: 222, fired: 0 }, // other chat kept
+    ]);
+    db.close();
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('reminder_cancel is scoped to the originating chat', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'ged-hardening-reminder-'));
   try {
