@@ -29,5 +29,5 @@
     { "command": "morningbrief", "description": "Today's weather, events, and tasks" },
     { "command": "nightbrief", "description": "Evening summary: what's done, what's tomorrow" }
   ],
-  "intent_pattern": "\\b(events?|meetings?|appointments?|calendar|reschedule|free|schedul\\w*|tasks?|to-?dos?|my list|finish\\w*|done|remind\\w*|ping me|weather|forecast|temp\\w*|rain\\w*|snow\\w*|sunny|cloud(y)?|brief\\w*|plan.*day|block.*out|outdoor|routines?|gym|run|walk|hike)\\b"
+  "intent_pattern": "\\b(events?|meetings?|appointments?|calendar|reschedule|free|schedul\\w*|tasks?|to-?dos?|my list|finish\\w*|done|remind\\w*|ping me|weather|forecast|temp\\w*|rain|snow|sunny|cloudy?|brief\\w*|plan.*day|block.*out|outdoor|routines?|gym|run|tomorrow|today)\\b"
 }

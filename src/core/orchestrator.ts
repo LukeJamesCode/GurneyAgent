@@ -14,6 +14,38 @@ import type { Logger } from '../util/log.js';
 import type { LLM, ChatChunk, ProfileName, ToolCall } from './llm.js';
 import { LLMEmptyResponseError, LLMHttpError } from './llm.js';
 
+// The 0.8b/2b chat models occasionally answer a tool-routed question by
+// PRINTING what a tool call looks like as plain text, instead of using the
+// structured tool-call protocol. Three shapes have been observed in
+// abilitytest output:
+//   1. Markdown JSON block: ```json { "type": "briefing_tomorrow", ... } ```
+//   2. Bracketed/backticked tool name: `[tasks_list]`, `` `reminder_set` at 15:00 ``
+//   3. Function-call shape: `` `tasks_add` with `title`: "Buy milk" `` or
+//      `ask_task("buy_milk")`
+//
+// When we see one of these AND the model emitted no real tool calls this
+// round, we treat the assistant text as empty so the existing safety net
+// re-runs the turn with tools disabled. That forces the model to answer in
+// natural language (e.g. "I can't help with that") instead of leaving the
+// user with a corrupted tool-call-shaped reply.
+export function looksLikeFakeToolCall(text: string, allowedTools: ReadonlySet<string>): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  // Shape 1: markdown JSON block with a `"type": "<tool_name>"` field.
+  const jsonBlock = /^```(?:json)?\s*\n?\s*\{[\s\S]{0,400}?"type"\s*:\s*"([a-z_][a-z0-9_]*)"/i.exec(
+    t,
+  );
+  if (jsonBlock && allowedTools.has(jsonBlock[1]!)) return true;
+  // Shape 2/3: a recognised tool name in brackets, backticks, or as a
+  // function call at (or very near) the start of the reply.
+  const head = t.slice(0, 120);
+  const refMatch =
+    /^[\s*_>]*[\[`]\s*([a-z_][a-z0-9_]*)\s*[\]`]/i.exec(head) ??
+    /^[\s*_>]*`?([a-z_][a-z0-9_]*)`?\s*\(/i.exec(head);
+  if (refMatch && allowedTools.has(refMatch[1]!)) return true;
+  return false;
+}
+
 // Ollama returns HTTP 500 with an XML/JSON parse error message when the model
 // emits a malformed tool-call payload that its parser can't decode. This is
 // not a backend outage — it's a model misfire, so we recover the same way we
@@ -500,6 +532,25 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         signal: abort.signal,
       });
       lastChunk = await drain(initial);
+
+      // Fake-tool-call sanitizer (initial round). If the model wrote
+      // tool-call-shaped text instead of emitting a real tool call, clear
+      // the accumulated reply so the empty-text safety net kicks in and
+      // retries with tools off. Keeps the user from seeing replies like
+      // `[tasks_list]` or ```json {"type":"briefing_tomorrow"}```.
+      if (
+        assistantText &&
+        !(lastChunk?.toolCalls && lastChunk.toolCalls.length > 0) &&
+        toolSchemas.length > 0
+      ) {
+        const allowed = new Set(toolSchemas.map((s) => s.function.name));
+        if (looksLikeFakeToolCall(assistantText, allowed)) {
+          cl.warn('model emitted fake tool-call as plain text — retrying with tools off', {
+            sample: assistantText.slice(0, 120),
+          });
+          assistantText = '';
+        }
+      }
 
       let round = 0;
       while (lastChunk?.toolCalls && lastChunk.toolCalls.length > 0) {
