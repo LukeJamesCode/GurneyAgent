@@ -98,8 +98,14 @@ export function register(host: Host): void {
     tier: 'auto',
     selfReplying: true,
     parameters: {
+      // `end` is conceptually required but we mark only `summary` and `start`
+      // as required at the schema level. The 0.8b/2b chat models routinely
+      // omit `end` even when the description says it's required — the
+      // validator was then rejecting with "missing required property 'end'"
+      // and the tool never ran. Instead we default end ourselves in invoke
+      // (start + 1 hour for timed events, same as start for all-day).
       type: 'object',
-      required: ['summary', 'start', 'end'],
+      required: ['summary', 'start'],
       properties: {
         summary: {
           type: 'string',
@@ -114,7 +120,7 @@ export function register(host: Host): void {
         end: {
           type: 'string',
           description:
-            'For timed events: ISO 8601 end with timezone offset. For all-day events: YYYY-MM-DD final included date.',
+            'For timed events: ISO 8601 end with timezone offset. For all-day events: YYYY-MM-DD final included date. If omitted, defaults to start + 1 hour (timed) or the same date (all-day).',
         },
         all_day: {
           type: 'boolean',
@@ -133,15 +139,32 @@ export function register(host: Host): void {
       const a = args as {
         summary: string;
         start: string;
-        end: string;
+        end?: string;
         all_day?: boolean;
         description?: string;
       };
-      const allDay = a.all_day === true || isDateOnly(a.start) || isDateOnly(a.end);
+      // Default `end` if the model omitted it — a frequent small-model miss.
+      // Timed events get a 1-hour block; all-day events get end == start.
+      let end = a.end?.trim();
+      const allDayInput =
+        a.all_day === true || isDateOnly(a.start) || (end !== undefined && isDateOnly(end));
+      if (!end) {
+        if (allDayInput) {
+          end = a.start;
+        } else {
+          const startDate = new Date(a.start);
+          if (Number.isNaN(startDate.getTime())) {
+            return `Invalid start: "${a.start}". Pass ISO 8601 with offset, e.g. 2026-05-04T09:00:00-06:00.`;
+          }
+          startDate.setHours(startDate.getHours() + 1);
+          end = startDate.toISOString();
+        }
+      }
+      const allDay = allDayInput || isDateOnly(end);
       const ev = await c.addEvent({
         summary: a.summary,
         start: allDay ? toDateOnly(a.start) : a.start,
-        end: allDay ? toDateOnly(a.end) : a.end,
+        end: allDay ? toDateOnly(end) : end,
         ...(allDay ? { allDay } : {}),
         ...(a.description ? { description: a.description } : {}),
       });

@@ -12,7 +12,24 @@
 import type { DB } from '../storage/db.js';
 import type { Logger } from '../util/log.js';
 import type { LLM, ChatChunk, ProfileName, ToolCall } from './llm.js';
-import { LLMEmptyResponseError } from './llm.js';
+import { LLMEmptyResponseError, LLMHttpError } from './llm.js';
+
+// Ollama returns HTTP 500 with an XML/JSON parse error message when the model
+// emits a malformed tool-call payload that its parser can't decode. This is
+// not a backend outage — it's a model misfire, so we recover the same way we
+// recover from an empty response: retry once with tools disabled.
+function isMalformedToolCallError(e: unknown): boolean {
+  if (!(e instanceof LLMHttpError)) return false;
+  if (e.status !== 500) return false;
+  const m = e.message.toLowerCase();
+  return (
+    m.includes('xml syntax error') ||
+    m.includes('parameter') ||
+    m.includes('function call') ||
+    m.includes('tool call') ||
+    m.includes('parse')
+  );
+}
 import type { ToolRegistry } from './tools.js';
 import { build as buildContext, type HistoryMessage } from './context.js';
 import type { AfterTurnContext, AfterTurnToolCallSummary } from './extensions.js';
@@ -661,8 +678,18 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
       // disabled so the model is forced to produce plain language. Without
       // this branch the user sees "Sorry — I hit an error: model returned an
       // empty response" on a read-only query that just needed a tool call.
-      if (e instanceof LLMEmptyResponseError && !assistantText && !abort.signal.aborted) {
-        cl.debug('empty LLM response — retrying with tools off');
+      const malformedToolCall = isMalformedToolCallError(e);
+      if (
+        (e instanceof LLMEmptyResponseError || malformedToolCall) &&
+        !assistantText &&
+        !abort.signal.aborted
+      ) {
+        cl.debug(
+          malformedToolCall
+            ? 'Ollama rejected malformed tool call — retrying with tools off'
+            : 'empty LLM response — retrying with tools off',
+          { error: e instanceof Error ? e.message : String(e) },
+        );
         try {
           const noToolsFollowup = opts.llm.chat({
             profile: defaultProfile,

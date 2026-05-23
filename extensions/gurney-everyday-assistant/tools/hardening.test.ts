@@ -7,6 +7,7 @@ import { open } from '../../../src/storage/db.js';
 import type { Host } from '../../../src/core/extensions.js';
 import { register as registerTasks } from './tasks.js';
 import { register as registerReminders } from './reminders.js';
+import { register as registerCalendar } from './calendar.js';
 
 type ToolInvoke = (
   args: Record<string, unknown>,
@@ -75,6 +76,100 @@ test('tasks_add omits due when the user did not name a deadline', async () => {
       const taskBody = JSON.parse(bodies[1]!) as Record<string, unknown>;
       assert.equal(taskBody['title'], 'Buy milk');
       assert.equal('due' in taskBody, false);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    db.close();
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('calendar_add_event defaults end when the model omits it (timed event = +1h)', async () => {
+  // qwen3.5:0.8b/2b routinely call calendar_add_event without `end`. The
+  // schema used to mark it required, so the validator rejected the call
+  // before invoke ran and the event was never created. Now the tool fills
+  // end = start + 1h so a single missed arg doesn't fail the whole turn.
+  const tmp = mkdtempSync(join(tmpdir(), 'ged-hardening-cal-'));
+  try {
+    const db = open({ path: join(tmp, 'g.db') });
+    const host = makeHost(db);
+    const tools = registerTools(registerCalendar, host);
+    const origFetch = globalThis.fetch;
+    const bodies: Array<string | undefined> = [];
+    globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      bodies.push(typeof init?.body === 'string' ? init.body : undefined);
+      const body =
+        bodies.length === 1
+          ? { access_token: 'AT', expires_in: 3600 }
+          : {
+              id: 'e1',
+              summary: 'Camping',
+              start: { dateTime: '2026-05-23T12:00:00-06:00' },
+              end: { dateTime: '2026-05-23T13:00:00-06:00' },
+            };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as Response;
+    };
+    try {
+      const result = await tools.get('calendar_add_event')!(
+        { summary: 'Camping', start: '2026-05-23T12:00:00-06:00' },
+        { log: fakeLog },
+      );
+      assert.match(String(result), /Added/i);
+      const eventBody = JSON.parse(bodies[1]!) as Record<string, unknown>;
+      const end = (eventBody['end'] as { dateTime?: string } | undefined)?.dateTime;
+      assert.ok(end, 'end should have been filled in');
+      // +1h from the start ISO above
+      assert.equal(end, '2026-05-23T19:00:00.000Z');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    db.close();
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('calendar_add_event defaults end for all-day events (end = start)', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'ged-hardening-cal-allday-'));
+  try {
+    const db = open({ path: join(tmp, 'g.db') });
+    const host = makeHost(db);
+    const tools = registerTools(registerCalendar, host);
+    const origFetch = globalThis.fetch;
+    const bodies: Array<string | undefined> = [];
+    globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      bodies.push(typeof init?.body === 'string' ? init.body : undefined);
+      const body =
+        bodies.length === 1
+          ? { access_token: 'AT', expires_in: 3600 }
+          : {
+              id: 'e2',
+              summary: 'Birthday',
+              start: { date: '2026-05-25' },
+              end: { date: '2026-05-25' },
+            };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as Response;
+    };
+    try {
+      const result = await tools.get('calendar_add_event')!(
+        { summary: 'Birthday', start: '2026-05-25', all_day: true },
+        { log: fakeLog },
+      );
+      assert.match(String(result), /Added/i);
+      const eventBody = JSON.parse(bodies[1]!) as Record<string, unknown>;
+      const end = (eventBody['end'] as { date?: string } | undefined)?.date;
+      assert.equal(end, '2026-05-25');
     } finally {
       globalThis.fetch = origFetch;
     }
