@@ -607,17 +607,20 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         }
         assistantText = '';
         // Follow-up paraphrase round. The model has the tool result; its only
-        // job now is to summarize it in one or two sentences. That's a chat
-        // task, not a tool-routing task — so we drop the tool schemas AND
-        // switch to the lighter `defaultProfile` (chat / 0.8b) instead of the
-        // tools profile (2b). On a CPU host the smaller model halves the
-        // prefill+decode time of every non-self-replying tool turn (weather,
-        // reminder_set, tasks_complete, briefings, plan_day, etc.). We keep
-        // tools available only if the prior round explicitly chained another
-        // tool call, otherwise the small model would be lured by them.
+        // job now is to summarize it in one or two sentences. Two changes
+        // from the initial round:
+        //   - Drop the tools schema. The model occasionally chains another
+        //     tool call here, but the common case is "say the result back to
+        //     the user". Stripping tools also stops the small model from
+        //     emitting bracketed `[tool_name]` text as a fake call.
+        //   - Cap completion tokens. A weather summary is ~30 tokens; without
+        //     a cap qwen3.5:2b will ramble to several hundred on CPU.
+        // We keep the tools PROFILE here (not the chat profile) because the
+        // smaller chat model was producing garbled paraphrases of long tool
+        // results (e.g. "🔑 Tool Ready" instead of the weather summary).
         const FOLLOWUP_MAX_TOKENS = 256;
         const followup = opts.llm.chat({
-          profile: defaultProfile,
+          profile: profileForTurn,
           messages: buildPromptForTurn(true).messages,
           maxTokens: FOLLOWUP_MAX_TOKENS,
           signal: abort.signal,

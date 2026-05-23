@@ -18,8 +18,8 @@ export function register(host: Host): void {
     name: 'calendar_list_events',
     intentPattern: CALENDAR_LIST_INTENT,
     description:
-      "List Google Calendar events for a day or range. Defaults to today. " +
-      "For a specific date the user named, set `time_min` to the start of that local day and `time_max` to the start of the next — do not widen. " +
+      "List Google Calendar events for a day or range. ALWAYS call for 'do I have anything tomorrow / am I free at 3pm / what's on my calendar / show my events this week'. " +
+      "Defaults to today. For a specific date the user named, set `time_min` to the start of that local day and `time_max` to the start of the next — do not widen. " +
       "Read-only: list every event in the result, repeat each line's date verbatim, never claim an event is cancelled.",
     tier: 'auto',
     parameters: {
@@ -153,8 +153,9 @@ export function register(host: Host): void {
     name: 'calendar_quick_add',
     intentPattern: CALENDAR_ADD_INTENT,
     description:
-      "FALLBACK only. Google's NL parser mangles anything beyond a single-noun event with an explicit clock time ('Lunch Friday 1pm', 'Gym at 6pm'). " +
-      "Skip if the phrase has 'for/about/with', a duration, the words 'appointment/session/meeting', a relative day ('next Tuesday'), a time-of-day word ('morning'), or no clock time — use `calendar_add_event` instead.",
+      "FALLBACK only. Google's NL parser mangles anything beyond a single-noun event with an explicit clock time on a SPECIFIC named weekday ('Lunch Friday 1pm', 'Gym Saturday 6pm'). " +
+      "Skip — use `calendar_add_event` instead — if the phrase has ANY of: 'for/about/with', a duration ('6:30am to 7:30am'), the words 'appointment/session/meeting', the relative-day words 'tomorrow/today/tonight/next/this', a time-of-day word ('morning/afternoon/evening'), or no clock time at all. " +
+      "When in doubt: use `calendar_add_event`. quick_add is the wrong default.",
     tier: 'auto',
     selfReplying: true,
     parameters: {
@@ -189,7 +190,8 @@ export function register(host: Host): void {
     intentPattern: CALENDAR_DELETE_INTENT,
     description:
       "Cancel/delete a calendar event the user named ('cancel the camping event', 'remove tomorrow's 3pm'). " +
-      "If you don't have the id yet, call `calendar_list_events` first in this turn and read the id from the `event_ids:` line. Never invent an id; never say the event doesn't exist without listing first.",
+      "If you don't have the id yet, call `calendar_list_events` first in this turn and read the id from the `event_ids:` line — then CALL THIS TOOL with that id. Do not stop after listing. " +
+      "Never invent an id, never report a fake id-shaped string as the event id, never say the event doesn't exist without listing first.",
     tier: 'confirm',
     selfReplying: true,
     parameters: {

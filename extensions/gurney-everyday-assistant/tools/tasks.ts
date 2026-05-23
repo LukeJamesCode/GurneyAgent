@@ -12,9 +12,9 @@ const NOT_CONFIGURED =
   'Google Tasks is not configured. Run `gurney auth gurney-everyday-assistant`.';
 
 const TASK_LIST_INTENT =
-  '\\b(list|show|review|check|what|whats|which)\\b.*\\b(task|tasks|todo|todos|to-do|to do|get done|need to do)\\b|^\\s*(tasks|todos|to-dos)\\s*\\??\\s*$';
+  '\\b(list|show|review|check|what|whats|whats?\\s*on|which)\\b.*\\b(task|tasks|todo|todos|to-do|to do|to-dos|to dos|get done|need to do|my list)\\b|^\\s*(tasks|todos|to-dos)\\s*\\??\\s*$';
 const TASK_ADD_INTENT =
-  '\\b(add|create|new|set|make|put)\\b(?!.*\\b(event|meeting|appointment|calendar|reminder|alarm|timer)\\b).*\\b(task|tasks|todo|todos|to-do|to do|list)\\b|\\b(need to|remember to)\\b(?!.*\\b(at|in \\d+\\s*(minutes?|hours?|days?))\\b)|\\b(task|todo|to-do)\\s*:';
+  '\\b(add|create|new|set|make|put)\\b(?!.*\\b(event|meeting|appointment|calendar|reminder|alarm|timer)\\b).*\\b(task|tasks|todo|todos|to-do|to do|to-dos|to dos|list|my list)\\b|\\b(need to|remember to)\\b(?!.*\\b(at|in \\d+\\s*(minutes?|hours?|days?))\\b)|\\b(task|todo|to-do)\\s*:';
 const TASK_DONE_INTENT = '\\b(done|complete|completed|finish|finished|check off|mark.*done|did)\\b';
 const TASK_DELETE_INTENT = '\\b(delete|remove|abandon|drop|cancel).*(task|todo|to-do|to do)\\b';
 const TASK_LISTS_INTENT = '\\b(task lists?|google task lists?)\\b';
