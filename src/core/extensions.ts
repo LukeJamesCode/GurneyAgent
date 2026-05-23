@@ -39,7 +39,7 @@ import { migrate as runMigrations } from '../storage/db.js';
 import type { Logger } from '../util/log.js';
 import type { LLM } from './llm.js';
 import type { AfterExecuteListener, ToolHandler, ToolRegistry } from './tools.js';
-import type { Scheduler, JobHandler, ScheduledJob } from './scheduler.js';
+import type { Scheduler, JobHandler, ScheduledJob, NudgeAction } from './scheduler.js';
 import type { FastCache } from './fast-cache.js';
 import { namespacedCache } from './fast-cache.js';
 
@@ -161,6 +161,29 @@ export interface VoicePayload {
   caption?: string;
 }
 
+// Telegram callback (inline-button) context handed to extension handlers.
+// The adapter dispatches callbacks whose data starts with `cb:<prefix>:` to
+// the handler registered for that prefix. The remaining `data` is the raw
+// suffix (everything after `cb:<prefix>:`) so extensions can encode small
+// per-button payloads (e.g. proposal ids, slot indices).
+export interface TelegramCallbackContext {
+  chatId: number;
+  userId: number;
+  // The remainder of the callback_data after `cb:<prefix>:`. May be empty.
+  data: string;
+  // Send a fresh chat message to the same chat. Use this for follow-ups that
+  // should appear as a normal Telegram message.
+  reply: (text: string, opts?: { actions?: NudgeAction[] }) => Promise<void>;
+  // Edit the message that owned the button (e.g. swap "Reschedule?" for
+  // "Looking for a free slot…"). The adapter no-ops if the message can't be
+  // edited (deleted, expired, etc.).
+  editMessage: (text: string, opts?: { actions?: NudgeAction[] }) => Promise<void>;
+  // Quick acknowledgement to dismiss Telegram's loading spinner on the button.
+  ack: (text?: string) => Promise<void>;
+}
+
+export type TelegramCallbackHandler = (ctx: TelegramCallbackContext) => Promise<void>;
+
 export interface KnownTelegramChat {
   chatId: number;
   userId: number;
@@ -245,6 +268,11 @@ export interface Host {
     // This is safe for proactive jobs because rows are sourced from the core
     // telegram_chats table after the adapter allowlist gate.
     knownChats: () => KnownTelegramChat[];
+    // Register a handler for inline-button callbacks whose data is
+    // `cb:<prefix>:<...>`. `prefix` must be [a-z0-9_-]+ so the dispatcher can
+    // parse without a registry. Re-registering the same prefix replaces the
+    // previous handler.
+    onCallback: (prefix: string, handler: TelegramCallbackHandler) => void;
   };
   scheduler: {
     cron: (
@@ -295,6 +323,12 @@ export interface ExtensionAfterReplyRecord {
 export interface ExtensionAfterTurnRecord {
   extension: string;
   handler: AfterTurnHandler;
+}
+
+export interface ExtensionCallbackRecord {
+  extension: string;
+  prefix: string;
+  handler: TelegramCallbackHandler;
 }
 
 export interface ExtensionAuthRecord {
@@ -365,6 +399,7 @@ export interface ExtensionLoader {
   intercepts(): ExtensionInterceptRecord[];
   afterReplies(): ExtensionAfterReplyRecord[];
   afterTurns(): ExtensionAfterTurnRecord[];
+  callbacks(): ExtensionCallbackRecord[];
   authFlows(): ExtensionAuthRecord[];
   // Concatenated prompt fragments, in stable order (alpha by extension name).
   // Pass a filter set to include only those extensions' fragments — pairs
@@ -399,6 +434,7 @@ interface RegistrationsForExtension {
   intercepts: ExtensionInterceptRecord[];
   afterReplies: ExtensionAfterReplyRecord[];
   afterTurns: ExtensionAfterTurnRecord[];
+  callbacks: ExtensionCallbackRecord[];
   jobsRegistered: number;
   authFlow?: AuthFlow;
   promptFragment?: string;
@@ -673,6 +709,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
       intercepts: [],
       afterReplies: [],
       afterTurns: [],
+      callbacks: [],
       jobsRegistered: 0,
       promptFragment: promptFragment ?? '',
       ...(intentPattern ? { intentPattern } : {}),
@@ -759,6 +796,30 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
         defaultChatId: opts.chatId,
         chatId: opts.chatId,
         knownChats: () => knownTelegramChats(opts.db, allowedUserIds),
+        onCallback: (prefix, handler) => {
+          if (!/^[a-z0-9_-]+$/i.test(prefix)) {
+            // The dispatcher splits on ':' — anything outside this charset
+            // would create an ambiguous match. Fail loud (Rule 12) at
+            // registration time rather than silently dropping clicks later.
+            throw new Error(
+              `telegram.onCallback: prefix must match /^[a-z0-9_-]+$/i (got "${prefix}")`,
+            );
+          }
+          const record: ExtensionCallbackRecord = {
+            extension: manifest.name,
+            prefix,
+            handler,
+          };
+          // Replace any prior record for the same prefix so hot-reload picks
+          // up the new handler without leaving the stale one to dispatch.
+          const existing = reg.callbacks.findIndex((c) => c.prefix === prefix);
+          if (existing >= 0) reg.callbacks.splice(existing, 1);
+          reg.callbacks.push(record);
+          reg.disposers.push(() => {
+            const idx = reg.callbacks.indexOf(record);
+            if (idx >= 0) reg.callbacks.splice(idx, 1);
+          });
+        },
       },
       scheduler: {
         cron: (name, expr, handler, schedulerOpts) => {
@@ -1184,6 +1245,11 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
     for (const r of registrations.values()) out.push(...r.afterTurns);
     return out;
   }
+  function callbacks(): ExtensionCallbackRecord[] {
+    const out: ExtensionCallbackRecord[] = [];
+    for (const r of registrations.values()) out.push(...r.callbacks);
+    return out;
+  }
   function authFlows(): ExtensionAuthRecord[] {
     const out: ExtensionAuthRecord[] = [];
     for (const [name, r] of registrations.entries()) {
@@ -1283,6 +1349,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
     intercepts,
     afterReplies,
     afterTurns,
+    callbacks,
     authFlows,
     promptFragment,
     relevantExtensions,

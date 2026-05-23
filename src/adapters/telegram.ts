@@ -33,8 +33,10 @@ import type {
   AfterTurnContext,
   ExtensionAfterReplyRecord,
   ExtensionAfterTurnRecord,
+  ExtensionCallbackRecord,
   ExtensionCommandRecord,
   ExtensionInterceptRecord,
+  TelegramCallbackContext,
   TelegramCommandContext,
   TelegramInterceptContext,
   VoicePayload,
@@ -74,6 +76,9 @@ export interface TelegramOptions {
   // Rich after-turn hooks. Fired after the visible Telegram reply is sent;
   // learning/routine extensions use this instead of entering the hot path.
   extensionAfterTurns?: () => ExtensionAfterTurnRecord[];
+  // Inline-button callback handlers. Buttons emitted with callbackData
+  // `cb:<prefix>:<...>` are routed to the handler registered for that prefix.
+  extensionCallbacks?: () => ExtensionCallbackRecord[];
   // Path to ~/.gurney/log/gurney.log for /logs.
   logFilePath?: string;
 }
@@ -555,6 +560,60 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
     return formatExtensionsText(opts.extensions?.() ?? []);
   }
 
+  // Dispatch `cb:<prefix>:<rest>` callbacks to the extension handler registered
+  // for `<prefix>`. The trailing `<rest>` (may itself contain `:`) is handed to
+  // the extension as `data` so it can pack small payloads — e.g. proposal ids,
+  // slot indices — without a per-button server registry.
+  async function dispatchExtensionCallback(ctx: Context, payload: string): Promise<void> {
+    if (!ctx.chat || !ctx.from) {
+      await answerCallback(ctx);
+      return;
+    }
+    const sep = payload.indexOf(':');
+    const prefix = sep === -1 ? payload : payload.slice(0, sep);
+    const data = sep === -1 ? '' : payload.slice(sep + 1);
+    const record = (opts.extensionCallbacks?.() ?? []).find((c) => c.prefix === prefix);
+    if (!record) {
+      log.warn('no extension callback handler for prefix', { prefix });
+      await answerCallback(ctx);
+      return;
+    }
+    const chatId = ctx.chat.id;
+    const userId = ctx.from.id;
+    const cctx: TelegramCallbackContext = {
+      chatId,
+      userId,
+      data,
+      reply: async (text, replyOpts) => {
+        const replyMarkup = keyboardForNudgeActions(replyOpts?.actions);
+        await ctx
+          .reply(text, replyMarkup ? { reply_markup: replyMarkup } : undefined)
+          .catch(() => {});
+      },
+      editMessage: async (text, editOpts) => {
+        const replyMarkup = keyboardForNudgeActions(editOpts?.actions);
+        // editMessageText fails if the message has been deleted or is too old.
+        // We swallow so the handler can still send a fresh reply afterward.
+        await ctx
+          .editMessageText(text, replyMarkup ? { reply_markup: replyMarkup } : undefined)
+          .catch(() => {});
+      },
+      ack: async (text) => {
+        await answerCallback(ctx, text);
+      },
+    };
+    try {
+      await record.handler(cctx);
+    } catch (e) {
+      log.warn('extension callback handler threw', {
+        ext: record.extension,
+        prefix,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      await answerCallback(ctx);
+    }
+  }
+
   async function invokeExtensionCommand(
     name: string,
     args: string,
@@ -850,6 +909,11 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
       );
       if (!handled)
         await replyWithButtons(ctx, `Extension command /${command} is not loaded.`, 'extensions');
+      return;
+    }
+
+    if (data.startsWith('cb:')) {
+      await dispatchExtensionCallback(ctx, data.slice('cb:'.length));
       return;
     }
 

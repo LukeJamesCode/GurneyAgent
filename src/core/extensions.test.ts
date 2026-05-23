@@ -221,6 +221,111 @@ test('loader: discovers extension, runs migrations, registers tool/command/job/a
   }
 });
 
+test('host.telegram.onCallback: registers handler, exposed via loader.callbacks(), torn down on unload', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const tools = createToolRegistry({ log });
+    const sched = createScheduler({ log });
+    const root = join(dir, 'exts');
+    mkdirSync(root);
+    writeExt(
+      root,
+      'cbdemo',
+      {
+        name: 'cbdemo',
+        version: '1.0.0',
+        gurney: '*',
+        entrypoints: { tools: './tools.js' },
+      },
+      {
+        'tools.js':
+          'export function register(host) {\n' +
+          "  host.telegram.onCallback('demoP', async (ctx) => { await ctx.ack('ok'); });\n" +
+          '}\n',
+      },
+    );
+
+    const loader = createExtensionLoader({
+      roots: [root],
+      stateRoot: join(dir, 'state'),
+      db,
+      llm: fakeLlm,
+      log,
+      scheduler: sched,
+      tools,
+      hostVersion: '0.0.0',
+      chatId: 0,
+      watch: false,
+    });
+    await loader.loadAll();
+
+    const cbs = loader.callbacks();
+    assert.equal(cbs.length, 1, 'one callback handler should be registered');
+    assert.equal(cbs[0]!.prefix, 'demoP');
+    assert.equal(cbs[0]!.extension, 'cbdemo');
+
+    await loader.unload('cbdemo');
+    assert.equal(
+      loader.callbacks().length,
+      0,
+      'unload should remove the registered callback handler',
+    );
+    await loader.shutdown();
+    db.close();
+  } finally {
+    await rmTempDir(dir);
+  }
+});
+
+test('host.telegram.onCallback: rejects prefixes with characters that break dispatch', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const tools = createToolRegistry({ log });
+    const sched = createScheduler({ log });
+    const root = join(dir, 'exts');
+    mkdirSync(root);
+    // A prefix containing ':' would be ambiguous with the dispatcher's split.
+    writeExt(
+      root,
+      'badcb',
+      {
+        name: 'badcb',
+        version: '1.0.0',
+        gurney: '*',
+        entrypoints: { tools: './tools.js' },
+      },
+      {
+        'tools.js':
+          'export function register(host) {\n' +
+          "  host.telegram.onCallback('bad:prefix', async () => {});\n" +
+          '}\n',
+      },
+    );
+
+    const loader = createExtensionLoader({
+      roots: [root],
+      stateRoot: join(dir, 'state'),
+      db,
+      llm: fakeLlm,
+      log,
+      scheduler: sched,
+      tools,
+      hostVersion: '0.0.0',
+      chatId: 0,
+      watch: false,
+    });
+    await loader.loadAll();
+    // Loader catches the throw and records it as a load error; nothing is
+    // registered. Either way, callbacks() should be empty.
+    assert.equal(loader.callbacks().length, 0);
+    db.close();
+  } finally {
+    await rmTempDir(dir);
+  }
+});
+
 test('loader: rejects extension whose gurney range exceeds host version', async () => {
   const dir = tmp();
   try {

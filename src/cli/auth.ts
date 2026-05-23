@@ -114,6 +114,7 @@ export async function runAuthForExt(
       defaultChatId: 0,
       chatId: 0,
       knownChats: () => [],
+      onCallback: () => {},
     },
     scheduler: { cron: () => {} },
     cache: {

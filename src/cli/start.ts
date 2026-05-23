@@ -271,6 +271,7 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     extensionIntercepts: () => loader.intercepts(),
     extensionAfterReplies: () => loader.afterReplies(),
     extensionAfterTurns: () => loader.afterTurns(),
+    extensionCallbacks: () => loader.callbacks(),
   });
   // Wire the scheduler -> Telegram nudge path.
   dispatchNudge = (nudge) => telegram.sendNudge(nudge);

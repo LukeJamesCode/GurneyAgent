@@ -175,7 +175,7 @@ export function register(host: Host): void {
     name: 'smart_schedule_task',
     intentPattern: SCHEDULE_TASK_INTENT,
     description:
-      "Place an EXISTING Google Task on the calendar in a free slot. " +
+      'Place an EXISTING Google Task on the calendar in a free slot. ' +
       "Use only when the user explicitly asks to fit/schedule/block out time for a NAMED task they already have ('schedule the project report for 2 hours this week, mornings preferred'). " +
       "Fails if no matching task exists. Not for new event creation or generic 'plan my day'.",
     tier: 'auto',
@@ -302,33 +302,54 @@ export function register(host: Host): void {
   });
 }
 
-// Exported for use in jobs.ts cron.
+// Exported for use in jobs.ts cron. Each flagged event becomes a reschedule
+// proposal (open or reused) plus a Yes/No nudge driven by the reschedule
+// callback handlers.
 export async function weatherRescheduleCheckNudges(host: Host): Promise<Nudge[]> {
   const chatIds = targetChatIds(host);
   if (chatIds.length === 0) return [];
-  const flags = await weatherRescheduleCheck(host);
+  const flags = await weatherRescheduleScan(host);
   if (flags.length === 0) return [];
+
+  // Lazy import: tools/reschedule.ts depends on this file (planning.ts) via
+  // findFreeSlotsInternal, so a static import would create a circular module.
+  const { openProposal } = await import('./reschedule.js');
 
   const nudges: Nudge[] = [];
   for (const chatId of chatIds) {
     for (const flag of flags) {
-      nudges.push({
+      const opened = openProposal(host.db, {
         chatId,
-        text: flag,
-        key: `wxalert:${chatId}:${flag.slice(0, 40)}`,
-        category: 'weather',
-        priority: 'normal',
-        reason: 'Weather may affect an outdoor calendar event',
-        source: 'gurney-everyday-assistant',
-        createdAt: new Date(),
-        defer: true,
+        eventId: flag.eventId,
+        eventSummary: flag.eventSummary,
+        eventStart: flag.eventStart,
+        eventEnd: flag.eventEnd,
+        reason: flag.reasonText,
       });
+      if (opened) nudges.push(opened.nudge);
     }
   }
   return nudges;
 }
 
+interface WeatherFlag {
+  eventId: string;
+  eventSummary: string;
+  eventStart: string;
+  eventEnd: string;
+  reasonText: string;
+}
+
 async function weatherRescheduleCheck(host: Host, signal?: AbortSignal): Promise<string[]> {
+  const flags = await weatherRescheduleScan(host, signal);
+  return flags.map((f) => {
+    const timeStr = f.eventStart.slice(11, 16);
+    const date = f.eventStart.slice(0, 10);
+    return `⚠️ Weather alert for outdoor event "${f.eventSummary}" at ${timeStr} on ${date}: ${f.reasonText}`;
+  });
+}
+
+async function weatherRescheduleScan(host: Host, signal?: AbortSignal): Promise<WeatherFlag[]> {
   const cal = getCalClient(host, signal);
   if (!cal) return [];
 
@@ -371,7 +392,7 @@ async function weatherRescheduleCheck(host: Host, signal?: AbortSignal): Promise
     return [];
   }
 
-  const flags: string[] = [];
+  const flags: WeatherFlag[] = [];
   for (const ev of outdoorEvents) {
     const evDate = ev.start.slice(0, 10);
     const dayForecast = forecastDays.find((d) => d.date === evDate);
@@ -379,11 +400,13 @@ async function weatherRescheduleCheck(host: Host, signal?: AbortSignal): Promise
     const isBad =
       dayForecast.precipPct >= 60 || BAD_WEATHER_CODES.has(dayForecast.conditionCode) || false;
     if (isBad) {
-      const timeStr = ev.allDay ? 'all day' : ev.start.slice(11, 16);
-      flags.push(
-        `⚠️ Weather alert for outdoor event "${ev.summary}" at ${timeStr} on ${evDate}: ` +
-          `${dayForecast.condition}, ${dayForecast.precipPct}% precip. Consider rescheduling.`,
-      );
+      flags.push({
+        eventId: ev.id,
+        eventSummary: ev.summary,
+        eventStart: ev.start,
+        eventEnd: ev.end,
+        reasonText: `${dayForecast.condition}, ${dayForecast.precipPct}% precip.`,
+      });
     }
   }
   return flags;
