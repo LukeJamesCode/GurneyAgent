@@ -256,26 +256,63 @@ export function register(host: Host): void {
     intentPattern: CALENDAR_DELETE_INTENT,
     description:
       "Cancel/delete a calendar event the user named ('cancel the camping event', 'remove tomorrow's 3pm'). " +
-      "If you don't have the id yet, call `calendar_list_events` first in this turn and read the id from the `event_ids:` line — then CALL THIS TOOL with that id. Do not stop after listing. " +
-      "Never invent an id, never report a fake id-shaped string as the event id, never say the event doesn't exist without listing first.",
+      "PREFER `title` (a substring of the event the user named) — the tool will list the upcoming window itself and pick the match, so you do not need to call `calendar_list_events` first. " +
+      "Pass `id` only when you already have one verbatim from a previous `event_ids:` line — never invent or guess an id.",
     tier: 'confirm',
     selfReplying: true,
     parameters: {
       type: 'object',
-      required: ['id'],
       properties: {
         id: {
           type: 'string',
           description:
             'Google Calendar event id, taken from the trailing `event_ids:` block of a `calendar_list_events` result. Never invent or guess an id.',
         },
+        title: {
+          type: 'string',
+          description:
+            "Word or phrase from the event name (e.g. 'camping', 'dentist'). The tool searches the next 30 days and picks the matching event. Use this instead of `id` whenever the user named the event in plain English.",
+        },
       },
     },
     invoke: async (args, ctx) => {
       const c = getClient(host, ctx.signal);
       if (!c) return NOT_CONFIGURED;
-      await c.deleteEvent((args as { id: string }).id);
-      return 'Deleted.';
+      const a = args as { id?: string; title?: string };
+      const id = a.id?.trim();
+      const title = a.title?.trim();
+      if (id) {
+        await c.deleteEvent(id);
+        return 'Deleted.';
+      }
+      if (!title) {
+        return 'Pass `title` (a word from the event name) or `id` to identify which event to delete.';
+      }
+      const now = new Date();
+      const horizon = new Date(now);
+      horizon.setDate(horizon.getDate() + 30);
+      const events = await c.listEvents({
+        timeMin: now.toISOString(),
+        timeMax: horizon.toISOString(),
+        max: 100,
+      });
+      const needle = title.toLowerCase();
+      const matches = events.filter((ev) => (ev.summary ?? '').toLowerCase().includes(needle));
+      if (matches.length === 0) {
+        return `No upcoming event matches "${title}" in the next 30 days. Nothing was deleted.`;
+      }
+      if (matches.length > 1) {
+        const list = matches
+          .slice(0, 10)
+          .map((ev) => `  ${formatEventLine(ev)}`)
+          .join('\n');
+        return (
+          `"${title}" matches multiple upcoming events — be more specific (e.g. include the date):\n${list}`
+        );
+      }
+      const target = matches[0]!;
+      await c.deleteEvent(target.id);
+      return `Deleted: ${formatEventLine(target)}`;
     },
   });
 }

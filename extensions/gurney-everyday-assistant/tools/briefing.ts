@@ -7,7 +7,12 @@ import { buildMorningBrief, buildNightBrief } from '../gather.js';
 
 const TODAY_BRIEF_INTENT =
   '\\b(brief|briefing|morning brief|today|what.*today|what.*on today|day overview)\\b';
-const TOMORROW_BRIEF_INTENT = '\\b(tomorrow|evening brief|night brief|what.*tomorrow)\\b';
+// Require briefing-shaped phrasing, not just any mention of "tomorrow". The
+// bare-word version pulled this tool into the manifest for prompts like
+// "anything outdoor tomorrow getting rained on", where the chat model then
+// preferred it over `weather_reschedule_check`.
+const TOMORROW_BRIEF_INTENT =
+  '\\b(evening brief(ing)?|night brief(ing)?|brief.*tomorrow|tomorrow.*brief|what.*tomorrow look|how.*tomorrow look|tomorrow overview|day overview.*tomorrow)\\b';
 
 export function register(host: Host): void {
   host.tools.register({

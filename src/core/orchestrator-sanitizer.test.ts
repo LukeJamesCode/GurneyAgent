@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { looksLikeFakeActionConfirmation, looksLikeFakeToolCall } from './orchestrator.js';
+import {
+  looksLikeFakeActionConfirmation,
+  looksLikeFakeToolCall,
+  looksLikeFakeWeatherAnswer,
+} from './orchestrator.js';
 
 const TOOLS = new Set([
   'tasks_list',
@@ -128,6 +132,66 @@ test('fake-confirm: reminder_clear_all counts as a destructive tool', () => {
       userText: 'get rid of all my reminders',
       assistantText: 'Cleared 3 reminders.',
       toolCallNames: ['reminder_clear_all'],
+    }),
+    false,
+  );
+});
+
+// looksLikeFakeWeatherAnswer guards the "let me invent a forecast" lie.
+
+test('fake-weather: forecast answer with temperatures and no weather tool', () => {
+  assert.equal(
+    looksLikeFakeWeatherAnswer({
+      userText: "What's the forecast for the next few days?",
+      assistantText:
+        '* May 24th: Overcast, 14–22°C, 57% precip.\n* May 25th: Partly cloudy, 17–26°C.',
+      toolCallNames: [],
+    }),
+    true,
+  );
+});
+
+test('fake-weather: "will it rain" with chance-of-rain reply and no tool', () => {
+  assert.equal(
+    looksLikeFakeWeatherAnswer({
+      userText: 'Will it rain tomorrow?',
+      assistantText: 'Yes — there is a 40% chance of rain in the afternoon.',
+      toolCallNames: [],
+    }),
+    true,
+  );
+});
+
+test('fake-weather: legitimate weather_get call is NOT flagged', () => {
+  assert.equal(
+    looksLikeFakeWeatherAnswer({
+      userText: "What's the weather?",
+      assistantText: 'Calgary: 18°C, clear sky.',
+      toolCallNames: ['weather_get'],
+    }),
+    false,
+  );
+});
+
+test('fake-weather: non-weather question is NOT flagged', () => {
+  assert.equal(
+    looksLikeFakeWeatherAnswer({
+      userText: "what's on my calendar today",
+      assistantText: 'You have a meeting at 3pm.',
+      toolCallNames: ['calendar_list_events'],
+    }),
+    false,
+  );
+});
+
+test('fake-weather: weather question answered with no forecast claim is NOT flagged', () => {
+  // Model legitimately declined or asked a clarifying question — no
+  // hallucinated temperatures, so this is fine.
+  assert.equal(
+    looksLikeFakeWeatherAnswer({
+      userText: "What's the weather?",
+      assistantText: 'Which city should I check?',
+      toolCallNames: [],
     }),
     false,
   );

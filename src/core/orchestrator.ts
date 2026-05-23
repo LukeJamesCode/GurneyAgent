@@ -72,6 +72,29 @@ export function looksLikeFakeActionConfirmation(args: {
   return !ranDestructive;
 }
 
+// Detect the "let me make up a forecast" hallucination. The 2B tool model
+// will sometimes answer "what's the forecast for the next few days" from
+// training data instead of calling `weather_get`, producing fabricated
+// temperatures and precipitation odds. The shape is reliable: the user
+// message contains a weather keyword, no weather tool ran this round, and
+// the reply contains forecast-like content (a temperature unit or one of
+// the standard weather nouns paired with a number).
+const USER_WEATHER_QUESTION_PATTERN =
+  /\b(weather|forecast|temperature|rain|raining|snow|snowing|sunny|cloudy|overcast|humid|humidity|degrees?|celsius|fahrenheit)\b/i;
+const ASSISTANT_WEATHER_CLAIM_PATTERN =
+  /(°\s?[CF]\b|\b\d{1,3}\s?(?:°|deg|degrees?)\b|\b(?:precip|precipitation|overcast|sunny|partly cloudy|mostly cloudy|chance of rain|chance of snow|showers?)\b)/i;
+const WEATHER_TOOL_PATTERN = /(?:^|_)weather(?:_|$)/i;
+export function looksLikeFakeWeatherAnswer(args: {
+  userText: string;
+  assistantText: string;
+  toolCallNames: readonly string[];
+}): boolean {
+  if (!USER_WEATHER_QUESTION_PATTERN.test(args.userText)) return false;
+  if (!ASSISTANT_WEATHER_CLAIM_PATTERN.test(args.assistantText)) return false;
+  const ranWeather = args.toolCallNames.some((n) => WEATHER_TOOL_PATTERN.test(n));
+  return !ranWeather;
+}
+
 // Ollama returns HTTP 500 with an XML/JSON parse error message when the model
 // emits a malformed tool-call payload that its parser can't decode. This is
 // not a backend outage — it's a model misfire, so we recover the same way we
@@ -811,12 +834,13 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     // adapter only renders on done) and gets persisted so the next turn's
     // context doesn't carry the lie forward.
     let replacement: string | undefined;
+    const okToolNames = afterTurnToolCalls.filter((c) => c.ok).map((c) => c.name);
     if (
       assistantText &&
       looksLikeFakeActionConfirmation({
         userText: msg.text,
         assistantText,
-        toolCallNames: afterTurnToolCalls.filter((c) => c.ok).map((c) => c.name),
+        toolCallNames: okToolNames,
       })
     ) {
       cl.warn('blocked fake action confirmation — model claimed delete with no tool call', {
@@ -826,6 +850,22 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
       });
       replacement =
         "I didn't actually run the delete — I can see the item but the action didn't go through. Try the request again, ideally naming the date or id.";
+      assistantText = replacement;
+    } else if (
+      assistantText &&
+      looksLikeFakeWeatherAnswer({
+        userText: msg.text,
+        assistantText,
+        toolCallNames: okToolNames,
+      })
+    ) {
+      cl.warn('blocked fake weather answer — model wrote a forecast without calling weather_get', {
+        userSample: msg.text.slice(0, 120),
+        assistantSample: assistantText.slice(0, 200),
+        ranTools: afterTurnToolCalls.map((c) => c.name),
+      });
+      replacement =
+        "I didn't actually check the forecast — that reply was made up. Ask again and I'll pull the real conditions.";
       assistantText = replacement;
     }
     if (assistantText) {
