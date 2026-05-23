@@ -309,12 +309,36 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
 
   writePid(process.pid, home);
 
-  // Best-effort warm-up: a `/api/tags` round-trip surfaces an Ollama outage
-  // up front rather than on the user's first turn.
-  void llm.health().then((h) => {
-    if (!h.ok) log.warn('Ollama health check failed at boot');
-    else log.info('Ollama reachable', { models: h.models.length });
-  });
+  // Best-effort warm-up. `/api/tags` proves Ollama is reachable, then the
+  // tiny capped chat call actually loads the configured chat model so the
+  // first real user turn doesn't pay cold-start latency.
+  void (async () => {
+    const h = await llm.health();
+    if (!h.ok) {
+      log.warn('Ollama health check failed at boot');
+      return;
+    }
+    log.info('Ollama reachable', { models: h.models.length });
+    try {
+      let warmedModel: string | undefined;
+      for await (const chunk of llm.chat({
+        profile: 'chat',
+        messages: [
+          { role: 'system', content: 'You are Gurney. Reply with OK.' },
+          { role: 'user', content: 'warm up' },
+        ],
+        maxTokens: 1,
+      })) {
+        warmedModel = chunk.model ?? warmedModel;
+        if (chunk.done) break;
+      }
+      log.info('chat model warmed', { model: warmedModel ?? llm.resolveModel('chat') });
+    } catch (e) {
+      log.warn('chat model warm-up failed', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  })();
 
   const shutdown = async (signal: string): Promise<void> => {
     log.info('shutdown signal received', { signal });

@@ -38,7 +38,7 @@ If the bundled extensions don't fit your life, throw them away and write your ow
 
 I wanted an assistant that:
 
-- **Lives on hardware I own** — a $50 Pi on my shelf, not someone else's server.
+- **Lives on hardware I own** — can run on almost anything with small models that are still able to complete tasks
 - **Default-private** — no telemetry, no usage analytics, no "free tier" that becomes a paid tier next quarter. The default chat loop is fully local on hardware you own; any cloud-backed providers are strictly opt-in.
 - **Bends to me, not the other way around** — if I want a `/standup` command that pulls from my own scripts, I shouldn't have to file a feature request. I should write 40 lines and drop a folder in.
 - **Doesn't need a datacenter** — runs full-time at single-digit watts.
@@ -201,6 +201,7 @@ Local Ollama remains the default. Cloud providers stay strictly opt-in.
 
 - **`gurney-vision`** — local VLM (LLaVA-class) so the model can answer about images sent through whichever surface you use.
 - **Discord adapter** — second chat surface as an official extension, same host API as the Telegram adapter.
+- **Gemma 4 support** — able to choose gemma 4 models over qwen3.5.
 
 ### v1.4 — The returning extensions + streaming
 
@@ -222,6 +223,7 @@ A coherent "pull the outside world in" release.
 - **`gurney-files`** — local RAG over a chosen folder of notes, PDFs, or scans.
 - **`gurney-email`** — IMAP triage, draft writer, and "summarise overnight" rolled into briefings.
 - **`gurney-rss`** — feed reader + daily digest that plugs into the briefing pipeline.
+- **more small model support** — able to choose more local models from new labs.
 
 ### v1.7 — Homelab tier
 
