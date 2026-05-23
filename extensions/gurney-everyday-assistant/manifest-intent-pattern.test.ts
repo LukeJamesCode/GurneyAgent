@@ -22,6 +22,11 @@ const SHOULD_MATCH: Array<[string, string]> = [
   ['calendar phrase', 'reschedule my appointment'],
   ['calendar phrase', "what's scheduled for Friday"],
   ['calendar phrase', 'am i free Thursday afternoon'],
+  // Delete phrasing — the user's noun won't always be event/meeting/etc.
+  // "remove eating pizza on may 30th" must still expose the calendar tools.
+  ['delete phrase', 'remove eating pizza on may 30th'],
+  ['delete phrase', 'cancel my dentist'],
+  ['delete phrase', 'drop the 3pm thing'],
   // Tasks
   ['task phrase', 'add buy milk to my todo list'],
   ['task phrase', 'I need to finish the report'],

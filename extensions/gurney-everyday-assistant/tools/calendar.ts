@@ -11,7 +11,13 @@ const CALENDAR_ADD_INTENT =
   '\\b(schedule|add|create|book|put).*(event|meeting|appointment|calendar)' +
   '|\\b(event|meeting|appointment)\\b.*\\b(at|on|tomorrow|today|next|this|for)\\b' +
   '|\\b(add|schedule|book|put|create)\\b.*\\b(\\d{1,2}(:\\d{2})?\\s*(am|pm)|\\d{1,2}\\s*(am|pm)|\\d{1,2}:\\d{2})\\b';
-const CALENDAR_DELETE_INTENT = '\\b(cancel|delete|remove).*(event|meeting|appointment|calendar)\\b';
+// Match a delete verb anywhere alongside either an event-noun OR a date/time
+// phrase. The old pattern required the user to literally say "event/meeting/
+// appointment/calendar", so "remove pizza on may 30th" left the delete tool
+// out of the per-turn manifest entirely and the model hallucinated success.
+const CALENDAR_DELETE_INTENT =
+  '\\b(cancel|delete|remove|drop|get rid of|nuke).*(event|meeting|appointment|calendar)\\b' +
+  '|\\b(cancel|delete|remove|drop|get rid of|nuke)\\b.*\\b(today|tomorrow|tonight|on|this|next|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|mon|tue|wed|thu|fri|sat|sun|\\d{1,2}(st|nd|rd|th)?)\\b';
 
 export function register(host: Host): void {
   host.tools.register({
