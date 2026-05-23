@@ -143,9 +143,46 @@ export function register(host: Host): void {
         all_day?: boolean;
         description?: string;
       };
+      // Correct the model's clock conversion against the user's verbatim
+      // phrasing. qwen3.5:2b mis-emits ISO times ~30% of the time ("9pm to
+      // 10pm" → 20:00–21:00 or 09:00–10:00) — but "9pm" → 21:00 is
+      // deterministic, so code owns it. Only runs when the user message has
+      // explicit am/pm tokens AND the call is not all-day.
+      let userStart = a.start;
+      let userEnd = a.end?.trim();
+      const allDayShortcut =
+        a.all_day === true || isDateOnly(a.start) || (userEnd !== undefined && isDateOnly(userEnd));
+      if (!allDayShortcut && ctx.userMessage) {
+        const wanted = extractClockTimes(ctx.userMessage);
+        const wantedStart = wanted[0];
+        if (wantedStart) {
+          const corrected = correctLocalTime(userStart, wantedStart);
+          if (corrected && corrected !== userStart) {
+            ctx.log.info('calendar_add_event: corrected start to match user clock time', {
+              from: userStart,
+              to: corrected,
+              wanted: wantedStart,
+            });
+            userStart = corrected;
+          }
+          const wantedEnd = wanted[1];
+          if (wantedEnd && userEnd) {
+            const endCorrected = correctLocalTime(userEnd, wantedEnd);
+            if (endCorrected && endCorrected !== userEnd) {
+              ctx.log.info('calendar_add_event: corrected end to match user clock time', {
+                from: userEnd,
+                to: endCorrected,
+                wanted: wantedEnd,
+              });
+              userEnd = endCorrected;
+            }
+          }
+        }
+      }
+      a.start = userStart;
       // Default `end` if the model omitted it — a frequent small-model miss.
       // Timed events get a 1-hour block; all-day events get end == start.
-      let end = a.end?.trim();
+      let end = userEnd;
       const allDayInput =
         a.all_day === true || isDateOnly(a.start) || (end !== undefined && isDateOnly(end));
       if (!end) {
@@ -249,4 +286,41 @@ function toDateOnly(s: string): string {
     String(d.getMonth() + 1).padStart(2, '0'),
     String(d.getDate()).padStart(2, '0'),
   ].join('-');
+}
+
+export interface ClockTime {
+  hour: number; // 0–23
+  minute: number; // 0–59
+}
+
+// Extract explicit am/pm clock times from a user message, in order of
+// appearance. "9pm to 10pm" → [{21,0},{22,0}]; "Lunch at 12:30pm" → [{12,30}].
+// Exported for tests.
+export function extractClockTimes(text: string): ClockTime[] {
+  const re = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/gi;
+  const out: ClockTime[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const raw = parseInt(m[1]!, 10);
+    if (raw < 1 || raw > 12) continue;
+    const minute = m[2] ? parseInt(m[2], 10) : 0;
+    if (minute > 59) continue;
+    const mer = m[3]!.toLowerCase();
+    const hour = mer === 'pm' ? (raw % 12) + 12 : raw % 12;
+    out.push({ hour, minute });
+  }
+  return out;
+}
+
+// Replace the local-time hour/minute in an ISO string while preserving the
+// date and the trailing offset/zone. Returns null when the ISO is not
+// parseable. Date-only strings are returned unchanged.
+export function correctLocalTime(iso: string, wanted: ClockTime): string | null {
+  if (isDateOnly(iso)) return iso;
+  const m = iso.match(/^(\d{4}-\d{2}-\d{2}T)(\d{2}):(\d{2})(.*)$/);
+  if (!m) return null;
+  const curHour = parseInt(m[2]!, 10);
+  const curMin = parseInt(m[3]!, 10);
+  if (curHour === wanted.hour && curMin === wanted.minute) return iso;
+  return `${m[1]}${String(wanted.hour).padStart(2, '0')}:${String(wanted.minute).padStart(2, '0')}${m[4]}`;
 }

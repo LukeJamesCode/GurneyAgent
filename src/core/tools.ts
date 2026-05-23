@@ -26,6 +26,12 @@ export interface ToolContext {
   log: Logger;
   // AbortSignal forwarded to long-running handlers.
   signal?: AbortSignal;
+  // Raw user message that triggered this turn. Tools that need to
+  // deterministically cross-check small-model parsing (e.g. clock times in
+  // calendar_add_event — qwen3.5:2b misconverts "9pm" → ISO ~30% of the time)
+  // can regex it for verbatim spans. Don't use for general intent — that's
+  // what the model is for.
+  userMessage?: string;
 }
 
 export interface ToolHandler {

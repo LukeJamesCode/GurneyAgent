@@ -613,6 +613,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
             conversationId,
             log: cl.child({ tool: call.name }),
             signal: abort.signal,
+            userMessage: msg.text,
           });
           afterTurnToolCalls.push({
             name: call.name,

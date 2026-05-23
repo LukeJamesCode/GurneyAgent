@@ -11,7 +11,7 @@ import { register as registerCalendar } from './calendar.js';
 
 type ToolInvoke = (
   args: Record<string, unknown>,
-  ctx: { chatId?: number; log: unknown; signal?: AbortSignal },
+  ctx: { chatId?: number; log: unknown; signal?: AbortSignal; userMessage?: string },
 ) => Promise<unknown>;
 
 function registerTools(register: (host: Host) => void, host: Host): Map<string, ToolInvoke> {
@@ -170,6 +170,111 @@ test('calendar_add_event defaults end for all-day events (end = start)', async (
       const eventBody = JSON.parse(bodies[1]!) as Record<string, unknown>;
       const end = (eventBody['end'] as { date?: string } | undefined)?.date;
       assert.equal(end, '2026-05-25');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    db.close();
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('calendar_add_event rewrites the model start/end to match the user clock time', async () => {
+  // qwen3.5:2b on "9pm to 10pm" routinely emits 20:00-21:00 or 09:00-10:00.
+  // The verbatim am/pm tokens in the user message are deterministic ground
+  // truth, so the tool overrides the model's ISO when they disagree.
+  const tmp = mkdtempSync(join(tmpdir(), 'ged-hardening-clock-'));
+  try {
+    const db = open({ path: join(tmp, 'g.db') });
+    const host = makeHost(db);
+    const tools = registerTools(registerCalendar, host);
+    const origFetch = globalThis.fetch;
+    const bodies: Array<string | undefined> = [];
+    globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      bodies.push(typeof init?.body === 'string' ? init.body : undefined);
+      const body =
+        bodies.length === 1
+          ? { access_token: 'AT', expires_in: 3600 }
+          : {
+              id: 'e3',
+              summary: 'Eating pizza',
+              start: { dateTime: '2026-05-30T21:00:00-06:00' },
+              end: { dateTime: '2026-05-30T22:00:00-06:00' },
+            };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as Response;
+    };
+    try {
+      await tools.get('calendar_add_event')!(
+        {
+          summary: 'Eating pizza',
+          // Model produced 09:00 AM instead of 21:00 — see the screenshot
+          // that motivated this fix.
+          start: '2026-05-30T09:00:00-06:00',
+          end: '2026-05-30T10:00:00-06:00',
+        },
+        {
+          log: fakeLog,
+          userMessage: 'Schedule an event for may 30th for eating pizza 9pm to 10pm',
+        },
+      );
+      const eventBody = JSON.parse(bodies[1]!) as Record<string, unknown>;
+      const start = (eventBody['start'] as { dateTime?: string } | undefined)?.dateTime;
+      const end = (eventBody['end'] as { dateTime?: string } | undefined)?.dateTime;
+      assert.equal(start, '2026-05-30T21:00:00-06:00');
+      assert.equal(end, '2026-05-30T22:00:00-06:00');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    db.close();
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('calendar_add_event leaves the start alone when no am/pm in the user message', async () => {
+  // Don't second-guess a 24h clock or vague "tomorrow morning" phrasing.
+  const tmp = mkdtempSync(join(tmpdir(), 'ged-hardening-clock-noop-'));
+  try {
+    const db = open({ path: join(tmp, 'g.db') });
+    const host = makeHost(db);
+    const tools = registerTools(registerCalendar, host);
+    const origFetch = globalThis.fetch;
+    const bodies: Array<string | undefined> = [];
+    globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      bodies.push(typeof init?.body === 'string' ? init.body : undefined);
+      const body =
+        bodies.length === 1
+          ? { access_token: 'AT', expires_in: 3600 }
+          : {
+              id: 'e4',
+              summary: 'Standup',
+              start: { dateTime: '2026-05-30T09:00:00-06:00' },
+              end: { dateTime: '2026-05-30T10:00:00-06:00' },
+            };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as Response;
+    };
+    try {
+      await tools.get('calendar_add_event')!(
+        {
+          summary: 'Standup',
+          start: '2026-05-30T09:00:00-06:00',
+          end: '2026-05-30T10:00:00-06:00',
+        },
+        { log: fakeLog, userMessage: 'Schedule a standup tomorrow morning' },
+      );
+      const eventBody = JSON.parse(bodies[1]!) as Record<string, unknown>;
+      const start = (eventBody['start'] as { dateTime?: string } | undefined)?.dateTime;
+      assert.equal(start, '2026-05-30T09:00:00-06:00');
     } finally {
       globalThis.fetch = origFetch;
     }
