@@ -6,6 +6,24 @@ Format: `## [version] — YYYY-MM-DD`
 
 ---
 
+## [1.2.0] — 2026-05-24
+
+### Added
+
+- `gurney-voice` extension: voice-to-text on inbound Telegram voice notes via whisper.cpp. New per-chat command `/voice transcribe on|off|status`. When on, a voice note is transcoded (ffmpeg → 16 kHz mono WAV), transcribed (whisper.cpp), and handed to the orchestrator as if the user had typed it — so a spoken question still gets a spoken reply when `/voice on`.
+- Core: new `host.telegram.onVoiceMessage(handler)` extension hook + `bot.on('message:voice')` wiring in the Telegram adapter. Handlers return `{ transcript }` to inject text into the orchestrator path or `{ skip: true }` to pass.
+- Whisper.cpp + ggml model auto-install in `gurney ext install gurney-voice` (default `ggml-base.en`; recommend `ggml-tiny.en` on Pi 4).
+
+### Changed
+
+- Renamed `gurney-tts` → `gurney-voice` (it's now two-way: TTS out + STT in). Existing user settings (`piper_bin`, `voice_id`, `voice_model_path`, …) and the per-chat `tts_chat_prefs` table migrate automatically on first load via `0002_rename_from_tts.sql` and a one-time `~/.gurney/extension_state/gurney-tts/ → gurney-voice/` directory move during setup. Pre-downloaded Piper voices and binaries are NOT re-downloaded.
+
+### Notes
+
+- The physical SQLite table name remains `tts_chat_prefs` for reversibility. A new `stt_enabled` column was added to that table (migration `0003_stt_pref.sql`). The two booleans (`enabled` for TTS-out, `stt_enabled` for STT-in) are independent per chat.
+
+---
+
 ## [1.1.0] — 2026-05-20
 
 ### Changed

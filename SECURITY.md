@@ -18,7 +18,7 @@ Gurney is a self-hosted tool designed to run on your own hardware. The attack su
 | gurney-everyday-assistant | Google Calendar API, Google Tasks API, Google OAuth, Open-Meteo (no account) |
 | gurney-websearch          | DuckDuckGo or your self-hosted SearXNG                                       |
 | gurney-memgraph           | Your self-hosted FalkorDB bridge                                             |
-| gurney-tts                | No network (Piper local binary)                                              |
+| gurney-voice              | huggingface.co (one-shot whisper model download); rest is local (Piper + whisper.cpp binaries) |
 | gurney-instant-responses  | No network                                                                   |
 
 No telemetry. No analytics. No outbound calls except to the services you configure.

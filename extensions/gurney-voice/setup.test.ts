@@ -136,7 +136,7 @@ test('ensurePiperForTts returns an existing managed Piper binary without downloa
     const piperDir = join(
       home,
       'extension_state',
-      'gurney-tts',
+      'gurney-voice',
       'native',
       'piper-2023.11.14-2',
       'piper',
@@ -189,7 +189,7 @@ test('ensureVoiceModelForTts downloads the model and config into extension state
 test('ensureVoiceModelForTts returns an existing downloaded voice model', async () => {
   const home = mkdtempSync(join(tmpdir(), 'gurney-voice-native-'));
   try {
-    const voices = join(home, 'extension_state', 'gurney-tts', 'voices');
+    const voices = join(home, 'extension_state', 'gurney-voice', 'voices');
     mkdirSync(voices, { recursive: true });
     const model = join(voices, 'en_GB-alan-medium.onnx');
     writeFileSync(model, 'model');

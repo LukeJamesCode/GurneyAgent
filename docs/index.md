@@ -57,7 +57,7 @@ One page per bundled extension. The `extensions/<name>/` folders hold the runtim
 | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | [Google OAuth setup](./google-oauth-setup.md)                          | Step-by-step guide for Google Calendar + Tasks authorization                             |
 | [gurney-everyday-assistant](./extensions/gurney-everyday-assistant.md) | Calendar, tasks, reminders, weather, briefings, learned routines (Google OAuth required) |
-| [gurney-tts](./extensions/gurney-tts.md)                               | Voice replies via Piper                                                                  |
+| [gurney-voice](./extensions/gurney-voice.md)                           | Two-way voice: Piper TTS replies + whisper.cpp voice-note transcription                  |
 | [gurney-instant-responses](./extensions/gurney-instant-responses.md)   | Instant replies for trivial chatter                                                      |
 
 ### Planned (not in the 1.0 bundle)

@@ -91,7 +91,7 @@ These extensions ship with Gurney. Each is optional — disable any of them with
 | Extension                    | What it does                                                          |
 | ---------------------------- | --------------------------------------------------------------------- |
 | `gurney-everyday-assistant`  | Calendar, tasks, reminders, weather, briefings, learned routines (Google OAuth) |
-| `gurney-tts`                 | Voice replies via Piper + ffmpeg                                      |
+| `gurney-voice`               | Two-way voice: Piper TTS replies + whisper.cpp voice-note transcription |
 | `gurney-instant-responses`   | Templated instant replies for trivial chatter and tool acks           |
 
 ## Design pillars

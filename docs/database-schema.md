@@ -177,15 +177,16 @@ Dedup table for the event-reminder sweep.
 | `created_at` | Unix timestamp (ms)                 |
 | `fired_at`   | Set when dispatched; NULL = pending |
 
-### `gurney-tts`: `voice_prefs`
+### `gurney-voice`: `tts_chat_prefs`
 
-Per-chat voice preference.
+Per-chat voice preferences (both directions). The physical table name is kept as `tts_chat_prefs` for migration reversibility from the old `gurney-tts` extension name.
 
-| Column       | Notes                 |
-| ------------ | --------------------- |
-| `chat_id`    | Telegram chat ID (PK) |
-| `enabled`    | `1` voice on, `0` off |
-| `updated_at` | Unix timestamp (ms)   |
+| Column        | Notes                                |
+| ------------- | ------------------------------------ |
+| `chat_id`     | Telegram chat ID (PK)                |
+| `enabled`     | `1` voice replies on, `0` off        |
+| `stt_enabled` | `1` voice transcription on, `0` off  |
+| `updated_at`  | Unix timestamp (ms)                  |
 
 ### `gurney-memgraph`: `memgraph_sync_state` _(planned, v1.4)_
 

@@ -1,16 +1,18 @@
-// After-reply hook: the only "job" this extension registers. The Telegram
+// Outbound TTS after-reply hook + inbound voice-message handler. The
 // adapter calls into us once a reply finishes streaming; we check the chat's
 // voice pref, synthesize via Piper if enabled, and ship the resulting OGG as
-// a Telegram voice note.
+// a Telegram voice note. The same module also registers the voice-in
+// transcription handler so a single entrypoint covers both directions.
 //
-// The hook is fire-and-forget from the user's perspective: a synth failure
-// logs and skips, never re-throws into the orchestrator.
+// Both hooks are fire-and-forget from the user's perspective: a synth or STT
+// failure logs and skips, never re-throws into the orchestrator.
 
 import type { Host } from '../../src/core/extensions.js';
 import { join } from 'node:path';
 import { getPref, prepForSpeech } from './prefs.js';
 import { synthesize, type SynthRequest, type RunShell } from './synth.js';
 import { DEFAULT_VOICE, ensureVoiceModel, voiceSpecFor } from './voice.js';
+import { register as registerVoiceIn } from './voice-in.js';
 
 export interface RegisterOptions {
   // Override the synth implementation. Tests pass a stub so the hook can be
@@ -20,6 +22,11 @@ export interface RegisterOptions {
 
 export function register(host: Host, options: RegisterOptions = {}): void {
   const synthImpl = options.synth ?? synthesize;
+
+  // Voice-in (STT) handler. Lives in its own module to keep this file
+  // focused on the after-reply TTS path; we register it here so a single
+  // jobs entrypoint covers both directions.
+  registerVoiceIn(host);
 
   host.telegram.afterReply(async ({ chatId, text, log }) => {
     const fallback = Boolean(host.settings.get<boolean>('default_enabled', false));

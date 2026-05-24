@@ -128,7 +128,7 @@ host.telegram.intercept(async (ctx) => {
 });
 ```
 
-For voice replies (gurney-tts pattern), use the lightweight after-reply hook:
+For voice replies (gurney-voice pattern), use the lightweight after-reply hook:
 
 ```ts
 host.telegram.afterReply(async (ctx) => {
@@ -349,7 +349,7 @@ Gurney exposes two post-reply hooks. `afterReply` is intentionally tiny and rema
 
 ### The `afterReply` hook
 
-Registers a callback that fires after every successful reply in a chat. Used by `gurney-tts` to synthesize a voice note for each text reply.
+Registers a callback that fires after every successful reply in a chat. Used by `gurney-voice` to synthesize a voice note for each text reply.
 
 ```ts
 host.telegram.afterReply(async (ctx) => {

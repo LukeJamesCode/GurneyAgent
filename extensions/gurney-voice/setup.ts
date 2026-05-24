@@ -223,7 +223,7 @@ export async function ensureFfmpegForTts(
     (async () => {
       const { confirm: promptConfirm } = await import('@inquirer/prompts');
       return promptConfirm({
-        message: `ffmpeg is required for gurney-tts. Install it now?`,
+        message: `ffmpeg is required for gurney-voice. Install it now?`,
         default: true,
       });
     });
@@ -249,7 +249,7 @@ export async function ensureFfmpegForTts(
   }
 
   const shouldInstall = await confirm(
-    `ffmpeg is required for gurney-tts and was not found. Install it now with ${plan.name}? (${formatPlan(plan)})`,
+    `ffmpeg is required for gurney-voice and was not found. Install it now with ${plan.name}? (${formatPlan(plan)})`,
     true,
   );
   if (!shouldInstall) {
@@ -341,7 +341,7 @@ export async function ensurePiperForTts(opts: NativeDepsOptions = {}): Promise<s
   }
 
   if (!home) {
-    stdout('  Piper was not found. Run `gurney ext install gurney-tts` to auto-download it.\n');
+    stdout('  Piper was not found. Run `gurney ext install gurney-voice` to auto-download it.\n');
     return undefined;
   }
 
@@ -357,7 +357,7 @@ export async function ensurePiperForTts(opts: NativeDepsOptions = {}): Promise<s
   const installDir = join(
     home,
     'extension_state',
-    'gurney-tts',
+    'gurney-voice',
     'native',
     `piper-${PIPER_VERSION}`,
   );
@@ -445,7 +445,7 @@ export async function ensureVoiceModelForTts(
     spec = voiceSpecFor(DEFAULT_VOICE_ID);
   }
 
-  const dir = join(home, 'extension_state', 'gurney-tts', 'voices');
+  const dir = join(home, 'extension_state', 'gurney-voice', 'voices');
   const modelPath = join(dir, `${spec.id}.onnx`);
   const configPath = `${modelPath}.json`;
   if (existsSync(modelPath) && existsSync(configPath)) {
@@ -472,7 +472,36 @@ export async function ensureVoiceModelForTts(
   }
 }
 
+// One-time migration for users who installed under the old extension name
+// (`gurney-tts`). Move any state directory the old extension left behind so
+// pre-downloaded Piper binaries and voice models don't get re-downloaded under
+// the new name. Best-effort: if the rename fails (file lock, permission), we
+// log via stdout and fall through to the normal download path.
+function migrateStateDirFromTts(home: string, stdout: (text: string) => void): void {
+  const oldDir = join(home, 'extension_state', 'gurney-tts');
+  const newDir = join(home, 'extension_state', 'gurney-voice');
+  if (!existsSync(oldDir)) return;
+  if (existsSync(newDir)) {
+    stdout(
+      '  Note: ~/.gurney/extension_state/gurney-tts/ still exists alongside gurney-voice/. ' +
+        'Move or remove the old folder once you have confirmed the rename worked.\n',
+    );
+    return;
+  }
+  try {
+    renameSync(oldDir, newDir);
+    stdout(`  ✓ Migrated state from gurney-tts → gurney-voice (${newDir}).\n`);
+  } catch (e) {
+    stdout(
+      `  Could not move ${oldDir} → ${newDir}: ${e instanceof Error ? e.message : String(e)}\n` +
+        '  Downloads will populate the new location instead.\n',
+    );
+  }
+}
+
 export async function setup(ctx: ExtensionSetupContext): Promise<void> {
+  migrateStateDirFromTts(ctx.home, ctx.stdout);
+
   const ffmpeg = await ensureFfmpegForTts({
     binary: String(ctx.settings.get('ffmpeg_bin', 'ffmpeg')),
     stdout: ctx.stdout,
@@ -493,4 +522,200 @@ export async function setup(ctx: ExtensionSetupContext): Promise<void> {
     stdout: ctx.stdout,
   });
   if (voiceModel) ctx.settings.set('voice_model_path', voiceModel);
+
+  const whisperBin = await ensureWhisperForVoice({
+    binary: String(ctx.settings.get('whisper_bin', 'whisper-cli')),
+    stdout: ctx.stdout,
+    ...(ctx.interactive ? {} : { confirm: async () => false }),
+  });
+  if (whisperBin) ctx.settings.set('whisper_bin', whisperBin);
+
+  const whisperModel = await ensureWhisperModel({
+    modelId: String(ctx.settings.get('whisper_model_id', DEFAULT_WHISPER_MODEL)),
+    home: ctx.home,
+    stdout: ctx.stdout,
+  });
+  if (whisperModel) ctx.settings.set('whisper_model_path', whisperModel);
+}
+
+// ---------------------------------------------------------------------------
+// Whisper.cpp bootstrap
+// ---------------------------------------------------------------------------
+
+const DEFAULT_WHISPER_MODEL = 'ggml-base.en';
+const WHISPER_MODEL_BASE =
+  'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';
+
+// Whisper.cpp's release assets aren't as platform-uniform as Piper's. Rather
+// than ship a brittle download table for every distro we discover whisper-cli
+// via $PATH first; if it's missing, offer a package-manager install where one
+// exists and fall back to a manual-install pointer otherwise. This mirrors
+// the ffmpeg pattern above, which has held up across Linux distros, macOS,
+// and Windows.
+export function detectWhisperInstaller(
+  opts: Pick<NativeDepsOptions, 'platform' | 'commandExists' | 'getuid'> = {},
+): InstallerPlan | null {
+  const platform = opts.platform ?? process.platform;
+  const commandExists = opts.commandExists ?? defaultCommandExists;
+  const getuid = opts.getuid ?? (() => process.getuid?.());
+
+  if (platform === 'darwin' && commandExists('brew')) {
+    return {
+      name: 'brew',
+      steps: [{ command: 'brew', args: ['install', 'whisper-cpp'] }],
+    };
+  }
+
+  const priv = (command: string, args: string[]): InstallStep =>
+    withPrivilege(command, args, { commandExists, getuid });
+
+  if (platform !== 'win32') {
+    // whisper-cpp landed in Homebrew on Linux (linuxbrew) and in some
+    // distro repos under names like `whisper-cpp` or `whisper.cpp`. We
+    // probe the most reliable: brew on Linux, then apt/pacman.
+    if (commandExists('brew')) {
+      return { name: 'brew', steps: [{ command: 'brew', args: ['install', 'whisper-cpp'] }] };
+    }
+    if (commandExists('pacman')) {
+      return {
+        name: 'pacman',
+        steps: [priv('pacman', ['-Sy', '--noconfirm', 'whisper.cpp'])],
+      };
+    }
+    if (commandExists('apt-get')) {
+      // Debian/Ubuntu don't ship a `whisper-cpp` package as of writing;
+      // returning null forces the manual-install message rather than running
+      // an apt-get that won't find the package.
+      return null;
+    }
+  }
+
+  return null;
+}
+
+export async function ensureWhisperForVoice(
+  opts: NativeDepsOptions = {},
+): Promise<string | undefined> {
+  const binary = opts.binary?.trim() || 'whisper-cli';
+  const commandExists = opts.commandExists ?? defaultCommandExists;
+  const commandPath = opts.commandPath ?? defaultCommandPath;
+  const stdout = opts.stdout ?? ((text: string) => process.stdout.write(text));
+  const runStep = opts.runStep ?? defaultRunStep;
+  const confirm =
+    opts.confirm ??
+    (async () => {
+      const { confirm: promptConfirm } = await import('@inquirer/prompts');
+      return promptConfirm({
+        message: `whisper.cpp is required for voice-in. Install it now?`,
+        default: true,
+      });
+    });
+
+  // whisper.cpp's binary has shipped under both `whisper-cli` (modern releases)
+  // and `whisper` / `main` (older builds, distro packages). Check the
+  // configured name first, then fall back to common aliases before declaring
+  // it missing so a user who installed via `brew install whisper-cpp` (which
+  // installs `whisper-cli`) is picked up automatically.
+  const candidates = Array.from(new Set([binary, 'whisper-cli', 'whisper-cpp', 'whisper']));
+  for (const candidate of candidates) {
+    if (commandExists(candidate)) {
+      const found = commandPath(candidate) ?? candidate;
+      stdout(`  ✓ whisper.cpp found (${found}).\n`);
+      return found;
+    }
+  }
+
+  const plan = detectWhisperInstaller({
+    platform: opts.platform,
+    commandExists,
+    getuid: opts.getuid,
+  });
+
+  if (!plan) {
+    stdout(
+      '  whisper.cpp was not found, and Gurney could not detect a supported package manager.\n' +
+        '  Install it manually (https://github.com/ggerganov/whisper.cpp) and set `whisper_bin`\n' +
+        '  with `gurney config gurney-voice whisper_bin <path>`.\n',
+    );
+    return undefined;
+  }
+
+  const shouldInstall = await confirm(
+    `whisper.cpp is required for voice-in. Install it now with ${plan.name}?`,
+    true,
+  );
+  if (!shouldInstall) {
+    stdout('  Skipped whisper.cpp install. Voice transcription will not work until installed.\n');
+    return undefined;
+  }
+
+  for (const step of plan.steps) {
+    stdout(`  → ${[step.command, ...step.args].join(' ')}\n`);
+    const status = runStep(step);
+    if (status !== 0) {
+      stdout(
+        `  whisper.cpp install failed (exit ${status ?? 'unknown'}).\n` +
+          '  Install manually or set `whisper_bin` with `gurney config`.\n',
+      );
+      return undefined;
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (commandExists(candidate)) {
+      const found = commandPath(candidate) ?? candidate;
+      stdout(`  ✓ whisper.cpp installed (${found}).\n`);
+      return found;
+    }
+  }
+
+  stdout(
+    '  whisper.cpp install finished, but this shell still cannot find a whisper binary.\n' +
+      '  Restart your terminal or set `whisper_bin` with `gurney config`.\n',
+  );
+  return undefined;
+}
+
+export async function ensureWhisperModel(
+  opts: NativeDepsOptions & { modelId?: string } = {},
+): Promise<string | undefined> {
+  const home = opts.home;
+  const stdout = opts.stdout ?? ((text: string) => process.stdout.write(text));
+  const downloadFile = opts.downloadFile ?? defaultDownloadFile;
+  const modelId = (opts.modelId?.trim() || DEFAULT_WHISPER_MODEL).replace(/\.bin$/i, '');
+
+  if (!home) {
+    stdout('  whisper model cannot be downloaded without a Gurney home directory.\n');
+    return undefined;
+  }
+
+  if (!/^ggml-[a-z0-9._-]+$/i.test(modelId)) {
+    stdout(
+      `  Invalid whisper model id '${modelId}'. Expected something like ggml-base.en or ggml-tiny.\n` +
+        `  Falling back to ${DEFAULT_WHISPER_MODEL}.\n`,
+    );
+  }
+
+  const dir = join(home, 'extension_state', 'gurney-voice', 'whisper-models');
+  const modelPath = join(dir, `${modelId}.bin`);
+  if (existsSync(modelPath)) {
+    stdout(`  ✓ whisper model ready (${modelPath}).\n`);
+    return modelPath;
+  }
+
+  mkdirSync(dir, { recursive: true });
+  const url = `${WHISPER_MODEL_BASE}/${modelId}.bin`;
+  stdout(`  → Downloading whisper model ${modelId}...\n`);
+  try {
+    await downloadWithPartFile(url, modelPath, downloadFile);
+    stdout(`  ✓ whisper model installed (${modelPath}).\n`);
+    return modelPath;
+  } catch (e) {
+    rmSync(modelPath, { force: true });
+    stdout(
+      `  whisper model download failed: ${e instanceof Error ? e.message : String(e)}\n` +
+        '  Set `whisper_model_path` manually with `gurney config gurney-voice whisper_model_path <path>`.\n',
+    );
+    return undefined;
+  }
 }

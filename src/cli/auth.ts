@@ -111,6 +111,7 @@ export async function runAuthForExt(
       afterReply: () => {},
       afterTurn: () => {},
       sendVoice: async () => {},
+      onVoiceMessage: () => {},
       defaultChatId: 0,
       chatId: 0,
       knownChats: () => [],

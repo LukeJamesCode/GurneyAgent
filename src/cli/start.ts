@@ -208,7 +208,7 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   const stateRoot = join(home, 'extension_state');
   ensurePrivateDir(stateRoot);
 
-  // Voice-note sink for extensions like gurney-tts. The Telegram adapter
+  // Voice-note sink for extensions like gurney-voice. The Telegram adapter
   // hasn't been built yet, so we install a thunk that resolves to it once
   // adapter construction finishes below.
   let sendVoiceImpl: ((chatId: number, voice: VoicePayload) => Promise<void>) | null = null;
@@ -272,6 +272,7 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     extensionAfterReplies: () => loader.afterReplies(),
     extensionAfterTurns: () => loader.afterTurns(),
     extensionCallbacks: () => loader.callbacks(),
+    extensionVoiceMessages: () => loader.voiceMessages(),
   });
   // Wire the scheduler -> Telegram nudge path.
   dispatchNudge = (nudge) => telegram.sendNudge(nudge);

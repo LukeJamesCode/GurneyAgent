@@ -69,7 +69,11 @@ export async function promptRemainingSettings(
   for (const [key, def] of Object.entries(schema.properties)) {
     if (alreadySet.has(key)) continue;
     if (def.secret) continue; // secrets belong to the auth flow
-    if (extName === 'gurney-tts' && (key === 'piper_bin' || key === 'ffmpeg_bin')) continue;
+    if (
+      extName === 'gurney-voice' &&
+      (key === 'piper_bin' || key === 'ffmpeg_bin' || key === 'whisper_bin')
+    )
+      continue;
 
     const isRequired = schema.required?.includes(key) ?? false;
     const label = def.description ?? key;

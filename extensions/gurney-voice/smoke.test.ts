@@ -32,10 +32,10 @@ const fakeLlm: LLM = {
   },
 };
 
-test('gurney-tts: loads, registers /voice, and the after-reply hook sends voice when enabled', async () => {
+test('gurney-voice: loads, registers /voice, and the after-reply hook sends voice when enabled', async () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const extensionsRoot = resolve(here, '..');
-  const tmp = mkdtempSync(join(tmpdir(), 'gurney-tts-smoke-'));
+  const tmp = mkdtempSync(join(tmpdir(), 'gurney-voice-smoke-'));
   try {
     const db = open({ path: ':memory:' });
     const tools = createToolRegistry({ log });
@@ -59,11 +59,11 @@ test('gurney-tts: loads, registers /voice, and the after-reply hook sends voice 
     });
     await loader.loadAll();
 
-    const tts = loader.list().find((e) => e.name === 'gurney-tts');
+    const tts = loader.list().find((e) => e.name === 'gurney-voice');
     assert.ok(tts, 'extension should appear in the loader list');
     assert.equal(tts!.error, undefined, `tts load error: ${tts!.error ?? 'none'}`);
 
-    const cmds = loader.commands().filter((c) => c.extension === 'gurney-tts');
+    const cmds = loader.commands().filter((c) => c.extension === 'gurney-voice');
     assert.deepEqual(
       cmds.map((c) => c.name),
       ['voice'],
@@ -92,7 +92,7 @@ test('gurney-tts: loads, registers /voice, and the after-reply hook sends voice 
       },
     });
 
-    const afterReplies = loader.afterReplies().filter((h) => h.extension === 'gurney-tts');
+    const afterReplies = loader.afterReplies().filter((h) => h.extension === 'gurney-voice');
     assert.equal(afterReplies.length, 1, 'tts should register an after-reply hook');
 
     // Hook is a no-op while voice is disabled.
@@ -109,7 +109,7 @@ test('gurney-tts: loads, registers /voice, and the after-reply hook sends voice 
     writeFileSync(fakeModel, 'not actually a model');
     db.prepare(
       `INSERT INTO extension_settings (extension, key, value, updated_at) VALUES (?, ?, ?, ?)`,
-    ).run('gurney-tts', 'voice_model_path', fakeModel, Date.now());
+    ).run('gurney-voice', 'voice_model_path', fakeModel, Date.now());
     db.prepare(`UPDATE tts_chat_prefs SET enabled = 1, updated_at = ? WHERE chat_id = ?`).run(
       Date.now(),
       99,

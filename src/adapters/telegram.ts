@@ -13,7 +13,16 @@
 // every Telegram update, so hot-reload reflects without restarting the bot.
 // `sendMessage(chatId, text)` is exposed for the scheduler's nudge dispatcher.
 
-import { existsSync, openSync, readSync, fstatSync, closeSync } from 'node:fs';
+import {
+  existsSync,
+  openSync,
+  readSync,
+  fstatSync,
+  closeSync,
+  createWriteStream,
+} from 'node:fs';
+import { Readable } from 'node:stream';
+import { pipeline as streamPipeline } from 'node:stream/promises';
 import { Bot, InlineKeyboard, InputFile, type Context } from 'grammy';
 import { collectDoctorReply } from './telegram-maintenance.js';
 import type { Logger } from '../util/log.js';
@@ -34,6 +43,8 @@ import type {
   ExtensionAfterReplyRecord,
   ExtensionAfterTurnRecord,
   ExtensionCallbackRecord,
+  ExtensionVoiceMessageRecord,
+  TelegramVoiceMessage,
   ExtensionCommandRecord,
   ExtensionInterceptRecord,
   TelegramCallbackContext,
@@ -71,7 +82,7 @@ export interface TelegramOptions {
   extensionCommands?: () => ExtensionCommandRecord[];
   extensionIntercepts?: () => ExtensionInterceptRecord[];
   // After-reply hooks. Fired sequentially once a streamed reply finishes;
-  // gurney-tts uses this to ship a voice note alongside the text reply.
+  // gurney-voice uses this to ship a voice note alongside the text reply.
   extensionAfterReplies?: () => ExtensionAfterReplyRecord[];
   // Rich after-turn hooks. Fired after the visible Telegram reply is sent;
   // learning/routine extensions use this instead of entering the hot path.
@@ -79,6 +90,10 @@ export interface TelegramOptions {
   // Inline-button callback handlers. Buttons emitted with callbackData
   // `cb:<prefix>:<...>` are routed to the handler registered for that prefix.
   extensionCallbacks?: () => ExtensionCallbackRecord[];
+  // Inbound voice-message handlers. The adapter downloads the OGG/Opus voice
+  // note and walks handlers in registration order; the first one returning
+  // `{ transcript }` wins and the text is injected into the orchestrator path.
+  extensionVoiceMessages?: () => ExtensionVoiceMessageRecord[];
   // Path to ~/.gurney/log/gurney.log for /logs.
   logFilePath?: string;
 }
@@ -91,7 +106,7 @@ export interface TelegramAdapter {
   sendNudge(nudge: Nudge): Promise<void>;
   // Lower-level helper retained for compatibility with direct Telegram sends.
   sendMessage(chatId: number, text: string): Promise<void>;
-  // Voice notes for extensions like gurney-tts. Wired into the loader as
+  // Voice notes for extensions like gurney-voice. Wired into the loader as
   // host.telegram.sendVoice so extensions never touch grammY directly.
   sendVoice(chatId: number, voice: VoicePayload): Promise<void>;
 }
@@ -1080,6 +1095,82 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
       }
     };
     await runNext();
+  });
+
+  // Inbound voice notes. Walk registered handlers in registration order; the
+  // first one returning a transcript wins, and the transcript is injected
+  // back into the orchestrator path the same way a typed message would be.
+  // Handlers are responsible for their own gating (per-chat pref, duration
+  // caps, language). Errors are caught locally so a single extension misbehave
+  // can't take the long-poll loop down.
+  bot.on('message:voice', async (ctx) => {
+    if (!ctx.chat || !ctx.from || !ctx.message.voice) return;
+    const handlers = opts.extensionVoiceMessages?.() ?? [];
+    if (handlers.length === 0) {
+      await ctx.reply(
+        "I can't transcribe voice notes yet — install gurney-voice and /voice transcribe on.",
+      );
+      return;
+    }
+
+    const voice = ctx.message.voice;
+    // The extension passes destPath (its own temp file); we just stream the
+    // file id's bytes into it. Cleanup is the extension's responsibility —
+    // the adapter never owns the destination.
+    const downloadToFile = async (destPath: string): Promise<void> => {
+      const file = await ctx.api.getFile(voice.file_id);
+      if (!file.file_path) {
+        throw new Error('telegram voice file has no file_path');
+      }
+      // Telegram's file-download URL pattern (see Bot API docs). The link is
+      // valid for ~1 hour after getFile.
+      const link = `https://api.telegram.org/file/bot${opts.token}/${file.file_path}`;
+      const res = await fetch(link, { redirect: 'follow' });
+      if (!res.ok || !res.body) {
+        throw new Error(`telegram voice download failed: HTTP ${res.status}`);
+      }
+      await streamPipeline(
+        Readable.fromWeb(
+          res.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>,
+        ),
+        createWriteStream(destPath),
+      );
+    };
+
+    const msg: TelegramVoiceMessage = {
+      chatId: ctx.chat.id,
+      userId: ctx.from.id,
+      fileId: voice.file_id,
+      durationSec: voice.duration,
+      ...(voice.mime_type ? { mimeType: voice.mime_type } : {}),
+      log,
+      downloadToFile,
+    };
+
+    let transcript: string | null = null;
+    for (const h of handlers) {
+      try {
+        const result = await h.handler(msg);
+        if (result && 'transcript' in result && result.transcript.trim().length > 0) {
+          transcript = result.transcript.trim();
+          break;
+        }
+      } catch (e) {
+        log.warn('voice handler failed', {
+          ext: h.extension,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
+    if (!transcript) {
+      await ctx.reply(
+        "I couldn't transcribe that voice note. Use /voice transcribe status to check the setting, or type your message.",
+      );
+      return;
+    }
+
+    dispatchOrchestratorTurn(ctx, transcript);
   });
 
   bot.catch((err) => {

@@ -118,7 +118,7 @@ export interface TelegramInterceptContext extends TelegramCommandContext {
 export type TelegramInterceptHandler = (ctx: TelegramInterceptContext) => Promise<void>;
 
 // Fired after the orchestrator finishes streaming an assistant reply. Used by
-// gurney-tts to synthesize and send a voice note alongside the text reply.
+// gurney-voice to synthesize and send a voice note alongside the text reply.
 // Handlers run sequentially after the user-facing send completes; they must
 // not throw the orchestrator off the rails so the Telegram adapter catches errors.
 export interface AfterReplyContext {
@@ -160,6 +160,34 @@ export interface VoicePayload {
   path?: string;
   caption?: string;
 }
+
+// Inbound Telegram voice note delivered to extensions via
+// host.telegram.onVoiceMessage. Extensions don't touch grammY directly — the
+// adapter wraps the file id, exposes a download helper, and surfaces basic
+// metadata (duration, mime type) the handler needs to gate on.
+export interface TelegramVoiceMessage {
+  chatId: number;
+  userId: number;
+  // grammY File ID. Opaque to extensions; pass into downloadToFile when needed.
+  fileId: string;
+  durationSec: number;
+  mimeType?: string;
+  log: Logger;
+  // Stream the OGG/Opus bytes onto local disk at destPath. Implemented by the
+  // adapter; resolves once the download finishes.
+  downloadToFile: (destPath: string) => Promise<void>;
+}
+
+// Result returned by a voice-message handler. The adapter walks registered
+// handlers in registration order until one returns a `{ transcript }`. The
+// transcript is then injected into the orchestrator path as if the user had
+// typed it. `{ skip: true }` (or `undefined`) means "I'm not handling this
+// one"; the adapter falls through to the next handler, and if none claim the
+// message it sends a polite "voice notes aren't enabled" reply.
+export type TelegramVoiceHandlerResult = { transcript: string } | { skip: true } | void;
+export type TelegramVoiceHandler = (
+  msg: TelegramVoiceMessage,
+) => Promise<TelegramVoiceHandlerResult>;
 
 // Telegram callback (inline-button) context handed to extension handlers.
 // The adapter dispatches callbacks whose data starts with `cb:<prefix>:` to
@@ -258,6 +286,11 @@ export interface Host {
     // Send a voice note. Backed by the Telegram adapter when available, or a
     // no-op stub during tests so extensions can register without grammY in scope.
     sendVoice: (chatId: number, voice: VoicePayload) => Promise<void>;
+    // Receive inbound voice notes. The adapter walks handlers in registration
+    // order; the first to return `{ transcript }` wins and the transcript is
+    // injected into the orchestrator as a user turn. Returning `{ skip: true }`
+    // (or nothing) passes the message to the next handler.
+    onVoiceMessage: (handler: TelegramVoiceHandler) => void;
     // The default Telegram chat ID from core config. Prefer per-chat or per-routine
     // state when available; keep this as the backward-compatible fallback.
     defaultChatId: number;
@@ -331,6 +364,11 @@ export interface ExtensionCallbackRecord {
   handler: TelegramCallbackHandler;
 }
 
+export interface ExtensionVoiceMessageRecord {
+  extension: string;
+  handler: TelegramVoiceHandler;
+}
+
 export interface ExtensionAuthRecord {
   extension: string;
   flow: AuthFlow;
@@ -400,6 +438,7 @@ export interface ExtensionLoader {
   afterReplies(): ExtensionAfterReplyRecord[];
   afterTurns(): ExtensionAfterTurnRecord[];
   callbacks(): ExtensionCallbackRecord[];
+  voiceMessages(): ExtensionVoiceMessageRecord[];
   authFlows(): ExtensionAuthRecord[];
   // Concatenated prompt fragments, in stable order (alpha by extension name).
   // Pass a filter set to include only those extensions' fragments — pairs
@@ -435,6 +474,7 @@ interface RegistrationsForExtension {
   afterReplies: ExtensionAfterReplyRecord[];
   afterTurns: ExtensionAfterTurnRecord[];
   callbacks: ExtensionCallbackRecord[];
+  voiceMessages: ExtensionVoiceMessageRecord[];
   jobsRegistered: number;
   authFlow?: AuthFlow;
   promptFragment?: string;
@@ -710,6 +750,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
       afterReplies: [],
       afterTurns: [],
       callbacks: [],
+      voiceMessages: [],
       jobsRegistered: 0,
       promptFragment: promptFragment ?? '',
       ...(intentPattern ? { intentPattern } : {}),
@@ -792,6 +833,14 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
             return;
           }
           await opts.sendVoice(chatId, voice);
+        },
+        onVoiceMessage: (handler) => {
+          const record: ExtensionVoiceMessageRecord = { extension: manifest.name, handler };
+          reg.voiceMessages.push(record);
+          reg.disposers.push(() => {
+            const idx = reg.voiceMessages.indexOf(record);
+            if (idx >= 0) reg.voiceMessages.splice(idx, 1);
+          });
         },
         defaultChatId: opts.chatId,
         chatId: opts.chatId,
@@ -1250,6 +1299,11 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
     for (const r of registrations.values()) out.push(...r.callbacks);
     return out;
   }
+  function voiceMessages(): ExtensionVoiceMessageRecord[] {
+    const out: ExtensionVoiceMessageRecord[] = [];
+    for (const r of registrations.values()) out.push(...r.voiceMessages);
+    return out;
+  }
   function authFlows(): ExtensionAuthRecord[] {
     const out: ExtensionAuthRecord[] = [];
     for (const [name, r] of registrations.entries()) {
@@ -1350,6 +1404,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
     afterReplies,
     afterTurns,
     callbacks,
+    voiceMessages,
     authFlows,
     promptFragment,
     relevantExtensions,

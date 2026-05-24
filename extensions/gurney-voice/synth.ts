@@ -71,7 +71,7 @@ export async function synthesize(
   req: SynthRequest,
   runShell: RunShell = defaultRunShell,
 ): Promise<SynthResult> {
-  const dir = mkdtempSync(join(tmpdir(), 'gurney-tts-'));
+  const dir = mkdtempSync(join(tmpdir(), 'gurney-voice-'));
   const wavPath = join(dir, 'out.wav');
   const oggPath = join(dir, 'out.ogg');
 
@@ -109,7 +109,7 @@ export async function synthesize(
 // Test helper: produce an in-memory pseudo-OGG file so the smoke test for the
 // after-reply hook can exercise the wiring without piper installed.
 export function writeStubOgg(): SynthResult {
-  const dir = mkdtempSync(join(tmpdir(), 'gurney-tts-stub-'));
+  const dir = mkdtempSync(join(tmpdir(), 'gurney-voice-stub-'));
   const oggPath = join(dir, 'stub.ogg');
   writeFileSync(oggPath, Buffer.from([0x4f, 0x67, 0x67, 0x53])); // "OggS"
   return {

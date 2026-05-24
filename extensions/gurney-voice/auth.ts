@@ -1,4 +1,4 @@
-// First-run setup wizard for gurney-tts. Not "auth" in the OAuth sense — we
+// First-run setup wizard for gurney-voice. Not "auth" in the OAuth sense — we
 // reuse the auth flow plumbing because it's the cleanest way for an extension
 // to drive an interactive prompt and persist the result into
 // extension_settings. The wizard asks one yes/no question:

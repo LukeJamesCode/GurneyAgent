@@ -192,7 +192,7 @@ sudo systemctl restart gurney
 The Pi 4 with 4 GB is the minimum supported device. It works, but you need to be deliberate:
 
 - Use `qwen3.5:0.5b` (chat model). The 0.8b model fits but leaves little headroom.
-- Do not enable heavy extensions like `gurney-tts` — they require Standard or Heavy tier.
+- Do not enable heavy extensions like `gurney-voice` — they require Standard or Heavy tier.
 - Check for thermal throttling under load: `vcgencmd measure_temp`. Values above 85°C indicate you need better cooling.
 - The first reply after start takes 10–30s (cold model load from SSD; 30–60s from SD card). Subsequent replies in the same conversation are much faster (KV cache hit).
 
