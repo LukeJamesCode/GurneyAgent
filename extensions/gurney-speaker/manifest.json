@@ -2,7 +2,7 @@
   "name": "gurney-speaker",
   "version": "0.1.0",
   "description": "Handmade smart-speaker front-end for Gurney. Hosts a WebSocket server that talks to ESP32-S3 puck devices (wake word, mic stream, OGG/Opus reply). Depends on gurney-voice for whisper STT + Piper TTS.",
-  "gurney": ">=1.0.0",
+  "gurney": ">=0.1.0",
   "deps": ["gurney-voice"],
   "capabilities": ["network", "storage", "telegram"],
   "entrypoints": {
