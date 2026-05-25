@@ -202,9 +202,41 @@ export function startWsServer(opts: WsServerOptions): WsServerHandle {
 
   wss.on('connection', handleConnection);
 
+  // Without these, a transport-level error (bind failure, malformed
+  // listen_host setting) throws an unhandled 'error' event and kills the
+  // whole Gurney process. Log and continue instead.
+  wss.on('error', (e) => {
+    opts.log.warn('ws server error', {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  });
+
   if (httpServer) {
-    httpServer.listen(opts.port, opts.host, () => {
-      opts.log.info('gurney-speaker ws server listening', { host: opts.host, port: opts.port });
+    // Forgive a `host:port` value in listen_host — earlier setup wizards let
+    // users paste a combined string here, which Node then tries to DNS-resolve
+    // verbatim and dies on. Split it out and prefer the explicit listen_port.
+    let host = opts.host;
+    let port = opts.port;
+    const colon = host.lastIndexOf(':');
+    if (colon > 0 && /^\d+$/.test(host.slice(colon + 1))) {
+      const parsedPort = Number(host.slice(colon + 1));
+      host = host.slice(0, colon);
+      if (!port) port = parsedPort;
+      opts.log.warn('listen_host contained a port — split into host + port', {
+        original: opts.host,
+        host,
+        port,
+      });
+    }
+    httpServer.on('error', (e) => {
+      opts.log.warn('ws http server error', {
+        error: e instanceof Error ? e.message : String(e),
+        host,
+        port,
+      });
+    });
+    httpServer.listen(port, host, () => {
+      opts.log.info('gurney-speaker ws server listening', { host, port });
     });
   }
 
