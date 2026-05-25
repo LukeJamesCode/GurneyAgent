@@ -3,7 +3,14 @@ import { strict as assert } from 'node:assert';
 import { writeFileSync, existsSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { transcribe, cleanTranscript, SttError, type RunShell } from './stt.js';
+import {
+  transcribe,
+  transcribePcm,
+  buildWavHeader,
+  cleanTranscript,
+  SttError,
+  type RunShell,
+} from './stt.js';
 
 interface Recorded {
   cmd: string;
@@ -148,6 +155,93 @@ test('transcribe errors when whisper produces no output file', async () => {
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('buildWavHeader produces a valid 16-bit mono PCM RIFF header', () => {
+  const pcmLen = 320; // 10 ms at 16 kHz mono 16-bit
+  const h = buildWavHeader(pcmLen, 16000);
+  assert.equal(h.length, 44);
+  assert.equal(h.subarray(0, 4).toString('ascii'), 'RIFF');
+  assert.equal(h.readUInt32LE(4), 36 + pcmLen);
+  assert.equal(h.subarray(8, 12).toString('ascii'), 'WAVE');
+  assert.equal(h.subarray(12, 16).toString('ascii'), 'fmt ');
+  assert.equal(h.readUInt32LE(16), 16); // PCM fmt chunk size
+  assert.equal(h.readUInt16LE(20), 1); // PCM format
+  assert.equal(h.readUInt16LE(22), 1); // mono
+  assert.equal(h.readUInt32LE(24), 16000); // sample rate
+  assert.equal(h.readUInt32LE(28), 16000 * 2); // byte rate
+  assert.equal(h.readUInt16LE(32), 2); // block align
+  assert.equal(h.readUInt16LE(34), 16); // bits per sample
+  assert.equal(h.subarray(36, 40).toString('ascii'), 'data');
+  assert.equal(h.readUInt32LE(40), pcmLen);
+});
+
+test('transcribePcm writes WAV header + PCM, skips ffmpeg, runs whisper', async () => {
+  // Single shell call expected (whisper). ffmpeg is bypassed.
+  const calls: Array<{ cmd: string; args: string[] }> = [];
+  let wavOnDisk: Buffer | null = null;
+  const impl: RunShell = async (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === 'whisper-cli') {
+      // The wav passed to -f must already exist with the right header.
+      const fIdx = args.indexOf('-f');
+      const wavPath = args[fIdx + 1]!;
+      wavOnDisk = readFileSync(wavPath);
+      writeFileSync(`${wavPath}.txt`, 'pcm hello\n');
+    }
+    return { stdout: Buffer.alloc(0), stderr: '', code: 0 };
+  };
+
+  // 100 ms of "PCM": 1600 samples * 2 bytes = 3200 bytes of zeroes is fine for
+  // the wiring check.
+  const pcm = Buffer.alloc(3200);
+  const result = await transcribePcm(
+    { pcm, sampleRate: 16000, whisperBin: 'whisper-cli', modelPath: '/m.bin', language: 'en' },
+    impl,
+  );
+
+  assert.equal(result.transcript, 'pcm hello');
+  assert.equal(calls.length, 1, 'ffmpeg must not be invoked for raw PCM');
+  assert.equal(calls[0]!.cmd, 'whisper-cli');
+  assert.ok(calls[0]!.args.includes('-otxt'));
+  assert.equal(calls[0]!.args[calls[0]!.args.indexOf('-l') + 1], 'en');
+
+  // The wav whisper saw should be header (44) + payload (3200).
+  assert.ok(wavOnDisk, 'whisper should have been pointed at a real wav file');
+  assert.equal(wavOnDisk!.length, 44 + 3200);
+  assert.equal(wavOnDisk!.subarray(0, 4).toString('ascii'), 'RIFF');
+});
+
+test('transcribePcm rejects non-16k sample rates', async () => {
+  await assert.rejects(
+    () =>
+      transcribePcm(
+        { pcm: Buffer.alloc(16), sampleRate: 48000, whisperBin: 'w', modelPath: '/m.bin' },
+        async () => ({ stdout: Buffer.alloc(0), stderr: '', code: 0 }),
+      ),
+    (e: unknown) => e instanceof SttError && /16000/.test(e.message),
+  );
+});
+
+test('transcribePcm cleans up its temp dir on whisper failure', async () => {
+  let wavPath: string | null = null;
+  const impl: RunShell = async (cmd, args) => {
+    if (cmd === 'whisper-cli') {
+      wavPath = args[args.indexOf('-f') + 1]!;
+      return { stdout: Buffer.alloc(0), stderr: 'boom', code: 1 };
+    }
+    return { stdout: Buffer.alloc(0), stderr: '', code: 0 };
+  };
+  await assert.rejects(
+    () =>
+      transcribePcm(
+        { pcm: Buffer.alloc(16), sampleRate: 16000, whisperBin: 'whisper-cli', modelPath: '/m.bin' },
+        impl,
+      ),
+    (e: unknown) => e instanceof SttError && e.stage === 'whisper',
+  );
+  assert.ok(wavPath, 'whisper should have been invoked');
+  assert.equal(existsSync(wavPath!), false, 'temp dir survived — cleanup missed it');
 });
 
 test('cleanTranscript strips whisper sentinels and normalises whitespace', () => {

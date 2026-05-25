@@ -16,5 +16,11 @@
     "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
     "subpath": "extensions/gurney-instant-responses",
     "description": "Templated instant replies for trivial chatter and tool-dispatch acknowledgements"
+  },
+  {
+    "name": "gurney-speaker",
+    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
+    "subpath": "extensions/gurney-speaker",
+    "description": "Handmade smart-speaker front-end: WebSocket server for ESP32-S3 puck devices, reuses gurney-voice for STT/TTS"
   }
 ]

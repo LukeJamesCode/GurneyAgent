@@ -1,0 +1,22 @@
+## IDF component manager — declares the external deps the firmware pulls in.
+## Run `idf.py reconfigure` after editing to refresh the lockfile.
+
+dependencies:
+  idf:
+    version: ">=5.1"
+
+  # ESP-SR provides WakeNet (hotword) + the Audio Front End (AEC, AGC, NS).
+  # Required for the "wake on 'Hi ESP'" trigger and for AEC during barge-in.
+  espressif/esp-sr: "^1.4.0"
+
+  # WebSocket client for the connection to the Gurney server.
+  espressif/esp_websocket_client: "^1.2.3"
+
+  # LVGL for the round LCD UI (idle/listening/thinking/speaking/muted screens).
+  lvgl/lvgl: "^9.2.0"
+
+  # Opus decoder for the TTS audio coming back from the server.
+  # NOTE: gurney-voice currently sends OGG-encapsulated Opus; on the device
+  # we use ogg+opus to decode. Swap to raw Opus packets if the server is
+  # changed to ship them without the OGG container.
+  espressif/esp_audio_codec: "*"
