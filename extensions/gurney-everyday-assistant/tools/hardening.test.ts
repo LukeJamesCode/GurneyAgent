@@ -169,7 +169,10 @@ test('calendar_add_event defaults end for all-day events (end = start)', async (
       assert.match(String(result), /Added/i);
       const eventBody = JSON.parse(bodies[1]!) as Record<string, unknown>;
       const end = (eventBody['end'] as { date?: string } | undefined)?.date;
-      assert.equal(end, '2026-05-25');
+      // Google calendar's all-day end is exclusive: a single-day birthday on
+      // 2026-05-25 posts as end=2026-05-26. The tool fills end=start=2026-05-25
+      // and api/calendar.ts.addEvent advances it by a day for the wire format.
+      assert.equal(end, '2026-05-26');
     } finally {
       globalThis.fetch = origFetch;
     }
@@ -312,7 +315,9 @@ test('reminder_clear_all deletes all unfired reminders for the originating chat'
     const tools = registerTools(registerReminders, host);
     const result = await tools.get('reminder_clear_all')!({}, { chatId: 111, log: fakeLog });
     assert.match(String(result), /Cleared 2 reminders/);
-    const remaining = db.prepare(`SELECT chat_id, fired FROM reminders ORDER BY id`).all() as Array<{
+    const remaining = db
+      .prepare(`SELECT chat_id, fired FROM reminders ORDER BY id`)
+      .all() as Array<{
       chat_id: number;
       fired: number;
     }>;

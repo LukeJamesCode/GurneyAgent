@@ -77,11 +77,15 @@ static void handle_inbound(const uint8_t *data, size_t len) {
         case GS_OP_TTS_END:
             if (s_cfg.on_tts_chunk) s_cfg.on_tts_chunk(NULL, 0, true);
             break;
-        case GS_OP_PING:
+        case GS_OP_PING: {
             // Echo: server probes liveness, we ack with the same opcode.
-            s_tx_buf[0] = GS_OP_PING;
-            esp_websocket_client_send_bin(s_client, (const char *)s_tx_buf, 1, 0);
+            // Use a stack-local one-byte buffer so we don't have to take the
+            // tx mutex (the inbound dispatch runs on the WS event task and
+            // could otherwise deadlock against an in-flight PCM send).
+            const uint8_t ping = GS_OP_PING;
+            esp_websocket_client_send_bin(s_client, (const char *)&ping, 1, 0);
             break;
+        }
         default:
             ESP_LOGW(TAG, "unknown opcode 0x%02x (len=%u)", op, (unsigned)payload_len);
     }

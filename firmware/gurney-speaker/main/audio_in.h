@@ -25,3 +25,14 @@ void gs_audio_in_on_server_state(gs_device_state_t state);
 
 // Hard stop: the mute button was pressed. Drains buffers, halts I2S reads.
 void gs_audio_in_set_muted(bool muted);
+
+// Push-to-talk override. While `held` is true the audio task streams PCM
+// frames to the server regardless of WakeNet state. On the rising edge of
+// `held` (false → true) we also synthesise a WAKE event so the server moves
+// into LISTENING. On the falling edge (true → false) we send UTTERANCE_END
+// so the turn closes immediately rather than waiting for the silence VAD.
+//
+// PTT is the documented escape hatch when no WakeNet model is flashed —
+// without it the device has no way to initiate a turn over voice. Bound to
+// the "spare" hardware button.
+void gs_audio_in_set_ptt(bool held);

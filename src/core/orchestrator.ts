@@ -40,7 +40,7 @@ export function looksLikeFakeToolCall(text: string, allowedTools: ReadonlySet<st
   // function call at (or very near) the start of the reply.
   const head = t.slice(0, 120);
   const refMatch =
-    /^[\s*_>]*[\[`]\s*([a-z_][a-z0-9_]*)\s*[\]`]/i.exec(head) ??
+    /^[\s*_>]*[[`]\s*([a-z_][a-z0-9_]*)\s*[\]`]/i.exec(head) ??
     /^[\s*_>]*`?([a-z_][a-z0-9_]*)`?\s*\(/i.exec(head);
   if (refMatch && allowedTools.has(refMatch[1]!)) return true;
   return false;
@@ -57,8 +57,7 @@ export function looksLikeFakeToolCall(text: string, allowedTools: ReadonlySet<st
 // Both halves are necessary — the model legitimately uses "removed/deleted"
 // when describing what it CAN do, or when summarizing a real delete result.
 const DESTRUCTIVE_TOOL_PATTERN = /(?:_|^)(delete|cancel|remove|clear|wipe|drop)(?:_|$)/i;
-const USER_DELETE_VERB_PATTERN =
-  /\b(cancel|delete|remove|drop|wipe|clear|nuke|get rid of)\b/i;
+const USER_DELETE_VERB_PATTERN = /\b(cancel|delete|remove|drop|wipe|clear|nuke|get rid of)\b/i;
 const ASSISTANT_FAKE_CONFIRM_PATTERN =
   /\b(removed|deleted|cancell?ed|cleared|wiped|dropped|gone|nuked)\b/i;
 export function looksLikeFakeActionConfirmation(args: {

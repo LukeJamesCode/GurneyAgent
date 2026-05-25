@@ -248,6 +248,39 @@ export interface SetupEntrypointModule {
   run?: (ctx: ExtensionSetupContext) => void | Promise<void>;
 }
 
+// Streamed reply chunk an extension receives from host.orchestrator. Mirrors
+// orchestrator.ReplyChunk but is redeclared here to avoid an import cycle
+// between extensions.ts and orchestrator.ts.
+export interface HostReplyChunk {
+  delta: string;
+  done: boolean;
+  replace?: string;
+  meta?: {
+    model: string;
+    promptTokens?: number;
+    completionTokens?: number;
+    elapsedMs: number;
+    afterTurn?: AfterTurnContext;
+  };
+}
+
+export interface HostUserMessage {
+  chatId: number;
+  userId: number;
+  text: string;
+  send: (chunk: HostReplyChunk) => void | Promise<void>;
+}
+
+// Subset of the core Orchestrator exposed to extensions. Gives non-Telegram
+// surfaces (gurney-speaker, future web UI) a way to inject a user turn into
+// the same conversation history Telegram uses, with tools and the
+// hallucination guard intact. Each extension's chatId can be the
+// user's normal Telegram chat (so they share history) or a synthetic one
+// (isolated history).
+export interface HostOrchestrator {
+  handleUserMessage(msg: HostUserMessage): Promise<void>;
+}
+
 export interface Host {
   // Identity + filesystem
   name: string;
@@ -258,6 +291,9 @@ export interface Host {
   // Shared core services
   db: DB;
   llm: LLM;
+  // Optional — wired by start.ts but absent in some test harnesses. Extensions
+  // that need it should check at runtime and fall back to host.llm if missing.
+  orchestrator?: HostOrchestrator;
 
   // Per-extension config / settings store
   settings: ExtensionSettings;
@@ -405,6 +441,10 @@ export interface ExtensionLoaderOptions {
   log: Logger;
   scheduler: Scheduler;
   tools: ToolRegistry;
+  // Optional. When provided, extensions receive `host.orchestrator` and can
+  // submit user turns through the same pipeline Telegram uses. The CLI wires
+  // this in at startup; tests typically leave it undefined.
+  orchestrator?: HostOrchestrator;
 
   // Host's own version — used to validate `manifest.gurney` ranges.
   hostVersion: string;
@@ -770,6 +810,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
       dataDir,
       db: opts.db,
       llm: opts.llm,
+      ...(opts.orchestrator ? { orchestrator: opts.orchestrator } : {}),
       settings,
       tools: {
         register: (h) => {

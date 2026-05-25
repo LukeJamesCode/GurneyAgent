@@ -131,7 +131,10 @@ test('gurney-everyday-assistant: loads cleanly and registers all hooks', async (
       'weather',
     ]);
 
-    // ── 7 cron jobs ───────────────────────────────────────────────────────────
+    // ── cron jobs ─────────────────────────────────────────────────────────────
+    // The weather-reschedule sweep is split across each configured
+    // `weather_reschedule_times` entry (defaults are 06:00 + 18:00). When
+    // there's exactly one time the name stays bare; with two it suffixes -1/-2.
     const jobs = sched.list().filter((j) => j.extension === 'gurney-everyday-assistant');
     const jobNames = jobs.map((j) => j.name).sort();
     assert.deepEqual(jobNames, [
@@ -141,7 +144,8 @@ test('gurney-everyday-assistant: loads cleanly and registers all hooks', async (
       'morning-briefing',
       'night-briefing',
       'reminder-sweep',
-      'weather-reschedule-sweep',
+      'weather-reschedule-sweep-1',
+      'weather-reschedule-sweep-2',
     ]);
 
     // event-reminder-sweep runs every 5 minutes

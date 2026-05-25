@@ -57,12 +57,23 @@ export interface SendFn {
   (frame: Buffer): void;
 }
 
+// Persistence hooks: optional sinks so the session can keep a database row
+// in lockstep with what the device is doing. All callbacks are best-effort —
+// the session catches and logs exceptions rather than aborting a turn over a
+// failed UPDATE.
+export interface SessionPersistence {
+  onStateChanged?: (volume: number, muted: boolean) => void;
+  onShutdown?: () => void;
+}
+
 export interface SessionDeps {
   transcribe: TranscribeFn;
   dispatch: DispatchFn;
   synth: SynthFn;
   send: SendFn;
   log: Logger;
+  // Optional bag of database hooks. Omitted in tests; wired in jobs.ts.
+  persist?: SessionPersistence;
   // Injected so tests can run virtual time. Real callers omit it.
   now?: () => number;
   setTimeout?: (cb: () => void, ms: number) => unknown;
@@ -77,7 +88,10 @@ const SILENCE_MEAN_ABS = 600;
 export class DeviceSession {
   state: DeviceState;
   private cfg: SessionConfig;
-  private deps: Required<Omit<SessionDeps, 'log'>> & { log: Logger };
+  private deps: Required<Omit<SessionDeps, 'log' | 'persist'>> & {
+    log: Logger;
+    persist: SessionPersistence;
+  };
   private pcm: Buffer[] = [];
   private pcmBytes = 0;
   private listeningStart = 0;
@@ -97,11 +111,23 @@ export class DeviceSession {
       synth: deps.synth,
       send: deps.send,
       log: deps.log,
+      persist: deps.persist ?? {},
       now: deps.now ?? (() => Date.now()),
       setTimeout: deps.setTimeout ?? ((cb, ms) => globalThis.setTimeout(cb, ms)),
-      clearTimeout: deps.clearTimeout ?? ((h) => globalThis.clearTimeout(h as ReturnType<typeof setTimeout>)),
+      clearTimeout:
+        deps.clearTimeout ?? ((h) => globalThis.clearTimeout(h as ReturnType<typeof setTimeout>)),
     };
     this.state = cfg.muted ? 'muted' : 'idle';
+  }
+
+  // Persist callbacks fire from onStateSync and shutdown(). Wrap them so a
+  // throwing handler can't break the WS message loop.
+  private notifyStateChanged(): void {
+    try {
+      this.deps.persist.onStateChanged?.(this.cfg.volume, this.cfg.muted);
+    } catch (e) {
+      this.deps.log.warn('persist.onStateChanged failed', { error: errMsg(e) });
+    }
   }
 
   // Push the welcome frame the device expects right after authentication.
@@ -156,22 +182,35 @@ export class DeviceSession {
   }
 
   onStateSync(payload: { volume?: number; muted?: boolean }): void {
+    let changed = false;
     if (typeof payload.volume === 'number') {
-      this.cfg.volume = clamp01(payload.volume);
-    }
-    if (typeof payload.muted === 'boolean') {
-      if (payload.muted) {
-        this.applyMute();
-      } else {
-        this.applyUnmute();
+      const v = clamp01(payload.volume);
+      if (v !== this.cfg.volume) {
+        this.cfg.volume = v;
+        changed = true;
       }
     }
+    if (typeof payload.muted === 'boolean') {
+      if (payload.muted && !this.cfg.muted) {
+        this.applyMute();
+        changed = true;
+      } else if (!payload.muted && this.cfg.muted) {
+        this.applyUnmute();
+        changed = true;
+      }
+    }
+    if (changed) this.notifyStateChanged();
   }
 
   // Called by the WS server when the device disconnects. Clears timers so we
   // don't fire into a closed socket.
   shutdown(): void {
     this.clearTimers();
+    try {
+      this.deps.persist.onShutdown?.();
+    } catch (e) {
+      this.deps.log.warn('persist.onShutdown failed', { error: errMsg(e) });
+    }
   }
 
   // ---- internals --------------------------------------------------------

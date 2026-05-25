@@ -73,9 +73,11 @@ function makeServer(over: Partial<WsServerOptions> = {}) {
         dispatchCalls.push(text);
         return 'hello back';
       },
-      // eslint-disable-next-line require-yield
-      synth: async function* () {
+      synth: async function* (): AsyncGenerator<Buffer> {
         // No chunks — keep the test focused on routing, not synth shape.
+        // The `if` short-circuits before reaching yield, but its presence
+        // keeps eslint's require-yield rule happy without disabling.
+        if (false as boolean) yield Buffer.alloc(0);
       },
     }),
     log: silentLog,
@@ -115,9 +117,7 @@ test('hello with wrong secret sends rejection and closes', () => {
   const sock = new FakeSocket();
   handle._handleConnection(sock as unknown as WebSocket);
 
-  sock.rxBinary(
-    encodeJson<HelloPayload>(OP.HELLO, { deviceId: 'puck-1', secret: 'wrong' }),
-  );
+  sock.rxBinary(encodeJson<HelloPayload>(OP.HELLO, { deviceId: 'puck-1', secret: 'wrong' }));
 
   const welcomeFrame = sock.sent.find((f) => f[0] === OP.WELCOME)!;
   const welcome = decodeJson<WelcomePayload>(decodeFrame(welcomeFrame).payload);
@@ -151,9 +151,7 @@ test('PCM frames after hello reach the session (transcribe sees the buffer)', as
   const sock = new FakeSocket();
   handle._handleConnection(sock as unknown as WebSocket);
 
-  sock.rxBinary(
-    encodeJson<HelloPayload>(OP.HELLO, { deviceId: 'puck-1', secret: 'topsecret' }),
-  );
+  sock.rxBinary(encodeJson<HelloPayload>(OP.HELLO, { deviceId: 'puck-1', secret: 'topsecret' }));
   sock.rxBinary(encodeEmpty(OP.WAKE));
 
   // Push a loud PCM frame, then end-of-utterance hint to flush immediately.
@@ -190,4 +188,61 @@ test('close after hello shuts down the session cleanly', async () => {
   sock.close();
   await handle.close();
   // No throw == success. The internal sessions set was cleared.
+});
+
+test('buildDeviceContext overrides volume + muted in the welcome frame', () => {
+  const persistCalls: Array<{ kind: string; args: unknown[] }> = [];
+  const { handle } = makeServer({
+    buildDeviceContext: (deviceId) => {
+      assert.equal(deviceId, 'puck-stored');
+      return {
+        config: { volume: 0.25, muted: true },
+        persist: {
+          onStateChanged: (v, m) => persistCalls.push({ kind: 'changed', args: [v, m] }),
+          onShutdown: () => persistCalls.push({ kind: 'shutdown', args: [] }),
+        },
+      };
+    },
+  });
+
+  const sock = new FakeSocket();
+  handle._handleConnection(sock as unknown as WebSocket);
+  sock.rxBinary(encodeJson(OP.HELLO, { deviceId: 'puck-stored', secret: 'topsecret' }));
+
+  const welcomeFrame = sock.sent.find((f) => f[0] === OP.WELCOME)!;
+  const welcome = decodeJson<WelcomePayload>(decodeFrame(welcomeFrame).payload);
+  assert.equal(welcome.volume, 0.25);
+  assert.equal(welcome.muted, true);
+
+  // Initial state must reflect muted, since cfg.muted=true short-circuits to
+  // GS_STATE_MUTED in the session constructor.
+  const stateFrame = sock.sent.find((f) => f[0] === OP.STATE)!;
+  const state = decodeJson<{ state: string }>(decodeFrame(stateFrame).payload);
+  assert.equal(state.state, 'muted');
+
+  // A real change triggers onStateChanged.
+  sock.rxBinary(encodeJson(OP.STATE_SYNC_C, { volume: 0.5 }));
+  assert.ok(
+    persistCalls.some((c) => c.kind === 'changed'),
+    'expected onStateChanged after volume update',
+  );
+
+  sock.close();
+  assert.ok(
+    persistCalls.some((c) => c.kind === 'shutdown'),
+    'expected onShutdown on close',
+  );
+});
+
+test('without buildDeviceContext the schema defaults still drive the welcome', () => {
+  const { handle } = makeServer();
+  const sock = new FakeSocket();
+  handle._handleConnection(sock as unknown as WebSocket);
+  sock.rxBinary(encodeJson(OP.HELLO, { deviceId: 'puck-default', secret: 'topsecret' }));
+
+  const welcomeFrame = sock.sent.find((f) => f[0] === OP.WELCOME)!;
+  const welcome = decodeJson<WelcomePayload>(decodeFrame(welcomeFrame).payload);
+  // sessionDefaults.volume is 0.5 in makeServer's helper.
+  assert.equal(welcome.volume, 0.5);
+  assert.equal(welcome.muted, false);
 });

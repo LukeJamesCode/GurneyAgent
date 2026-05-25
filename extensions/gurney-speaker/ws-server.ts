@@ -25,6 +25,15 @@ import {
 import { DeviceSession, type SessionConfig, type SessionDeps } from './session.js';
 import type { Logger } from '../../src/util/log.js';
 
+// Per-device hooks built lazily once we know the device id (after HELLO).
+// `config` overrides the schema-defaults that ship in opts.sessionDefaults —
+// the typical use is to replay the volume/mute the device last reported
+// before disconnecting. Returning undefined means "use defaults as-is".
+export interface DeviceContext {
+  config?: Partial<Pick<SessionConfig, 'volume' | 'muted'>>;
+  persist?: SessionDeps['persist'];
+}
+
 export interface WsServerOptions {
   host: string;
   port: number;
@@ -39,6 +48,11 @@ export interface WsServerOptions {
     deviceId: string,
     send: (frame: Buffer) => void,
   ) => Pick<SessionDeps, 'transcribe' | 'dispatch' | 'synth'>;
+  // Optional per-device override + persistence hook. Called after a valid
+  // HELLO and before the session is constructed, so we can splice in the
+  // stored volume / muted state and the SQLite-backed persistence callbacks.
+  // When omitted, every device starts from sessionDefaults with no DB writes.
+  buildDeviceContext?: (deviceId: string) => DeviceContext;
   log: Logger;
   // Optional, mainly for tests: skip the real server bind and let the caller
   // drive sockets directly.
@@ -135,10 +149,18 @@ export function startWsServer(opts: WsServerOptions): WsServerHandle {
 
         const sessionLog = log.child({ deviceId: hello.deviceId, fwVersion: hello.fwVersion });
         const stubs = opts.buildSessionDeps(hello.deviceId, send);
-        session = new DeviceSession(
-          { ...opts.sessionDefaults, deviceId: hello.deviceId },
-          { ...stubs, send, log: sessionLog },
-        );
+        const ctx = opts.buildDeviceContext?.(hello.deviceId) ?? {};
+        const cfg: SessionConfig = {
+          ...opts.sessionDefaults,
+          ...ctx.config,
+          deviceId: hello.deviceId,
+        };
+        session = new DeviceSession(cfg, {
+          ...stubs,
+          send,
+          log: sessionLog,
+          ...(ctx.persist ? { persist: ctx.persist } : {}),
+        });
         sessions.add(session);
         session.sendWelcome();
         sessionLog.info('device connected');

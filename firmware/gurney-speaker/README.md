@@ -17,11 +17,11 @@ The exact pin assignments live in `main/config.h`. They are placeholders — ver
 | Module | State |
 |--------|-------|
 | `protocol.c` | **Complete + matches server byte-for-byte.** Opcodes, frame helpers, hello/welcome/state JSON shape. |
-| `ws_client.c` | **Logic complete**: connect, hello, reconnect with backoff, ping echo, route inbound frames. Bench bring-up needed for the underlying `esp_websocket_client` event order. |
-| `audio_in.c` | **Skeleton.** I2S0 driver init in place, ESP-SR AFE + WakeNet init in place. Wake callback wires into the WS client. Needs bench tuning of pin map + AFE config. |
-| `audio_out.c` | **Skeleton.** I2S1 driver init in place, Opus decode wired through `esp_audio_codec`. Software gain stage in place. |
-| `ui.c` | **Skeleton.** LVGL screens defined as state ids; minimal + orb draw funcs left as TODO. |
-| `buttons.c` | **Complete.** Debounced GPIO poller, emits 0x31 BUTTON frames + applies local volume/mute. |
+| `ws_client.c` | **Complete.** Connect, hello, reconnect with backoff, ping echo, route inbound frames. The PING echo is mutex-free now (stack-local 1-byte buffer) so it can't deadlock against an in-flight PCM send. |
+| `audio_in.c` | **Working with PTT, WakeNet still optional.** I2S0 driver init + ESP-SR AFE + WakeNet init in place. `gs_audio_in_set_ptt(true/false)` lets the spare button drive a "hold to talk" loop without a flashed WakeNet model. |
+| `audio_out.c` | **Skeleton.** I2S1 driver init in place; Opus decode is the stubbed `decode_opus_stub()` that emits silence. Wire `esp_audio_codec` here to make replies audible. |
+| `ui.c` | **Skeleton.** State + style transitions logged; LVGL screens left as TODO. Backlight comes on but the panel stays black. |
+| `buttons.c` | **Complete + PTT.** Debounced GPIO poller, emits 0x31 BUTTON frames, applies local volume/mute, and drives the PTT pipeline on the spare button (press → WAKE; release → UTTERANCE_END). |
 | `nvs_store.c` | **Complete.** Device id, secret, WiFi creds, last volume from NVS. |
 
 Anything tagged **Skeleton** compiles and the public API is stable enough for the surrounding code to call it — the runtime behaviour needs an oscilloscope (or at least serial logs from real hardware) to validate.
@@ -40,11 +40,13 @@ parttool.py -p /dev/ttyUSB0 write_partition --partition-name nvs --input nvs.bin
 idf.py -p /dev/ttyUSB0 monitor
 ```
 
-## Wake word
+## Wake word + PTT
 
 Default is the stock WakeNet model `wakenet9_hiesp` (hotword: "Hi ESP"). Override via NVS key `wake.model_id` or via the server's `wake_word_model` setting — the welcome frame pushes the value to the device on connect, but the change takes effect on the next reboot (WakeNet is initialised once).
 
 A custom "Hey Gurney" model can be trained via Espressif's online service and dropped into the build; no protocol change required.
+
+**Without** a WakeNet model flashed, the device falls back to a push-to-talk loop on the spare button (GPIO 39 by default). Hold it to stream PCM to the server; let go to close the turn. The wire protocol doesn't change — `gs_ws_send_wake()` + `gs_ws_send_utterance_end()` are the same frames WakeNet would emit.
 
 ## What's intentionally out of scope (v0.1)
 

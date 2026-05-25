@@ -6,6 +6,26 @@ Format: `## [version] — YYYY-MM-DD`
 
 ---
 
+## [1.3.0] — 2026-05-25
+
+### Added
+
+- `gurney-speaker` extension: full orchestrator-backed dispatch. When `owner_chat_id` is set the device's voice turns go through Gurney's main orchestrator — same conversation history as Telegram, every registered tool (calendar, reminders, weather, briefings, learned routines, …) callable from voice, and the hallucination guard intact. Without `owner_chat_id` the device falls back to a stateless `host.llm` chat as before.
+- `gurney-speaker`: per-device state persistence via the `speaker_devices` table. On reconnect, the welcome frame replays the puck's last-known volume + mute instead of snapping back to the schema defaults.
+- `gurney-speaker`: new `speech_max_chars` setting (default 600 ≈ 30s spoken) clips runaway replies on sentence boundaries before they hit Piper.
+- Core: new `host.orchestrator.handleUserMessage(...)` host API for extensions that want to submit a user turn into the orchestrator from a non-Telegram surface. Mirrors what `gurney-speaker` now uses; documented in the extension authoring guide implicitly via the speaker.
+- Firmware (`firmware/gurney-speaker`): push-to-talk on the spare button (GPIO 39 by default). Hold to talk, release to close the turn. Works whether or not a WakeNet model is flashed — the documented escape hatch when wake word isn't set up yet.
+
+### Fixed
+
+- `gurney-speaker` session: `onStateSync` was firing the persist callback even when the volume/mute hadn't actually changed; now it's idempotent.
+- Firmware `ws_client`: the inbound PING echo used the shared TX scratch buffer without holding the mutex, which could collide with an in-flight PCM send on the audio task. Now writes a stack-local 1-byte buffer.
+- Firmware `buttons.c`: missing `<string.h>` include (worked transitively but warned with some toolchains).
+- `gurney-everyday-assistant`: smoke + hardening tests were stale; the weather-reschedule sweep is now per-time (defaults: 06:00 + 18:00) and the all-day calendar end is Google's exclusive-end convention. Tests updated to match.
+- `src/core/orchestrator`: unnecessary escape inside a character class in the fake-tool-call detector.
+
+---
+
 ## [1.2.0] — 2026-05-24
 
 ### Added

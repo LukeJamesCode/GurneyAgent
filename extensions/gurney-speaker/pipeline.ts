@@ -8,17 +8,23 @@
 // We build each one in isolation here so jobs.ts stays small and so each
 // adapter can be tested without spinning up the WebSocket layer.
 //
-// Important: this file intentionally does NOT touch core. dispatch() talks
-// directly to host.llm rather than going through the orchestrator (which
-// today only ships through the Telegram adapter). That means tool calls
-// (calendar, reminders, etc.) won't fire from the device in v0.1. Wiring
-// the orchestrator path requires a small new core helper and is deferred to
-// a future release; the protocol and session don't need to change when it
-// lands — only this file does.
+// Dispatch has two flavours:
+//   - makeOrchestratorDispatch: routes the device turn through host.orchestrator
+//     so it picks up tools, conversation history, and the hallucination guard.
+//     This is the default when host.orchestrator is wired AND an owner_chat_id
+//     is configured — the device then shares history with the Telegram chat.
+//   - makeLlmDispatch: legacy v0.1 path. No tools, no memory, no history;
+//     direct system+user round trip with host.llm. Used as a fallback when the
+//     orchestrator isn't available (test harnesses) or when owner_chat_id is
+//     unset (treat the device as isolated chatter).
 
 import { readFileSync } from 'node:fs';
 import type { LLM, ChatMessage } from '../../src/core/llm.js';
-import type { ExtensionSettings } from '../../src/core/extensions.js';
+import type {
+  ExtensionSettings,
+  HostOrchestrator,
+  HostReplyChunk,
+} from '../../src/core/extensions.js';
 import type { Logger } from '../../src/util/log.js';
 import { transcribePcm, type RunShell as SttRunShell } from '../gurney-voice/stt.js';
 import { synthesize, type RunShell as SynthRunShell } from '../gurney-voice/synth.js';
@@ -96,9 +102,9 @@ export interface LlmDispatchDeps {
   log: Logger;
 }
 
-// v0.1 dispatch: no tools, no memory, no conversation history. Direct
-// system+user round trip. Replaces the orchestrator only for the device chat
-// surface — Telegram still uses the full orchestrator path unchanged.
+// Legacy dispatch: no tools, no memory, no conversation history. Direct
+// system+user round trip. Used when the orchestrator isn't available (tests)
+// or when owner_chat_id isn't configured (device kept isolated).
 export function makeLlmDispatch(deps: LlmDispatchDeps): (text: string) => Promise<string> {
   return async (text: string) => {
     const messages: ChatMessage[] = [
@@ -122,15 +128,107 @@ export function makeLlmDispatch(deps: LlmDispatchDeps): (text: string) => Promis
   };
 }
 
+export interface OrchestratorDispatchDeps {
+  orchestrator: HostOrchestrator;
+  // Chat the device's turns join. Typically the user's Telegram chat id so
+  // history is shared across surfaces.
+  chatId: number;
+  // Synthetic user id for the device. The core only uses this for logging and
+  // multi-user attribution; sticking a stable device-derived value here is
+  // fine.
+  userId: number;
+  log: Logger;
+}
+
+// Submit the transcribed turn to the core orchestrator and collect the
+// streamed reply. The orchestrator handles conversation history, tool
+// dispatch, intent-pruned manifest, and the hallucination guard, so the
+// device gets feature-parity with the Telegram surface — calendar, reminders,
+// weather, briefings, etc. all fire from voice.
+//
+// Spoken replies should be short; the system prompt the orchestrator applies
+// is the Telegram-tuned one, which can ramble. The caller post-processes the
+// reply via shortenForSpeech() to keep TTS latency bounded.
+export function makeOrchestratorDispatch(
+  deps: OrchestratorDispatchDeps,
+): (text: string) => Promise<string> {
+  return async (text: string) => {
+    let buffer = '';
+    try {
+      await deps.orchestrator.handleUserMessage({
+        chatId: deps.chatId,
+        userId: deps.userId,
+        text,
+        send: (chunk: HostReplyChunk) => {
+          if (chunk.delta) buffer += chunk.delta;
+          // Mirror the Telegram adapter's hallucination-guard handling: on
+          // the final chunk, an explicit `replace` overrides whatever
+          // streamed text we've accumulated.
+          if (chunk.done && chunk.replace !== undefined) buffer = chunk.replace;
+        },
+      });
+    } catch (e) {
+      deps.log.warn('orchestrator dispatch failed', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return '';
+    }
+    return buffer.trim();
+  };
+}
+
+// Strip markup that doesn't read well aloud and clip overlong replies so
+// voice latency stays bounded. The orchestrator is tuned for Telegram, where
+// bullet lists and bolds are normal — over voice they're noise.
+//
+//   *bold*           → bold
+//   `code`           → code
+//   - bullet line    → bullet line
+//   |table|         → dropped (rare; Piper says "vertical bar")
+//   ---             → dropped
+//   newlines        → spaces (Piper inserts long pauses on \n\n)
+//
+// A hard length cap matches `llm_max_tokens` in spirit: well-behaved replies
+// rarely exceed a few hundred characters; if the model writes a paragraph we
+// trim it. 600 chars ≈ 30 seconds spoken.
+export function shortenForSpeech(text: string, maxChars: number = 600): string {
+  let out = text;
+  // Drop fenced code blocks entirely — reading "triple backtick javascript"
+  // aloud is worse than dropping the snippet.
+  out = out.replace(/```[\s\S]*?```/g, ' ');
+  // Strip inline markdown decoration.
+  out = out.replace(/`([^`]*)`/g, '$1');
+  out = out.replace(/\*\*([^*]+)\*\*/g, '$1');
+  out = out.replace(/__([^_]+)__/g, '$1');
+  out = out.replace(/\*([^*]+)\*/g, '$1');
+  out = out.replace(/_([^_]+)_/g, '$1');
+  // Bullets / numbered list markers → plain text.
+  out = out.replace(/^\s*[-*•]\s+/gm, '');
+  out = out.replace(/^\s*\d+[.)]\s+/gm, '');
+  // Markdown links [label](url) → label
+  out = out.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+  // Newlines → space; collapse runs.
+  out = out.replace(/\r\n|\n|\r/g, ' ');
+  out = out.replace(/\s+/g, ' ').trim();
+  if (out.length <= maxChars) return out;
+  // Try to cut on a sentence boundary near the cap; fall back to a hard cut
+  // with an ellipsis so the model's verb stays attached to its subject.
+  const slice = out.slice(0, maxChars);
+  const lastBoundary = Math.max(
+    slice.lastIndexOf('. '),
+    slice.lastIndexOf('! '),
+    slice.lastIndexOf('? '),
+  );
+  if (lastBoundary > maxChars * 0.5) return slice.slice(0, lastBoundary + 1).trim();
+  return slice.trim() + '…';
+}
+
 // Async-iterable wrapper around gurney-voice's synthesize(). The function
 // produces an OGG file on disk; we read it, chunk it, yield, then clean up.
 // Streaming chunks before synth finishes would let the device start playing
 // sooner — that's a later optimization; for now correctness beats latency.
 export function makeSynth(
-  cfg: Pick<
-    PipelineSettings,
-    'piperBin' | 'ffmpegBin' | 'voiceModelPath' | 'ttsChunkBytes'
-  >,
+  cfg: Pick<PipelineSettings, 'piperBin' | 'ffmpegBin' | 'voiceModelPath' | 'ttsChunkBytes'>,
   log: Logger,
   runShell?: SynthRunShell,
 ): (text: string) => AsyncIterable<Buffer> {

@@ -25,7 +25,11 @@ import { createToolRegistry } from '../core/tools.js';
 import { createOrchestrator } from '../core/orchestrator.js';
 import { createScheduler, type Nudge } from '../core/scheduler.js';
 import { setupFollowups } from '../core/followups.js';
-import { createExtensionLoader, type VoicePayload } from '../core/extensions.js';
+import {
+  createExtensionLoader,
+  type HostOrchestrator,
+  type VoicePayload,
+} from '../core/extensions.js';
 import {
   collectExtensionReadiness,
   formatSetupIssuesNudge,
@@ -213,6 +217,21 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   // adapter construction finishes below.
   let sendVoiceImpl: ((chatId: number, voice: VoicePayload) => Promise<void>) | null = null;
   let notifySetupIssues: (() => Promise<void>) | null = null;
+  // The orchestrator is built after the extension loader (it consumes
+  // promptFragmentProvider/toolIntentFilter on the loader). Extensions that
+  // call host.orchestrator therefore have to defer until first use; this
+  // wrapper bridges that gap so the Host can hold a stable reference.
+  let orchestratorImpl: ReturnType<typeof createOrchestrator> | null = null;
+  const orchestratorBridge: HostOrchestrator = {
+    handleUserMessage: async (msg) => {
+      if (!orchestratorImpl) {
+        log.warn('host.orchestrator called before core orchestrator ready');
+        await msg.send({ delta: '', done: true });
+        return;
+      }
+      await orchestratorImpl.handleUserMessage(msg);
+    },
+  };
   const loader = createExtensionLoader({
     roots: extensionsRoots,
     stateRoot,
@@ -225,6 +244,7 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     chatId: cfg.telegram.allowedIds[0]!,
     allowedUserIds: cfg.telegram.allowedIds,
     watch: true,
+    orchestrator: orchestratorBridge,
     sendVoice: async (chatId, voice) => {
       if (!sendVoiceImpl) {
         log.warn('sendVoice called before Telegram adapter ready');
@@ -249,6 +269,7 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     ...(cfg.models.tools ? { toolProfile: 'tools' as const } : {}),
     ...(maxToolRounds !== undefined ? { maxToolRounds } : {}),
   });
+  orchestratorImpl = orchestrator;
 
   const ownerId = cfg.telegram.allowedIds[0]!;
   log.info('telegram owner identified', { ownerId });
