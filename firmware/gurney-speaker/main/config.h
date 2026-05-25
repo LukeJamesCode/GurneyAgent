@@ -68,7 +68,11 @@
 // ---- Defaults persisted to NVS --------------------------------------------
 
 #define GS_DEFAULT_VOLUME     0.6f
-#define GS_DEFAULT_WAKE_MODEL "wakenet9_hiesp"
+// Must match esp-sr's packed model name (see Kconfig — wn9_hiesp etc.).
+// audio_in.c falls back to ESP_WN_PREFIX matching if this exact string
+// isn't found, so old NVS images with a wrong value still boot, just
+// with a warning.
+#define GS_DEFAULT_WAKE_MODEL "wn9_hiesp"
 
 // ---- Task config ----------------------------------------------------------
 
