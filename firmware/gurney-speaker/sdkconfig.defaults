@@ -37,3 +37,11 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # WebSocket client component pulled from idf-extra-components.
 CONFIG_WS_TRANSPORT=y
+
+# esp-sr wake-word model selection. wn9_hiesp ("Hi, ESP") is the English
+# placeholder; the model partition declared in partitions.csv is auto-flashed
+# by esp-sr's build hook on `idf.py flash`. Swap to a different built-in via
+# `idf.py menuconfig` → ESP Speech Recognition → Wake word model. For a
+# custom "Hey Gurney" model, train via the esp-sr tools (see SETUP.md
+# appendix) and load it through the menuconfig "User customized model" path.
+CONFIG_SR_WN_WN9_HIESP=y

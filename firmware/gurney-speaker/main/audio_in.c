@@ -37,12 +37,17 @@ static atomic_int s_muted = 0;
 // to the server regardless of WakeNet state. Toggled by the spare button on
 // the device — see gs_audio_in_set_ptt().
 static atomic_int s_ptt_held = 0;
+// Set while the server is in SPEAKING state. We don't have AEC (the board
+// has two mic channels and no playback-reference signal wired in), so the
+// mic hears the speaker. Suppress wake detection while audio_out is active
+// to prevent self-triggered turns. The session ignores wake-during-speaking
+// server-side too; suppressing at the source keeps spurious WAKE frames
+// off the wire.
+static atomic_int s_speaking = 0;
 
 #if GS_HAVE_ESP_SR
 static esp_afe_sr_iface_t *s_afe = NULL;
 static esp_afe_sr_data_t  *s_afe_data = NULL;
-static esp_wn_iface_t     *s_wakenet = NULL;
-static model_iface_data_t *s_wakenet_data = NULL;
 #endif
 
 static esp_err_t init_i2s_rx(void) {
@@ -79,20 +84,41 @@ static esp_err_t init_afe_and_wakenet(const char *wake_model_id) {
         ESP_LOGE(TAG, "esp_srmodel_init failed");
         return ESP_FAIL;
     }
-    char *wn_name = esp_srmodel_filter(models, wake_model_id ? wake_model_id : ESP_WN_PREFIX, NULL);
+    char *wn_name = NULL;
+    if (wake_model_id && wake_model_id[0]) {
+        wn_name = esp_srmodel_filter(models, wake_model_id, NULL);
+        if (!wn_name) {
+            ESP_LOGW(TAG, "wake model '%s' not packed; falling back to first WakeNet model",
+                     wake_model_id);
+        }
+    }
     if (!wn_name) {
-        ESP_LOGE(TAG, "wake model '%s' not found in flash partition",
-                 wake_model_id ? wake_model_id : "(default)");
+        // ESP_WN_PREFIX matches any WakeNet model, regardless of which
+        // built-in is selected in Kconfig. Catches the common case where
+        // NVS was provisioned before the GS_DEFAULT_WAKE_MODEL constant
+        // was corrected to esp-sr's actual naming convention.
+        wn_name = esp_srmodel_filter(models, ESP_WN_PREFIX, NULL);
+    }
+    if (!wn_name) {
+        ESP_LOGE(TAG, "no WakeNet model found in srmodels partition");
         return ESP_FAIL;
     }
-    s_wakenet = (esp_wn_iface_t *)esp_wn_handle_from_name(wn_name);
-    s_wakenet_data = s_wakenet->create(wn_name, DET_MODE_2CH_90);
+    ESP_LOGI(TAG, "using wake model: %s", wn_name);
 
     afe_config_t afe_cfg = AFE_CONFIG_DEFAULT();
-    afe_cfg.aec_init = true;     // critical: AEC for barge-in
+    // AEC stays off in v0.2: it requires a playback-reference channel
+    // routed back into the AFE (ref_num >= 1), which we don't wire today.
+    // Enabling it with ref_num=0 causes AFE_SR to refuse the config.
+    // Self-wake during TTS is mitigated by the s_speaking guard below;
+    // full barge-in is on the v1.0 roadmap.
+    afe_cfg.aec_init = false;
     afe_cfg.se_init = true;      // speech enhancement (NS)
     afe_cfg.vad_init = false;    // server-side VAD; we just stream raw
     afe_cfg.wakenet_init = true;
+    // AFE owns the WakeNet handle internally — it loads the model from
+    // this name at create_from_config time. Leaving this NULL trips the
+    // "Please select wake words!" panic in afe_create_from_config.
+    afe_cfg.wakenet_model_name = wn_name;
     afe_cfg.pcm_config.total_ch_num = GS_MIC_CHANNELS;
     afe_cfg.pcm_config.mic_num = GS_MIC_CHANNELS;
     afe_cfg.pcm_config.ref_num = 0;
@@ -111,15 +137,37 @@ static esp_err_t init_afe_and_wakenet(const char *wake_model_id) {
 // Hot path: read I2S, feed AFE, watch WakeNet, stream PCM when listening.
 static void audio_task(void *arg) {
     (void)arg;
-    const size_t i2s_bytes_per_read = GS_PCM_FRAME_SAMPLES * GS_MIC_CHANNELS * 4; // 32-bit slots
+    // AFE_SR has a fixed per-feed chunk size (~16 ms = 256 mono frames for
+    // v220727). Feeding it more than that per call leaves data piled in
+    // its ringbuffer faster than fetch() drains; AFE warns "Ringbuffer of
+    // AFE is full" and audio backs up. Sizing the I2S read to AFE's chunk
+    // size keeps feed and fetch in lockstep.
+    size_t i2s_bytes_per_read;
+    size_t mono_frame_samples;
+#if GS_HAVE_ESP_SR
+    if (s_afe && s_afe_data) {
+        int chunk = s_afe->get_feed_chunksize(s_afe_data);
+        int channels = s_afe->get_channel_num(s_afe_data);
+        mono_frame_samples = (size_t)chunk;
+        i2s_bytes_per_read = (size_t)chunk * (size_t)channels * 4; // 32-bit slots
+        ESP_LOGI(TAG, "afe feed chunksize=%d frames, channels=%d, i2s read=%u bytes",
+                 chunk, channels, (unsigned)i2s_bytes_per_read);
+    } else
+#endif
+    {
+        mono_frame_samples = GS_PCM_FRAME_SAMPLES;
+        i2s_bytes_per_read = GS_PCM_FRAME_SAMPLES * GS_MIC_CHANNELS * 4;
+    }
     uint8_t *i2s_buf = malloc(i2s_bytes_per_read);
-    int16_t mono_pcm[GS_PCM_FRAME_SAMPLES];
-    (void)mono_pcm; // referenced only in the non-esp-sr fallback path below
-    if (!i2s_buf) {
+    int16_t *mono_pcm = malloc(mono_frame_samples * sizeof(int16_t));
+    if (!i2s_buf || !mono_pcm) {
         ESP_LOGE(TAG, "i2s buffer alloc failed");
+        free(i2s_buf);
+        free(mono_pcm);
         vTaskDelete(NULL);
         return;
     }
+    (void)mono_pcm; // referenced only in the non-esp-sr fallback path below
 
     for (;;) {
         if (atomic_load(&s_muted)) {
@@ -144,9 +192,12 @@ static void audio_task(void *arg) {
         for (size_t i = 0; i < samples; i++) afe_in[i] = (int16_t)(src[i] >> 16);
 
         if (s_afe && s_afe_data) {
+            // Keep AFE fed even while speaking — it's a streaming algorithm
+            // and dropping frames mid-utterance would leave its NS state
+            // confused when we resume.
             s_afe->feed(s_afe_data, afe_in);
             afe_fetch_result_t *res = s_afe->fetch(s_afe_data);
-            if (res && res->ret_value == ESP_OK) {
+            if (res && res->ret_value == ESP_OK && !atomic_load(&s_speaking)) {
                 bool wake = (res->wakeup_state == WAKENET_DETECTED);
                 bool streaming = atomic_load(&s_streaming);
                 // PTT overrides WakeNet — useful when the user wants
@@ -179,11 +230,11 @@ static void audio_task(void *arg) {
         // smoke-testing the wire without WakeNet, e.g. with a PTT button.
         const int32_t *src = (const int32_t *)i2s_buf;
         size_t samples = (bytes_read / 4) / GS_MIC_CHANNELS;
-        for (size_t i = 0; i < samples && i < GS_PCM_FRAME_SAMPLES; i++) {
+        for (size_t i = 0; i < samples && i < mono_frame_samples; i++) {
             mono_pcm[i] = (int16_t)(src[i * GS_MIC_CHANNELS] >> 16);
         }
         if (atomic_load(&s_streaming) || atomic_load(&s_ptt_held)) {
-            gs_ws_send_pcm((const uint8_t *)mono_pcm, GS_PCM_FRAME_SAMPLES * 2);
+            gs_ws_send_pcm((const uint8_t *)mono_pcm, mono_frame_samples * 2);
         }
 #endif
     }
@@ -213,6 +264,7 @@ void gs_audio_in_on_server_state(gs_device_state_t state) {
     // streaming PCM into nothing. Anything that isn't LISTENING returns us
     // to "wait for wake".
     if (state != GS_STATE_LISTENING) atomic_store(&s_streaming, 0);
+    atomic_store(&s_speaking, state == GS_STATE_SPEAKING ? 1 : 0);
 }
 
 void gs_audio_in_set_muted(bool muted) {
@@ -220,6 +272,10 @@ void gs_audio_in_set_muted(bool muted) {
     if (muted) {
         atomic_store(&s_streaming, 0);
         atomic_store(&s_ptt_held, 0);
+        // Clearing s_speaking too: if mute lands mid-utterance the server
+        // will tear down the speaking state without sending another STATE
+        // frame, and we'd otherwise stay deaf to wake events after un-mute.
+        atomic_store(&s_speaking, 0);
     }
 }
 

@@ -167,7 +167,11 @@ idf.py -p COM4 monitor
 
 (Replace `COM4` with whatever Device Manager shows for your board.)
 
+`idf.py flash` writes the app **and** the `srmodels.bin` WakeNet model image into the `model` partition automatically — esp-sr's build hook chains that into the flash target. No separate `parttool` step for the wake-word model.
+
 > **Gotcha we hit:** VS Code's bottom-bar ⚡ Flash button defaults to JTAG, which fails on boards without a JTAG adapter. Flash from the terminal as above (UART) instead.
+
+> **Upgrading from v0.1?** The partition table grew (a new `model` partition was added). A regular `idf.py flash` won't repartition an already-flashed device — run `idf.py -p COM4 erase-flash` once before re-flashing, or the device will boot from the old partition table and esp-sr will fail to find the model partition at runtime.
 
 A healthy boot looks like:
 
@@ -200,27 +204,42 @@ device button { button: 'vol_up' }
 
 Press mute. Device's serial monitor should log `state -> 4` (muted). Press again to unmute.
 
-If both directions land, the protocol is healthy and you're ready to move on to the audio + display work.
+Then say **"Hi, ESP"** (the placeholder wake phrase — swap it to any other built-in via `idf.py menuconfig` → *ESP Speech Recognition → Wake word model*). The serial monitor should log `wake detected`, server logs should show a turn closing with a transcript, the orchestrator's reply should round-trip back, and the speaker should play the Piper voice.
 
 ---
 
-## Known not-yet-working
+## Known not-yet-working in v0.2
 
-| Subsystem                   | Status                                                                                                                                     |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Boot, NVS, WiFi, reconnect  | ✅ Working                                                                                                                                 |
-| WebSocket auth + state sync | ✅ Working                                                                                                                                 |
-| Buttons (vol/mute)          | ✅ Working                                                                                                                                 |
-| PTT (spare button)          | ✅ Working — hold to talk, release to end the turn                                                                                         |
-| Mic streaming on PTT        | ✅ Working — raw mono PCM at 16 kHz over WS                                                                                                |
-| Wake word                   | ⚠️ Inactive until you flash a `model` partition with an esp-sr WakeNet model. PTT remains the documented fallback.                         |
-| TTS playback                | ⚠️ The Opus decoder in `audio_out.c` is stubbed to silence. State transitions happen, but no audio yet — wire `esp_audio_codec` to enable. |
-| Display                     | ⚠️ GC9A01 panel init is a `TODO(bench)` in `ui.c` — backlight comes on but the panel is black.                                             |
+| Subsystem                       | Status                                                                                                                                       |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Boot, NVS, WiFi, reconnect      | ✅ Working                                                                                                                                   |
+| WebSocket auth + state sync     | ✅ Working                                                                                                                                   |
+| Buttons (vol/mute)              | ✅ Working                                                                                                                                   |
+| PTT (spare button)              | ✅ Working — hold to talk, release to end the turn. Works with or without a wake-word model flashed.                                         |
+| Wake word                       | ✅ Placeholder "Hi, ESP" (esp-sr `wn9_hiesp`). Custom "Hey Gurney" requires training — see appendix.                                          |
+| Mic streaming + STT round trip  | ✅ Working — either via PTT or wake word.                                                                                                    |
+| TTS playback                    | ✅ Working (48 kHz OGG/Opus → I2S).                                                                                                          |
+| Orchestrator dispatch + tools   | ✅ Working when `owner_chat_id` is set; device shares the orchestrator with Telegram.                                                        |
+| Display                         | ⚠️ GC9A01 panel init is a `TODO(bench)` in `ui.c` — backlight comes on but the panel is black.                                               |
+| Barge-in                        | ⚠️ Not supported. Wake detection is suppressed while the speaker is active to prevent self-wake; wait for TTS to finish before next utterance. |
 
 ## Roadmap from here
 
-Server side is feature-complete (orchestrator dispatch + device persistence both shipping). What's left on the firmware:
-
-- **Opus playback** — wire `esp_audio_codec`'s ogg+opus decoder into `audio_out.c::decode_opus_stub()`. Once done, server replies are audible. Add `espressif/esp_audio_codec` to `idf_component.yml` (it's commented out today; needs ~30 MB of source).
 - **GC9A01 panel + LVGL** — bring up the round LCD via `esp_lcd_panel` and re-introduce LVGL screens. Add `lvgl/lvgl` to `idf_component.yml`.
-- **Custom wake word** — train a "Hey Gurney" WakeNet model via Espressif's online service and drop it into the `model` partition.
+- **Custom "Hey Gurney" wake word** — see appendix below.
+- **Barge-in / AEC** — wire an echo-reference channel into esp-sr's AFE so the mic can hear past the speaker's own output.
+
+---
+
+## Appendix: Training a custom "Hey Gurney" wake word
+
+`wn9_hiesp` is a stock English WakeNet9 model. Training one for "Hey Gurney" runs entirely offline on a workstation using esp-sr's open-source toolchain. High-level steps:
+
+1. Clone https://github.com/espressif/esp-sr and follow `tools/wakenet/README.md`.
+2. Collect / synthesize ~1–2 hours of positive samples ("Hey Gurney") and matched negatives. The repo includes scripts for TTS-augmented synthesis via Piper or similar.
+3. Train (Python, GPU-friendly but CPU works for wn9). Output is a directory containing `wn9_hey_gurney.bin` plus metadata.
+4. Drop the directory under `firmware/gurney-speaker/managed_components/espressif__esp-sr/model/wakenet_model/` and pick it via `idf.py menuconfig` → *ESP Speech Recognition → Wake word model → User customized model*.
+5. Rebuild + `idf.py -p COMx flash`. The model partition is re-flashed automatically.
+6. Update `GS_DEFAULT_WAKE_MODEL` in `firmware/gurney-speaker/main/config.h` to the new model id so logs and any future "select model at runtime" code points at the right thing.
+
+Espressif's commercial training service produces tighter false-accept curves but isn't required for hobby use.
