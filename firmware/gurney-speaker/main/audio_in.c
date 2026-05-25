@@ -130,18 +130,28 @@ static esp_err_t init_afe_and_wakenet(const char *wake_model_id) {
         ESP_LOGE(TAG, "afe create failed");
         return ESP_FAIL;
     }
+    // Log both chunk sizes — when they differ, a single-task feed+fetch
+    // loop would leak chunks into AFE's ringbuffer every iteration. We
+    // split feed and fetch into two tasks for exactly that reason.
+    ESP_LOGI(TAG, "afe chunks: feed=%d frames, fetch=%d frames, channels=%d",
+             s_afe->get_feed_chunksize(s_afe_data),
+             s_afe->get_fetch_chunksize(s_afe_data),
+             s_afe->get_channel_num(s_afe_data));
     return ESP_OK;
 }
 #endif
 
-// Hot path: read I2S, feed AFE, watch WakeNet, stream PCM when listening.
-static void audio_task(void *arg) {
+// Feed path: read I2S, convert int32→int16, hand to AFE. Paced by I2S
+// real-time (i2s_channel_read blocks until a chunk is available). Sized
+// to AFE's feed_chunksize so each read is exactly one feed() call.
+//
+// Fetch is on its own task because AFE_SR's feed_chunksize and
+// fetch_chunksize aren't guaranteed to match (and don't, with WakeNet +
+// SE enabled). A single-task feed+fetch loop drains only one fetch
+// chunk per feed; the surplus piles up in AFE's ringbuffer until it
+// warns "Ringbuffer of AFE is full". See fetch_task() below.
+static void feed_task(void *arg) {
     (void)arg;
-    // AFE_SR has a fixed per-feed chunk size (~16 ms = 256 mono frames for
-    // v220727). Feeding it more than that per call leaves data piled in
-    // its ringbuffer faster than fetch() drains; AFE warns "Ringbuffer of
-    // AFE is full" and audio backs up. Sizing the I2S read to AFE's chunk
-    // size keeps feed and fetch in lockstep.
     size_t i2s_bytes_per_read;
     size_t mono_frame_samples;
 #if GS_HAVE_ESP_SR
@@ -150,8 +160,6 @@ static void audio_task(void *arg) {
         int channels = s_afe->get_channel_num(s_afe_data);
         mono_frame_samples = (size_t)chunk;
         i2s_bytes_per_read = (size_t)chunk * (size_t)channels * 4; // 32-bit slots
-        ESP_LOGI(TAG, "afe feed chunksize=%d frames, channels=%d, i2s read=%u bytes",
-                 chunk, channels, (unsigned)i2s_bytes_per_read);
     } else
 #endif
     {
@@ -161,7 +169,7 @@ static void audio_task(void *arg) {
     uint8_t *i2s_buf = malloc(i2s_bytes_per_read);
     int16_t *mono_pcm = malloc(mono_frame_samples * sizeof(int16_t));
     if (!i2s_buf || !mono_pcm) {
-        ESP_LOGE(TAG, "i2s buffer alloc failed");
+        ESP_LOGE(TAG, "feed buffer alloc failed");
         free(i2s_buf);
         free(mono_pcm);
         vTaskDelete(NULL);
@@ -172,6 +180,7 @@ static void audio_task(void *arg) {
     for (;;) {
         if (atomic_load(&s_muted)) {
             // Drain & idle while muted so we don't spin on I2S reads.
+            // fetch_task will block in fetch() with no new data; that's fine.
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
@@ -196,23 +205,6 @@ static void audio_task(void *arg) {
             // and dropping frames mid-utterance would leave its NS state
             // confused when we resume.
             s_afe->feed(s_afe_data, afe_in);
-            afe_fetch_result_t *res = s_afe->fetch(s_afe_data);
-            if (res && res->ret_value == ESP_OK && !atomic_load(&s_speaking)) {
-                bool wake = (res->wakeup_state == WAKENET_DETECTED);
-                bool streaming = atomic_load(&s_streaming);
-                // PTT overrides WakeNet — useful when the user wants
-                // deterministic input (or when no model is flashed and
-                // WakeNet never fires).
-                if (!streaming && (wake || atomic_load(&s_ptt_held))) {
-                    if (wake) ESP_LOGI(TAG, "wake detected");
-                    atomic_store(&s_streaming, 1);
-                    streaming = true;
-                }
-                if (streaming) {
-                    // res->data is int16 mono at 16 kHz, length res->data_size bytes.
-                    gs_ws_send_pcm((const uint8_t *)res->data, res->data_size);
-                }
-            }
         } else if (atomic_load(&s_ptt_held)) {
             // AFE init failed (no model partition flashed). Stream raw mono
             // PCM so PTT still works.
@@ -240,6 +232,38 @@ static void audio_task(void *arg) {
     }
 }
 
+#if GS_HAVE_ESP_SR
+// Fetch path: drain AFE output, run wake detection, push streaming PCM to
+// the server. Decoupled from feed_task so fetch can keep up regardless of
+// how feed_chunksize vs. fetch_chunksize line up internally.
+static void fetch_task(void *arg) {
+    (void)arg;
+    for (;;) {
+        afe_fetch_result_t *res = s_afe->fetch(s_afe_data);
+        if (!res || res->ret_value != ESP_OK) {
+            // Either an error or nothing ready yet — back off briefly so a
+            // pathological state can't spin the CPU.
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+        if (atomic_load(&s_speaking)) continue;
+        bool wake = (res->wakeup_state == WAKENET_DETECTED);
+        bool streaming = atomic_load(&s_streaming);
+        // PTT overrides WakeNet — useful when the user wants deterministic
+        // input (or when no model is flashed and WakeNet never fires).
+        if (!streaming && (wake || atomic_load(&s_ptt_held))) {
+            if (wake) ESP_LOGI(TAG, "wake detected");
+            atomic_store(&s_streaming, 1);
+            streaming = true;
+        }
+        if (streaming) {
+            // res->data is int16 mono at 16 kHz, length res->data_size bytes.
+            gs_ws_send_pcm((const uint8_t *)res->data, res->data_size);
+        }
+    }
+}
+#endif
+
 int gs_audio_in_start(const gs_audio_in_cfg_t *cfg) {
     if (init_i2s_rx() != ESP_OK) {
         ESP_LOGE(TAG, "i2s rx init failed");
@@ -253,10 +277,21 @@ int gs_audio_in_start(const gs_audio_in_cfg_t *cfg) {
     ESP_LOGW(TAG, "built without esp-sr; wake word disabled, raw stream only");
     (void)cfg;
 #endif
-    return xTaskCreatePinnedToCore(audio_task, "gs_audio_in", GS_TASK_STACK_AUDIO,
-                                    NULL, 5, NULL, 1) == pdPASS
-               ? 0
-               : -2;
+    if (xTaskCreatePinnedToCore(feed_task, "gs_audio_feed", GS_TASK_STACK_AUDIO,
+                                NULL, 5, NULL, 1) != pdPASS) {
+        return -2;
+    }
+#if GS_HAVE_ESP_SR
+    // fetch_task only makes sense when AFE is live. If init failed,
+    // feed_task handles the raw PTT path on its own.
+    if (s_afe && s_afe_data) {
+        if (xTaskCreatePinnedToCore(fetch_task, "gs_audio_fetch", GS_TASK_STACK_AUDIO,
+                                    NULL, 5, NULL, 1) != pdPASS) {
+            return -3;
+        }
+    }
+#endif
+    return 0;
 }
 
 void gs_audio_in_on_server_state(gs_device_state_t state) {
