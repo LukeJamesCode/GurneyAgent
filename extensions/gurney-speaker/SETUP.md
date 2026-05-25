@@ -1,6 +1,6 @@
 # gurney-speaker — setup guide
 
-End-to-end setup walkthrough for the gurney-speaker extension + ESP32-S3 firmware. Steps below mirror what's actually been validated end-to-end (boot → WiFi → WebSocket → buttons round-tripping with the server). Subsystems still in bring-up are flagged.
+End-to-end setup walkthrough for the gurney-speaker extension + ESP32-S3 firmware. Steps below mirror what's actually been validated end-to-end (boot → WiFi → WebSocket → buttons round-tripping with the server → orchestrator dispatch → TTS). Subsystems still in bring-up (LCD panel, Opus decode in firmware) are flagged.
 
 This guide covers everything from a fresh `gurney fresh` install on your server through to a Gurney puck connecting back over WiFi.
 
@@ -9,10 +9,12 @@ This guide covers everything from a fresh `gurney fresh` install on your server 
 ## What you need
 
 **Server box** (Pi, mini-PC, whatever Gurney runs on)
+
 - Working Gurney install with `gurney-voice` already set up — the speaker extension piggybacks on the whisper + Piper models gurney-voice downloads.
 - LAN connectivity to your puck device.
 
 **Dev machine** (where you build the firmware — Windows/macOS/Linux)
+
 - ESP-IDF **v5.5.x** (see Step 2 — **avoid v6.0.x**; esp-sr requires a `json` component that v6 removed).
 
 **Hardware** — see `firmware/gurney-speaker/README.md` for the hardware target list and pin map.
@@ -35,6 +37,8 @@ gurney config gurney-speaker voice_model_path  "$HOME/.gurney/extension_state/gu
 gurney config gurney-speaker owner_chat_id <your Telegram chat ID>
 ```
 
+> Setting `owner_chat_id` is what flips the device from "stateless LLM chat" to "full Gurney with tools, memory, and shared conversation history with your Telegram chat". Leave it at `0` if you want each puck to be a single-turn voice toy with no side effects.
+
 Then start Gurney:
 
 ```bash
@@ -43,11 +47,13 @@ gurney logs -f | grep speaker
 ```
 
 You're looking for:
+
 ```
 gurney-speaker ws server listening { host: '0.0.0.0', port: 7820 }
 ```
 
 > **Gotcha we hit:** earlier `gurney config` flows could pack a `host:port` value into `listen_host`. The current ws-server tolerates this (logs a warning, splits cleanly) but you can clean it up by running `gurney config gurney-speaker` and resetting `listen_host` to `0.0.0.0`, or deleting the row from SQLite directly:
+>
 > ```bash
 > # sqlite3 may not be installed; the Node REPL works fine too:
 > node -e "const D=require('better-sqlite3');const d=new D(process.env.HOME+'/.gurney/gurney.db');d.prepare(\"DELETE FROM extension_settings WHERE extension='gurney-speaker' AND key='listen_host'\").run();"
@@ -76,7 +82,7 @@ Your firmware will connect to `ws://<server-ip>:7820/`.
 
 ## 3. Dev machine — install ESP-IDF v5.5.x
 
-> **Important:** use ESP-IDF **v5.5.x** (or 5.4). **Do not** use v6.0.x for v0.1 — esp-sr depends on a `json` component that v6 dropped, and the build will fail with "Failed to resolve component 'json' required by component 'espressif__esp-sr'".
+> **Important:** use ESP-IDF **v5.5.x** (or 5.4). **Do not** use v6.0.x for v0.1 — esp-sr depends on a `json` component that v6 dropped, and the build will fail with "Failed to resolve component 'json' required by component 'espressif\_\_esp-sr'".
 
 Use the [ESP-IDF Installation Manager (EIM)](https://docs.espressif.com/projects/idf-im-ui/en/latest/). After the GUI installs ESP-IDF, you may need to bootstrap the Python venv manually if EIM didn't:
 
@@ -142,6 +148,7 @@ python tools\provision.py --device-id puck-1 --secret "<paste-secret-from-step-2
 Double-quote every value — PowerShell treats `#` as a comment marker, so an unquoted `Pa$$#word` would lose everything from `#` onward.
 
 > **Gotcha we hit:** if the script fails with `No module named esp_idf_nvs_partition_gen`, your system Python doesn't have ESP-IDF's deps. The script tries to auto-find the IDF venv; if that fails, invoke it explicitly:
+>
 > ```powershell
 > & "<idf-tools>\python\v5.5.3\venv\Scripts\python.exe" tools\provision.py ...
 > ```
@@ -176,6 +183,7 @@ I gs_main: boot complete
 ```
 
 And on the server:
+
 ```
 gurney-speaker/ws  device connected  { deviceId: 'puck-1', fwVersion: '0.1.0' }
 ```
@@ -185,6 +193,7 @@ Exit the monitor with **Ctrl+]**.
 ## 8. Verify the round trip
 
 Press one of your buttons. Server log should show:
+
 ```
 device button { button: 'vol_up' }
 ```
@@ -195,21 +204,23 @@ If both directions land, the protocol is healthy and you're ready to move on to 
 
 ---
 
-## Known not-yet-working in v0.1
+## Known not-yet-working
 
-| Subsystem | Status |
-|---|---|
-| Boot, NVS, WiFi, reconnect | ✅ Working |
-| WebSocket auth + state sync | ✅ Working |
-| Buttons (vol/mute/spare) | ✅ Working |
-| Mic streaming | ⚠️ Wake word not active (no `model` partition). Audio task falls back to a raw-stream mode that won't fire until a trigger is implemented — PTT or wake word — see roadmap below. |
-| TTS playback | ⚠️ The Opus decoder in `audio_out.c` is stubbed to silence. State transitions happen, but no audio. |
-| Display | ⚠️ GC9A01 panel init is a `TODO(bench)` in `ui.c` — backlight comes on but the panel is black. |
+| Subsystem                   | Status                                                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Boot, NVS, WiFi, reconnect  | ✅ Working                                                                                                                                 |
+| WebSocket auth + state sync | ✅ Working                                                                                                                                 |
+| Buttons (vol/mute)          | ✅ Working                                                                                                                                 |
+| PTT (spare button)          | ✅ Working — hold to talk, release to end the turn                                                                                         |
+| Mic streaming on PTT        | ✅ Working — raw mono PCM at 16 kHz over WS                                                                                                |
+| Wake word                   | ⚠️ Inactive until you flash a `model` partition with an esp-sr WakeNet model. PTT remains the documented fallback.                         |
+| TTS playback                | ⚠️ The Opus decoder in `audio_out.c` is stubbed to silence. State transitions happen, but no audio yet — wire `esp_audio_codec` to enable. |
+| Display                     | ⚠️ GC9A01 panel init is a `TODO(bench)` in `ui.c` — backlight comes on but the panel is black.                                             |
 
 ## Roadmap from here
 
-Pick one of:
-- **PTT input** — wire one button to "hold to talk" so the device streams PCM while held and ends the turn on release. Smallest possible change to get a working voice loop.
-- **Opus playback** — wire `esp_audio_codec`'s ogg+opus decoder into `audio_out.c::decode_opus_stub()`. Once done, server replies are audible.
-- **GC9A01 panel + LVGL** — bring up the round LCD via `esp_lcd_panel` and re-introduce LVGL screens.
-- **Wake word** — add a partition named `model`, flash an esp-sr WakeNet model into it, and stock `hi_esp` works out of the box.
+Server side is feature-complete (orchestrator dispatch + device persistence both shipping). What's left on the firmware:
+
+- **Opus playback** — wire `esp_audio_codec`'s ogg+opus decoder into `audio_out.c::decode_opus_stub()`. Once done, server replies are audible. Add `espressif/esp_audio_codec` to `idf_component.yml` (it's commented out today; needs ~30 MB of source).
+- **GC9A01 panel + LVGL** — bring up the round LCD via `esp_lcd_panel` and re-introduce LVGL screens. Add `lvgl/lvgl` to `idf_component.yml`.
+- **Custom wake word** — train a "Hey Gurney" WakeNet model via Espressif's online service and drop it into the `model` partition.

@@ -33,6 +33,10 @@ static const char *TAG = "gs_audio_in";
 static i2s_chan_handle_t s_mic_rx = NULL;
 static atomic_int s_streaming = 0;
 static atomic_int s_muted = 0;
+// PTT (push-to-talk) override. When held=1 the audio task pushes raw PCM
+// to the server regardless of WakeNet state. Toggled by the spare button on
+// the device — see gs_audio_in_set_ptt().
+static atomic_int s_ptt_held = 0;
 
 #if GS_HAVE_ESP_SR
 static esp_afe_sr_iface_t *s_afe = NULL;
@@ -145,16 +149,29 @@ static void audio_task(void *arg) {
             if (res && res->ret_value == ESP_OK) {
                 bool wake = (res->wakeup_state == WAKENET_DETECTED);
                 bool streaming = atomic_load(&s_streaming);
-                if (wake && !streaming) {
-                    ESP_LOGI(TAG, "wake detected");
-                    gs_ws_send_wake();
+                // PTT overrides WakeNet — useful when the user wants
+                // deterministic input (or when no model is flashed and
+                // WakeNet never fires).
+                if (!streaming && (wake || atomic_load(&s_ptt_held))) {
+                    if (wake) ESP_LOGI(TAG, "wake detected");
                     atomic_store(&s_streaming, 1);
+                    streaming = true;
                 }
                 if (streaming) {
                     // res->data is int16 mono at 16 kHz, length res->data_size bytes.
                     gs_ws_send_pcm((const uint8_t *)res->data, res->data_size);
                 }
             }
+        } else if (atomic_load(&s_ptt_held)) {
+            // AFE init failed (no model partition flashed). Stream raw mono
+            // PCM so PTT still works.
+            int16_t *mix = (int16_t *)i2s_buf;
+            // Mix down to mono by picking the left channel.
+            for (size_t i = 0; i < samples / GS_MIC_CHANNELS; i++) {
+                mix[i] = afe_in[i * GS_MIC_CHANNELS];
+            }
+            gs_ws_send_pcm((const uint8_t *)mix,
+                           (samples / GS_MIC_CHANNELS) * sizeof(int16_t));
         }
 #else
         // Fallback path when esp-sr isn't available at compile time. Pulls
@@ -165,7 +182,7 @@ static void audio_task(void *arg) {
         for (size_t i = 0; i < samples && i < GS_PCM_FRAME_SAMPLES; i++) {
             mono_pcm[i] = (int16_t)(src[i * GS_MIC_CHANNELS] >> 16);
         }
-        if (atomic_load(&s_streaming)) {
+        if (atomic_load(&s_streaming) || atomic_load(&s_ptt_held)) {
             gs_ws_send_pcm((const uint8_t *)mono_pcm, GS_PCM_FRAME_SAMPLES * 2);
         }
 #endif
@@ -200,5 +217,29 @@ void gs_audio_in_on_server_state(gs_device_state_t state) {
 
 void gs_audio_in_set_muted(bool muted) {
     atomic_store(&s_muted, muted ? 1 : 0);
-    if (muted) atomic_store(&s_streaming, 0);
+    if (muted) {
+        atomic_store(&s_streaming, 0);
+        atomic_store(&s_ptt_held, 0);
+    }
+}
+
+void gs_audio_in_set_ptt(bool held) {
+    bool was_held = atomic_exchange(&s_ptt_held, held ? 1 : 0) != 0;
+    if (atomic_load(&s_muted)) return; // PTT is suppressed while muted.
+    if (held && !was_held) {
+        // Rising edge: synthesise a WAKE on the server side and prime the
+        // audio task to push PCM. The streaming flag is set here too so the
+        // first frame after this point goes on the wire — without it the
+        // first 20 ms of audio gets dropped (small but audible miss).
+        atomic_store(&s_streaming, 1);
+        gs_ws_send_wake();
+        ESP_LOGI(TAG, "PTT pressed");
+    } else if (!held && was_held) {
+        // Falling edge: drop streaming and ask the server to close the turn
+        // even before the silence VAD would trigger. The server flips back
+        // to thinking/speaking on its own state push so we don't have to.
+        atomic_store(&s_streaming, 0);
+        gs_ws_send_utterance_end();
+        ESP_LOGI(TAG, "PTT released");
+    }
 }

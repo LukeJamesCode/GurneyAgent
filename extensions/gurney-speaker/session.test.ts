@@ -334,3 +334,69 @@ test('shutdown clears pending timers so no orphan fires reach the closed socket'
   await clock.advance(500);
   assert.equal(rec.states().length, stateCountBefore);
 });
+
+test('persist.onStateChanged fires when volume or mute actually changes', () => {
+  const changes: Array<[number, boolean]> = [];
+  const { deps } = makeDeps();
+  deps.persist = {
+    onStateChanged: (v, m) => changes.push([v, m]),
+  };
+  const s = new DeviceSession(defaultCfg({ volume: 0.5 }), deps);
+  s.sendWelcome();
+  // Idempotent re-send — no row should be written for the no-op.
+  s.onStateSync({ volume: 0.5 });
+  assert.equal(changes.length, 0);
+  // Real change.
+  s.onStateSync({ volume: 0.2 });
+  assert.deepEqual(changes, [[0.2, false]]);
+  // Mute toggle.
+  s.onStateSync({ muted: true });
+  assert.deepEqual(changes[1], [0.2, true]);
+  // Re-asserting the same mute state must not fire again.
+  s.onStateSync({ muted: true });
+  assert.equal(changes.length, 2);
+});
+
+test('persist.onShutdown fires exactly once on shutdown', () => {
+  let shutdowns = 0;
+  const { deps } = makeDeps();
+  deps.persist = {
+    onShutdown: () => {
+      shutdowns += 1;
+    },
+  };
+  const s = new DeviceSession(defaultCfg(), deps);
+  s.sendWelcome();
+  s.shutdown();
+  assert.equal(shutdowns, 1);
+});
+
+test('persist callback errors do not propagate and are logged', () => {
+  let warned = 0;
+  const log = {
+    debug: () => {},
+    info: () => {},
+    warn: () => {
+      warned += 1;
+    },
+    error: () => {},
+    child(): typeof log {
+      return log;
+    },
+  };
+  const { deps } = makeDeps({ log });
+  deps.persist = {
+    onStateChanged: () => {
+      throw new Error('db locked');
+    },
+    onShutdown: () => {
+      throw new Error('db gone');
+    },
+  };
+  const s = new DeviceSession(defaultCfg(), deps);
+  s.sendWelcome();
+  // Both of these should not throw.
+  s.onStateSync({ volume: 0.1 });
+  s.shutdown();
+  assert.equal(warned, 2);
+});

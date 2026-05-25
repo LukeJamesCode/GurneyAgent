@@ -82,12 +82,17 @@
     "system_prompt": {
       "type": "string",
       "default": "You are Gurney, a friendly voice assistant speaking through a small home device. Reply in one or two short spoken sentences. No code blocks, no markdown.",
-      "description": "System prompt for the LLM. Tuned for terse spoken replies."
+      "description": "System prompt for the LLM. Used only by the direct-LLM dispatch fallback (no owner_chat_id). The orchestrator path uses Gurney's main system prompt + the Telegram-tuned prompt fragments."
+    },
+    "speech_max_chars": {
+      "type": "number",
+      "default": 600,
+      "description": "Hard cap on the spoken reply length. Replies longer than this get cut on the nearest sentence boundary. 600 chars ≈ 30 seconds spoken — voice latency punishes anything longer."
     },
     "volume_default": {
       "type": "number",
       "default": 0.6,
-      "description": "Default playback volume (0.0-1.0) used until the user adjusts via the device buttons."
+      "description": "Default playback volume (0.0-1.0). Applied the first time a device connects; subsequent connects replay whatever volume the device last reported."
     }
   },
   "required": []
