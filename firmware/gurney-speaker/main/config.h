@@ -23,7 +23,10 @@
 // ---- I2S1: amp output (MAX98357A) -----------------------------------------
 
 #define GS_AMP_I2S_PORT       1
-#define GS_AMP_SAMPLE_RATE_HZ 22050  // Piper voices ship at 22050 Hz mono
+// Server-side ffmpeg encodes Opus at 48 kHz mono (gurney-voice/synth.ts:93);
+// Opus has no native 22.05 kHz rate so we play out at the codec's rate rather
+// than resampling on the device.
+#define GS_AMP_SAMPLE_RATE_HZ 48000
 #define GS_AMP_CHANNELS       1
 #define GS_AMP_BITS_PER_SAMPLE 16
 

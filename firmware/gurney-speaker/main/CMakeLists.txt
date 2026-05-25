@@ -17,4 +17,5 @@ idf_component_register(
         driver
         esp_lcd
         spi_flash
+        espressif__esp_audio_codec
 )

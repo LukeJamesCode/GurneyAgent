@@ -1,12 +1,10 @@
 ## IDF component manager — declares the external deps the firmware pulls in.
 ## Run `idf.py reconfigure` after editing to refresh the lockfile.
 ##
-## Two components are intentionally NOT pulled yet:
-##   - lvgl/lvgl                — re-add when the GC9A01 panel driver lands
-##   - espressif/esp_audio_codec — re-add when Opus decoding replaces the
-##                                  silence stub in audio_out.c
-## Pulling them in unused would add ~30 MB of vendor source and 5+ min to a
-## fresh build.
+## One component is intentionally NOT pulled yet:
+##   - lvgl/lvgl  — re-add when the GC9A01 panel driver lands
+## Pulling it in unused would add ~10 MB of vendor source and a couple of
+## minutes to a fresh build.
 
 dependencies:
   idf:
@@ -21,3 +19,8 @@ dependencies:
 
   # WebSocket client for the connection to the Gurney server.
   espressif/esp_websocket_client: "^1.2.3"
+
+  # OGG/Opus decoder for inbound TTS frames. Server-side ffmpeg encodes at
+  # 48 kHz mono libopus (see extensions/gurney-voice/synth.ts) — keep the
+  # I2S TX rate in config.h matched to that.
+  espressif/esp_audio_codec: "^2.5.0"
