@@ -171,7 +171,21 @@ idf.py -p COM4 monitor
 
 > **Gotcha we hit:** VS Code's bottom-bar ⚡ Flash button defaults to JTAG, which fails on boards without a JTAG adapter. Flash from the terminal as above (UART) instead.
 
-> **Upgrading from v0.1?** The partition table grew (a new `model` partition was added). A regular `idf.py flash` won't repartition an already-flashed device — run `idf.py -p COM4 erase-flash` once before re-flashing, or the device will boot from the old partition table and esp-sr will fail to find the model partition at runtime.
+> **Upgrading from v0.1?** Two extra steps before the regular flash:
+>
+> 1. **Force `sdkconfig` to regenerate from `sdkconfig.defaults`.** Defaults are only applied when `sdkconfig` doesn't exist; the v0.1 sdkconfig has the wrong wake-word model selected and MultiNet on, which inflates `srmodels.bin` past the 3 MB model partition and causes a cache-fault panic on boot:
+>     ```powershell
+>     Remove-Item sdkconfig
+>     Remove-Item -Recurse build  # forces a clean configure too
+>     idf.py reconfigure
+>     idf.py build
+>     ```
+> 2. **Erase the flash before the new layout writes.** The partition table grew (a new `model` partition was added). `idf.py flash` won't repartition an already-flashed device, so the chip would otherwise boot from the old partition table and esp-sr would fault when it can't find the model partition at runtime:
+>     ```powershell
+>     idf.py -p COM4 erase-flash
+>     ```
+>
+> Then proceed with the regular `idf.py flash` + `parttool` NVS step.
 
 A healthy boot looks like:
 
