@@ -66,7 +66,15 @@ static void buttons_task(void *arg) {
             .pull_down_en = GPIO_PULLDOWN_DISABLE,
             .intr_type = GPIO_INTR_DISABLE,
         };
-        gpio_config(&cfg);
+        esp_err_t err = gpio_config(&cfg);
+        // Read once at boot. With pull-up enabled and nothing pressed, every
+        // pin should be HIGH (1). A 0 here means either a wiring fault or the
+        // pin's pull-up isn't taking (some pins are RTC/strapping and behave
+        // differently).
+        bool level0 = gpio_get_level(btns[i].pin) != 0;
+        btns[i].last_level = level0;
+        ESP_LOGI(TAG, "init %s on GPIO%d: err=%d initial_level=%d",
+                 btns[i].name, btns[i].pin, (int)err, (int)level0);
     }
 
     for (;;) {

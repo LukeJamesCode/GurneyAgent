@@ -4,6 +4,11 @@
 
 CONFIG_IDF_TARGET="esp32s3"
 
+# Flash size — Freenove ESP32-S3 ships with 8 MB of flash. partitions.csv
+# allocates ~3.5 MB for the app + spiffs; 8 MB leaves room for future OTA.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
 # More RAM for the audio frontend + Opus decoder.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
@@ -20,6 +25,11 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # Logging: info by default; bump to debug while bringing up new hardware.
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_COLORS=y
+
+# Bump task watchdog timeout — WakeNet model loads + I2S init can each take
+# multiple seconds during cold boot; the default 5 s is too tight for our
+# stack but the underlying tasks are fine and won't actually hang.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
 
 # Use the custom partition table (NVS + app + storage).
 CONFIG_PARTITION_TABLE_CUSTOM=y

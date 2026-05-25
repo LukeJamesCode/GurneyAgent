@@ -129,7 +129,7 @@ export function register(host: Host): void {
       io.print(
         '\nCallback address:\n' +
           '  Local machine (same machine as browser) → press Enter\n' +
-          '  Home server / Pi                        → enter your LAN IP (e.g. 192.168.1.42)\n',
+          '  Home server / Pi                        → enter your LAN IP (e.g. 123.456.1.78)\n',
       );
       const lanIp = (await io.prompt('Server LAN IP (or Enter for localhost):')).trim();
       if (lanIp && !isValidIpv4(lanIp)) {

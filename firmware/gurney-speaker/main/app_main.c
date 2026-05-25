@@ -49,7 +49,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     }
 }
 
-static esp_err_t wifi_connect_blocking(const char *ssid, const char *psk) {
+// Non-blocking start. WIFI_EVENT_STA_START fires esp_wifi_connect(); the
+// event handler then retries forever on disconnect. The WS client just keeps
+// trying to open its socket — once an IP shows up, the next reconnect lands.
+// We do NOT block app_main on the IP wait, because the task watchdog watches
+// the main task and a slow AP would trip it before the connect finishes.
+static esp_err_t wifi_start_async(const char *ssid, const char *psk) {
     s_wifi_evt = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -69,12 +74,7 @@ static esp_err_t wifi_connect_blocking(const char *ssid, const char *psk) {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
-
-    // Block up to 30 s for the first IP; after that we fall through and let
-    // the WS client see no connection (it'll log & idle).
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_evt, WIFI_GOT_IP_BIT, pdFALSE, pdTRUE,
-                                           pdMS_TO_TICKS(30000));
-    return (bits & WIFI_GOT_IP_BIT) ? ESP_OK : ESP_ERR_TIMEOUT;
+    return ESP_OK;
 }
 
 static void on_welcome(const gs_welcome_t *welcome) {
@@ -109,10 +109,10 @@ void app_main(void) {
     gs_ui_set_state(GS_STATE_IDLE);
 
     if (s_nvs.wifi_ssid[0]) {
-        esp_err_t err = wifi_connect_blocking(s_nvs.wifi_ssid, s_nvs.wifi_psk);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "wifi connect timed out — will keep retrying in the background");
-        }
+        // Async start — wifi event handler retries forever and the WS client
+        // will reconnect once an IP lands. Blocking here trips the task
+        // watchdog if the AP is slow.
+        wifi_start_async(s_nvs.wifi_ssid, s_nvs.wifi_psk);
     }
 
     gs_audio_out_set_volume(s_nvs.last_volume);

@@ -110,6 +110,7 @@ static void audio_task(void *arg) {
     const size_t i2s_bytes_per_read = GS_PCM_FRAME_SAMPLES * GS_MIC_CHANNELS * 4; // 32-bit slots
     uint8_t *i2s_buf = malloc(i2s_bytes_per_read);
     int16_t mono_pcm[GS_PCM_FRAME_SAMPLES];
+    (void)mono_pcm; // referenced only in the non-esp-sr fallback path below
     if (!i2s_buf) {
         ESP_LOGE(TAG, "i2s buffer alloc failed");
         vTaskDelete(NULL);

@@ -65,6 +65,30 @@ def find_nvs_gen() -> Path:
     return candidate
 
 
+def find_idf_python() -> str:
+    """Locate the ESP-IDF venv's Python. The nvs_partition_gen.py script
+    imports esp_idf_nvs_partition_gen which only exists inside the IDF venv —
+    running with the system Python (or a scoop-installed one) hits
+    ModuleNotFoundError. Falls back to sys.executable if no IDF venv found,
+    letting the user diagnose via the resulting error."""
+    # Common locations EIM and install.ps1 use.
+    candidates: list[Path] = []
+    tools = os.environ.get("IDF_TOOLS_PATH")
+    if tools:
+        candidates.append(Path(tools) / "python" / "v5.5.3" / "venv" / "Scripts" / "python.exe")
+        candidates.append(Path(tools) / "python" / "v6.0.1" / "venv" / "Scripts" / "python.exe")
+    home = Path.home()
+    py_envs = home / ".espressif" / "python_env"
+    if py_envs.exists():
+        for env in py_envs.iterdir():
+            candidates.append(env / "Scripts" / "python.exe")
+            candidates.append(env / "bin" / "python")  # non-Windows
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return sys.executable
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Generate gurney-speaker NVS image")
     ap.add_argument("--device-id", required=True, help="Unique id for this puck (e.g. puck-living-room)")
@@ -87,7 +111,8 @@ def main() -> int:
         csv_path = Path(tmp.name)
 
     gen = find_nvs_gen()
-    cmd = [sys.executable, str(gen), "generate", str(csv_path), args.output, args.size]
+    python = find_idf_python()
+    cmd = [python, str(gen), "generate", str(csv_path), args.output, args.size]
     print(f"running: {' '.join(cmd)}")
     result = subprocess.run(cmd)
     csv_path.unlink(missing_ok=True)
