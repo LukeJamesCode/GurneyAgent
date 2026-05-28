@@ -2,7 +2,7 @@
   "name": "gurney-codex",
   "version": "0.1.0",
   "description": "Escalate hard coding tasks from the local Qwen models to OpenAI Codex over a ChatGPT subscription (OAuth). Local-first: Codex is only used for tasks the small models can't do at quality.",
-  "gurney": ">=1.0.0",
+  "gurney": ">=0.1.0",
   "deps": [],
   "capabilities": ["network", "storage", "auth:oauth", "telegram"],
   "entrypoints": {
