@@ -1,8 +1,13 @@
 // Codex backend client. Calls the ChatGPT Codex Responses API with the OAuth
 // access token + chatgpt-account-id header — the same surface the Codex CLI
-// uses when authenticated with a ChatGPT subscription. We request a
-// non-streaming response and parse the final text out; Gurney's local model
-// summarises it for the user, so there's nothing to stream live.
+// uses when authenticated with a ChatGPT subscription.
+//
+// The ChatGPT Codex backend ONLY accepts streaming requests (`stream: true`);
+// a non-streaming call is rejected with 400 "Stream must be set to true". So we
+// always stream, read the Server-Sent Events, and accumulate the output text +
+// final usage. We don't surface the stream to the user live — Gurney's local
+// model summarises the finished result — so this is purely an internal detail
+// of talking to the backend.
 
 import { randomUUID } from 'node:crypto';
 
@@ -65,6 +70,19 @@ interface ResponsesApiResponse {
   error?: { message?: string };
 }
 
+// One decoded SSE event from the Responses streaming API. We only model the
+// fields we act on; the backend sends many more event types we ignore.
+interface ResponsesStreamEvent {
+  type?: string;
+  // Present on `response.output_text.delta`.
+  delta?: string;
+  // Present on `response.completed` / `response.failed` (the full response obj).
+  response?: ResponsesApiResponse;
+  // Present on `error` events.
+  error?: { message?: string };
+  message?: string;
+}
+
 // Pull the assistant text out of a Responses API payload. Handles both the
 // `output_text` convenience field and the structured `output[].content[]` form.
 export function extractText(json: ResponsesApiResponse): string {
@@ -125,7 +143,8 @@ export async function callCodex(req: CodexRequest): Promise<CodexResult> {
       },
     ],
     max_output_tokens: req.maxOutputTokens,
-    stream: false,
+    // The ChatGPT Codex backend mandates streaming; see the file header.
+    stream: true,
     store: false,
   };
 
@@ -133,31 +152,94 @@ export async function callCodex(req: CodexRequest): Promise<CodexResult> {
   try {
     res = await fetchImpl(`${req.baseUrl.replace(/\/$/, '')}/responses`, {
       method: 'POST',
-      headers,
+      headers: { ...headers, accept: 'text/event-stream' },
       body: JSON.stringify(body),
       signal,
     });
-  } finally {
+  } catch (e) {
     clearTimeout(timeoutId);
+    throw e;
   }
 
+  // Error responses come back as a normal (non-stream) JSON/text body.
   if (!res.ok) {
+    clearTimeout(timeoutId);
     const text = await res.text().catch(() => '');
     throw new CodexApiError(res.status, `Codex responded ${res.status}: ${text.slice(0, 400)}`);
   }
-
-  const json = (await res.json()) as ResponsesApiResponse;
-  if (json.error?.message) {
-    throw new CodexApiError(200, `Codex returned an error: ${json.error.message}`);
+  if (!res.body) {
+    clearTimeout(timeoutId);
+    throw new CodexApiError(200, 'Codex returned no response body');
   }
-  const text = extractText(json);
+
+  try {
+    return await readResponsesStream(res.body);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// Read a Responses API Server-Sent Events stream and fold it into a single
+// result. Text is accumulated from `response.output_text.delta` events; the
+// final `response.completed` event carries usage and the full output (used as a
+// fallback when no deltas were seen). A `response.failed` / `error` event is
+// surfaced as a CodexApiError.
+export async function readResponsesStream(
+  stream: ReadableStream<Uint8Array>,
+): Promise<CodexResult> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let deltaText = '';
+  let finalText = '';
+  let promptTokens: number | undefined;
+  let completionTokens: number | undefined;
+
+  const handleEvent = (payload: string): void => {
+    if (!payload || payload === '[DONE]') return;
+    let evt: ResponsesStreamEvent;
+    try {
+      evt = JSON.parse(payload) as ResponsesStreamEvent;
+    } catch {
+      return; // skip malformed event lines
+    }
+    const type = evt.type ?? '';
+    if (type === 'response.output_text.delta' && typeof evt.delta === 'string') {
+      deltaText += evt.delta;
+    } else if (type === 'response.completed' && evt.response) {
+      const ft = extractText(evt.response);
+      if (ft) finalText = ft;
+      const pt = evt.response.usage?.input_tokens ?? evt.response.usage?.prompt_tokens;
+      const ct = evt.response.usage?.output_tokens ?? evt.response.usage?.completion_tokens;
+      if (typeof pt === 'number') promptTokens = pt;
+      if (typeof ct === 'number') completionTokens = ct;
+    } else if (type === 'response.failed' || type === 'error') {
+      const msg =
+        evt.response?.error?.message ?? evt.error?.message ?? evt.message ?? 'Codex stream error';
+      throw new CodexApiError(200, `Codex returned an error: ${msg}`);
+    }
+  };
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (line.startsWith('data:')) handleEvent(line.slice(5).trim());
+    }
+  }
+  const tail = buffer.trim();
+  if (tail.startsWith('data:')) handleEvent(tail.slice(5).trim());
+
+  const text = deltaText || finalText;
   if (!text) throw new CodexApiError(200, 'Codex returned an empty response');
 
   const result: CodexResult = { text };
-  const pt = json.usage?.input_tokens ?? json.usage?.prompt_tokens;
-  const ct = json.usage?.output_tokens ?? json.usage?.completion_tokens;
-  if (typeof pt === 'number') result.promptTokens = pt;
-  if (typeof ct === 'number') result.completionTokens = ct;
+  if (typeof promptTokens === 'number') result.promptTokens = promptTokens;
+  if (typeof completionTokens === 'number') result.completionTokens = completionTokens;
   return result;
 }
 
