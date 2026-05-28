@@ -1186,7 +1186,13 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
       // second even when the kernel watcher misses the event. scheduleReload
       // already debounces, so double-triggers from fs.watch + polling collapse
       // into a single reload.
-      const seenMtimes = new Map<string, number>();
+      // Fingerprint each file by mtime AND size. Coarse-mtime filesystems (and
+      // CI runners) can rewrite a file's contents within the same mtime tick;
+      // folding the byte size in catches a same-mtime length change that the
+      // mtime alone would miss.
+      const seenStamps = new Map<string, string>();
+      const stampOf = (st: { mtimeMs: number; size: number }): string =>
+        `${st.mtimeMs}:${st.size}`;
       const snapshotMtimes = (dir: string): void => {
         let entries: string[] = [];
         try {
@@ -1202,7 +1208,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
             if (st.isDirectory()) {
               snapshotMtimes(child);
             } else if (st.isFile()) {
-              seenMtimes.set(child, st.mtimeMs);
+              seenStamps.set(child, stampOf(st));
             }
           } catch {
             /* ignore vanished paths */
@@ -1225,9 +1231,10 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
             if (st.isDirectory()) {
               if (checkMtimes(child)) return true;
             } else if (st.isFile()) {
-              const prev = seenMtimes.get(child);
-              if (prev === undefined || prev !== st.mtimeMs) {
-                seenMtimes.set(child, st.mtimeMs);
+              const stamp = stampOf(st);
+              const prev = seenStamps.get(child);
+              if (prev === undefined || prev !== stamp) {
+                seenStamps.set(child, stamp);
                 return true;
               }
             }

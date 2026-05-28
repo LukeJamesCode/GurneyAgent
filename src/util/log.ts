@@ -103,7 +103,17 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
   };
 }
 
+// One sink per path, shared across every child logger pointed at that file.
+// `createLogger` is called once per turn and per tool (orchestrator child
+// loggers), so building a fresh sink — and re-running the existsSync/chmod
+// setup — on each call was pure overhead. Memoizing also means the one-time
+// chmod work happens exactly once per process per file.
+const fileSinks = new Map<string, (line: string) => void>();
+
 function makeFileSink(path: string): (line: string) => void {
+  const existing = fileSinks.get(path);
+  if (existing) return existing;
+
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   try {
@@ -111,13 +121,21 @@ function makeFileSink(path: string): (line: string) => void {
   } catch {
     // Best-effort on filesystems without POSIX permissions.
   }
-  return (line) => {
+  // Tighten an already-existing log file once at sink creation. New files get
+  // 0o600 from appendFileSync's mode below, so we no longer chmod per line.
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // File may not exist yet, or the FS has no POSIX perms — both fine.
+  }
+  const sink = (line: string): void => {
     try {
       appendFileSync(path, line + '\n', { mode: 0o600 });
-      chmodSync(path, 0o600);
     } catch {
       // Don't let log-write failures crash the process. stdout/stderr already
       // got the line; the file mirror is best-effort.
     }
   };
+  fileSinks.set(path, sink);
+  return sink;
 }

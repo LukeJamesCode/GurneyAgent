@@ -320,16 +320,29 @@ export function createToolRegistry(opts: RegistryOptions): ToolRegistry {
 // ---------------------------------------------------------------------------
 
 // Combine N AbortSignals into one. Aborts when any input aborts.
-// Keeps Node 20 compatibility (AbortSignal.any landed in 20.3 but we don't
-// want to pin minor versions).
+//
+// Prefer the platform combinator (`AbortSignal.any`, Node >= 20.3): it holds
+// the source signals weakly, so listeners don't accumulate on a long-lived
+// per-turn signal across tool rounds. The manual fallback tears its own
+// listeners down once any source fires.
 function composeAbort(...signals: AbortSignal[]): AbortSignal {
+  const anyFn = (AbortSignal as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+  if (typeof anyFn === 'function') return anyFn(signals);
+
   const ctl = new AbortController();
+  const cleanups: Array<() => void> = [];
+  const finish = (reason: unknown): void => {
+    for (const c of cleanups.splice(0)) c();
+    ctl.abort(reason);
+  };
   for (const s of signals) {
     if (s.aborted) {
-      ctl.abort(s.reason);
+      finish(s.reason);
       return ctl.signal;
     }
-    s.addEventListener('abort', () => ctl.abort(s.reason), { once: true });
+    const onAbort = (): void => finish(s.reason);
+    s.addEventListener('abort', onAbort, { once: true });
+    cleanups.push(() => s.removeEventListener('abort', onAbort));
   }
   return ctl.signal;
 }

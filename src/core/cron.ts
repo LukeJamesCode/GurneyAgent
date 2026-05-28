@@ -59,6 +59,15 @@ function parseField(field: string, lo: number, hi: number): Set<number> {
       start = Number.parseInt(a!, 10);
       end = Number.parseInt(b!, 10);
     } else {
+      // A bare `N/step` (e.g. `5/15`) is ambiguous: standard cron reads it as
+      // `N-max/step`, but this parser would collapse it to the single value N
+      // and silently drop the step. Reject it rather than misinterpret. Use
+      // `N-M/step` or `*/step` to express stepping explicitly.
+      if (slash !== -1) {
+        throw new Error(
+          `invalid cron field '${part}': bare 'N/step' is unsupported — use 'N-M/step' or '*/step'`,
+        );
+      }
       start = end = Number.parseInt(body, 10);
     }
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < lo || end > hi || start > end) {
@@ -150,15 +159,17 @@ function weekdayIndex(shortWeekday: string): number {
 
 // Compute the next minute >= `from` (rounded up to next whole minute) that
 // matches the expression. Bounded search — gives up after 4 years and throws
-// rather than spinning forever on a malformed cron.
-export function nextFireAfter(parsed: ParsedCron, from: Date): Date {
+// rather than spinning forever on a malformed cron. Pass `timeZone` (IANA) to
+// match in that zone instead of process-local time, mirroring `matchesCron`;
+// without it a tz-scheduled job would compute its next fire in the wrong zone.
+export function nextFireAfter(parsed: ParsedCron, from: Date, timeZone?: string): Date {
   const d = new Date(from.getTime());
   d.setSeconds(0, 0);
   d.setMinutes(d.getMinutes() + 1);
   const limit = new Date(d.getTime());
   limit.setFullYear(limit.getFullYear() + 4);
   while (d <= limit) {
-    if (matchesCron(parsed, d)) return d;
+    if (matchesCron(parsed, d, timeZone)) return d;
     d.setMinutes(d.getMinutes() + 1);
   }
   throw new Error('no cron fire-time within 4 years — malformed expression');

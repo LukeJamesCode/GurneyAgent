@@ -85,6 +85,18 @@ export function build(opts: BuildOptions): BuiltPrompt {
     truncated = true;
   }
 
+  // Truncation (or a history that simply begins mid tool-exchange) can leave a
+  // leading `tool` result whose preceding assistant tool-call turn was dropped.
+  // Strict chat backends reject a tool message with no matching tool_calls
+  // before it, so peel any orphaned leading tool results off the front. Never
+  // cross the pinned user turn — that's always kept.
+  while (history.length > 0 && history[0]!.role === 'tool' && pinnedIdx > 0) {
+    const dropped = history.shift()!;
+    historyTokens -= tokensOf(dropped);
+    pinnedIdx -= 1;
+    truncated = true;
+  }
+
   const messages: ChatMessage[] = [];
   if (prefixText) messages.push({ role: 'system', content: prefixText });
   for (const h of history) {

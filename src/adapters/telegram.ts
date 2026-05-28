@@ -1,8 +1,10 @@
 // Telegram adapter. grammY long-poll, allowlist, core slash commands.
 //
 // Per-chat queueing lives in the orchestrator. This adapter forwards messages
-// in and edits a single placeholder Telegram message as the LLM streams text
-// out, batching deltas so we don't hammer Telegram with editMessageText calls.
+// in, buffers the streamed reply deltas, and sends the assembled text once the
+// turn finishes (splitting on Telegram's 4096-char cap). Streaming in-place
+// edits were considered but dropped: a single send-on-done avoids hammering
+// Telegram with editMessageText calls and sidesteps its edit rate limits.
 //
 // Core commands wired here:
 //   /start /help /newchat /stop /model /status /lasterror /extensions /devmode
