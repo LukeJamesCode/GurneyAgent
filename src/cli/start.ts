@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { open as openDb } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import { createOllama, type ProfileConfig, type ProfileName } from '../core/llm.js';
-import { createToolRegistry } from '../core/tools.js';
+import { createToolRegistry, type ToolHandler, type ToolContext } from '../core/tools.js';
 import { createOrchestrator } from '../core/orchestrator.js';
 import { createScheduler, type Nudge } from '../core/scheduler.js';
 import { setupFollowups } from '../core/followups.js';
@@ -186,7 +186,18 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     ...(inferenceTimeoutMs !== undefined ? { inferenceTimeoutMs } : {}),
   });
 
-  const tools = createToolRegistry({ log });
+  // Confirm-tier gate. The Telegram adapter (built further down) provides the
+  // real Yes/No prompt; until then this fails closed so a confirm-tier tool can
+  // never run unconfirmed during the startup window.
+  let confirmToolCall: (
+    handler: ToolHandler,
+    args: Record<string, unknown>,
+    ctx: ToolContext,
+  ) => Promise<boolean> = async () => false;
+  const tools = createToolRegistry({
+    log,
+    confirm: (handler, args, ctx) => confirmToolCall(handler, args, ctx),
+  });
 
   const prefs = createPrefsStore(db);
 
@@ -299,6 +310,8 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   dispatchNudge = (nudge) => telegram.sendNudge(nudge);
   // And the voice-note path now that the adapter exists.
   sendVoiceImpl = (chatId, voice) => telegram.sendVoice(chatId, voice);
+  // Point the tool registry's confirm hook at the live Telegram prompt.
+  confirmToolCall = (handler, args, ctx) => telegram.confirmToolCall(handler, args, ctx);
   let lastSetupIssueSignature = '';
   notifySetupIssues = async () => {
     const issues = setupIssuesForNudge(collectExtensionReadiness(extensionsRoots, db));

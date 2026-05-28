@@ -28,7 +28,7 @@ import { collectDoctorReply } from './telegram-maintenance.js';
 import type { Logger } from '../util/log.js';
 import type { Orchestrator, ReplyChunk } from '../core/orchestrator.js';
 import type { LLM } from '../core/llm.js';
-import type { ToolRegistry } from '../core/tools.js';
+import type { ToolRegistry, ToolHandler, ToolContext } from '../core/tools.js';
 import type { DB } from '../storage/db.js';
 import type { ChatPrefs, PrefsStore, QuietCheck } from '../core/prefs.js';
 import type { Followups, FollowupRow } from '../core/followups.js';
@@ -109,7 +109,22 @@ export interface TelegramAdapter {
   // Voice notes for extensions like gurney-voice. Wired into the loader as
   // host.telegram.sendVoice so extensions never touch grammY directly.
   sendVoice(chatId: number, voice: VoicePayload): Promise<void>;
+  // Confirm-tier tool gate. Wired into the tool registry as its `confirm` hook:
+  // pops a Yes/No prompt in the originating chat and resolves to the user's
+  // choice. Fails closed (returns false) when there's no chat to ask in, the
+  // turn was already cancelled, the prompt can't be sent, or the user doesn't
+  // answer in time.
+  confirmToolCall(
+    handler: ToolHandler,
+    args: Record<string, unknown>,
+    ctx: ToolContext,
+  ): Promise<boolean>;
 }
+
+// How long a confirm-tier prompt waits for a Yes/No before giving up and
+// failing closed. Long enough for the user to notice and tap; short enough that
+// a forgotten prompt doesn't pin the per-chat turn indefinitely.
+const CONFIRM_TIMEOUT_MS = 2 * 60_000;
 
 // Single source of truth for core slash commands. `argsHint` is rendered next
 // to the name in /help; `advertised` is what gets sent to setMyCommands so it
@@ -526,6 +541,76 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
     await ctx.answerCallbackQuery(text ? { text } : undefined).catch(() => {});
   }
 
+  // Confirm-tier tool gating. A confirm-tier tool call (e.g. gurney-codex's
+  // codex_handoff) parks here while we ask the user Yes/No in the originating
+  // chat. The button press arrives as a separate `confirm:<id>:<yes|no>`
+  // callback update — safe because the orchestrator turn runs detached from the
+  // long-poll (dispatchOrchestratorTurn uses `void`), so awaiting the prompt
+  // never blocks update processing.
+  const pendingConfirms = new Map<string, (ok: boolean) => void>();
+  let confirmSeq = 0;
+
+  async function confirmToolCall(
+    handler: ToolHandler,
+    args: Record<string, unknown>,
+    ctx: ToolContext,
+  ): Promise<boolean> {
+    const chatId = ctx.chatId;
+    // No chat to ask in, or the turn was already cancelled — fail closed so a
+    // confirm-tier tool never runs without explicit approval.
+    if (chatId === undefined) return false;
+    if (ctx.signal?.aborted) return false;
+
+    const id = String(++confirmSeq);
+    let preview: string;
+    try {
+      preview = handler.confirmPrompt ? handler.confirmPrompt(args) : `Run \`${handler.name}\`?`;
+    } catch {
+      preview = `Run \`${handler.name}\`?`;
+    }
+
+    const keyboard = new InlineKeyboard()
+      .text('✅ Yes', `confirm:${id}:yes`)
+      .text('❌ No', `confirm:${id}:no`);
+
+    let messageId: number | undefined;
+    try {
+      const sent = await bot.api.sendMessage(chatId, preview, { reply_markup: keyboard });
+      messageId = sent.message_id;
+    } catch (e) {
+      log.warn('confirm prompt send failed', {
+        tool: handler.name,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return false; // fail closed
+    }
+
+    return await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (ok: boolean, note: string): void => {
+        if (settled) return;
+        settled = true;
+        pendingConfirms.delete(id);
+        clearTimeout(timer);
+        ctx.signal?.removeEventListener('abort', onAbort);
+        if (messageId !== undefined) {
+          void bot.api.editMessageText(chatId, messageId, note).catch(() => {});
+        }
+        resolve(ok);
+      };
+      const onAbort = (): void => finish(false, `${preview}\n\n⏹ Cancelled.`);
+      const timer = setTimeout(
+        () => finish(false, `${preview}\n\n⌛ Timed out — not run.`),
+        CONFIRM_TIMEOUT_MS,
+      );
+      timer.unref?.();
+      ctx.signal?.addEventListener('abort', onAbort, { once: true });
+      pendingConfirms.set(id, (ok) =>
+        finish(ok, ok ? `${preview}\n\n✅ Approved.` : `${preview}\n\n❌ Declined.`),
+      );
+    });
+  }
+
   function startText(): string {
     return (
       "Hi — I'm Gurney. Send me a message and I'll reply.\n" +
@@ -936,6 +1021,20 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
       return;
     }
 
+    if (data.startsWith('confirm:')) {
+      const rest = data.slice('confirm:'.length);
+      const sep = rest.indexOf(':');
+      const id = sep === -1 ? rest : rest.slice(0, sep);
+      const choice = sep === -1 ? '' : rest.slice(sep + 1);
+      const ok = choice === 'yes';
+      await answerCallback(ctx, ok ? 'Approved' : 'Declined');
+      const resolve = pendingConfirms.get(id);
+      // Missing id = stale prompt (already resolved by timeout/cancel, or from a
+      // previous process). Nothing to do beyond the ack above.
+      if (resolve) resolve(ok);
+      return;
+    }
+
     if (data.startsWith('nudge:')) {
       await answerCallback(ctx, 'Action received.');
       return;
@@ -1259,6 +1358,7 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
         });
       }
     },
+    confirmToolCall,
   };
 }
 

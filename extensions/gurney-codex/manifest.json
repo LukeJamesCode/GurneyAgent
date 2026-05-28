@@ -1,0 +1,19 @@
+{
+  "name": "gurney-codex",
+  "version": "0.1.0",
+  "description": "Escalate hard coding tasks from the local Qwen models to OpenAI Codex over a ChatGPT subscription (OAuth). Local-first: Codex is only used for tasks the small models can't do at quality.",
+  "gurney": ">=1.0.0",
+  "deps": [],
+  "capabilities": ["network", "storage", "auth:oauth", "telegram"],
+  "entrypoints": {
+    "tools": "./tools.ts",
+    "commands": "./commands.ts",
+    "auth": "./auth.ts"
+  },
+  "telegram_commands": [
+    { "command": "codex", "description": "Send a task straight to Codex: /codex <task>" },
+    { "command": "codexstatus", "description": "Today's Codex usage and remaining budget" },
+    { "command": "codexlogout", "description": "Forget stored Codex credentials" }
+  ],
+  "intent_pattern": "\\b(code|coding|coded|refactor\\w*|implement\\w*|debug\\w*|recursi\\w*|stack ?trace|traceback|exception|compile\\w*|regex|algorithm|rewrite|optimi[sz]e|function|method|class|module|script|program|programme|software|unit ?tests?|write.{0,15}(a |an |the )?(function|method|class|script|test|program|app|module|cli|api)|fix.{0,20}(bug|error|crash|test|build|function|code)|build.{0,20}(a |an )?(app|tool|script|cli|api|feature))\\b"
+}

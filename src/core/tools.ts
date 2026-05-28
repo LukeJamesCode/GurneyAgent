@@ -64,6 +64,13 @@ export interface ToolHandler {
   // whose `parameters` JSON Schema is hand-written for the LLM and doesn't
   // map cleanly to the small validator below.
   skipValidation?: boolean;
+  // Optional one-line preview for the `confirm` tier prompt. When a confirm
+  // hook is wired (Telegram Yes/No), this renders the question the user sees
+  // before the tool runs — e.g. "Spend a Codex call on: <task>?". Falls back to
+  // a generic "Run <name>?" when unset. Kept as a formatter (not a static
+  // string) so it can fold the actual arguments into the prompt. Must not
+  // throw; the confirm hook guards it but a clean implementation is expected.
+  confirmPrompt?: (args: Record<string, unknown>) => string;
   invoke(args: Record<string, unknown>, ctx: ToolContext): Promise<string>;
 }
 

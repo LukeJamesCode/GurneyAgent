@@ -22,5 +22,11 @@
     "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
     "subpath": "extensions/gurney-speaker",
     "description": "Handmade smart-speaker front-end: WebSocket server for ESP32-S3 puck devices, reuses gurney-voice for STT/TTS"
+  },
+  {
+    "name": "gurney-codex",
+    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
+    "subpath": "extensions/gurney-codex",
+    "description": "Escalate hard coding tasks from the local Qwen models to OpenAI Codex over a ChatGPT subscription (OAuth). Local-first dual-system to save on usage."
   }
 ]
