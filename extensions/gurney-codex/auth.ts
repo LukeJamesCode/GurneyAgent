@@ -27,7 +27,7 @@ import { probeAccess } from './lib/codex.js';
 import { KEYS } from './lib/store.js';
 
 const DEFAULT_BASE_URL = 'https://chatgpt.com/backend-api/codex';
-const DEFAULT_MODEL = 'gpt-5-codex';
+const DEFAULT_MODEL = 'gpt-5.3-codex';
 
 function isYes(s: string): boolean {
   return /^(y|yes)$/i.test(s.trim());

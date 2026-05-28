@@ -13,14 +13,7 @@
 // every Telegram update, so hot-reload reflects without restarting the bot.
 // `sendMessage(chatId, text)` is exposed for the scheduler's nudge dispatcher.
 
-import {
-  existsSync,
-  openSync,
-  readSync,
-  fstatSync,
-  closeSync,
-  createWriteStream,
-} from 'node:fs';
+import { existsSync, openSync, readSync, fstatSync, closeSync, createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline as streamPipeline } from 'node:stream/promises';
 import { Bot, InlineKeyboard, InputFile, type Context } from 'grammy';
@@ -606,7 +599,10 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
       timer.unref?.();
       ctx.signal?.addEventListener('abort', onAbort, { once: true });
       pendingConfirms.set(id, (ok) =>
-        finish(ok, ok ? `${preview}\n\n✅ Approved.` : `${preview}\n\n❌ Declined.`),
+        // On approval the tool may take a while (e.g. a Codex call) and we send
+        // no interim text, so the edited prompt is the user's only "it's
+        // working" signal — say so rather than a terse "Approved."
+        finish(ok, ok ? `${preview}\n\n✅ On it — working…` : `${preview}\n\n❌ Declined.`),
       );
     });
   }
@@ -828,7 +824,12 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
               }
             }
             try {
-              await ctx.reply(display);
+              // Telegram hard-caps a message at 4096 chars. A long reply
+              // (e.g. a Codex handoff answer) would otherwise be rejected by
+              // the API and silently dropped — the user would see nothing.
+              for (const part of splitForTelegram(display)) {
+                await ctx.reply(part);
+              }
             } catch (e) {
               log.warn('reply failed', { error: e instanceof Error ? e.message : String(e) });
             }
@@ -1360,6 +1361,33 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
     },
     confirmToolCall,
   };
+}
+
+// Split a reply into Telegram-sized pieces. Telegram rejects any single
+// message over 4096 chars, and the orchestrator's reply path used to send the
+// whole thing in one ctx.reply — so a long answer (notably a Codex handoff)
+// was rejected by the API and silently dropped. We split at ~4000 chars,
+// preferring a paragraph/line/space boundary near the limit so we don't cut a
+// word in half. Returns at least one piece (possibly empty-string-safe).
+const TELEGRAM_CHUNK = 4000;
+
+export function splitForTelegram(text: string, limit = TELEGRAM_CHUNK): string[] {
+  if (text.length <= limit) return [text];
+  const out: string[] = [];
+  let rest = text;
+  while (rest.length > limit) {
+    const window = rest.slice(0, limit);
+    // Prefer to break at the last paragraph break, then newline, then space,
+    // searching only the back half of the window so chunks stay reasonably full.
+    let cut = window.lastIndexOf('\n\n');
+    if (cut < limit * 0.5) cut = window.lastIndexOf('\n');
+    if (cut < limit * 0.5) cut = window.lastIndexOf(' ');
+    if (cut < limit * 0.5) cut = limit; // no good boundary — hard cut
+    out.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest.length > 0) out.push(rest);
+  return out;
 }
 
 // Pure command handler for /quiet so it's directly testable. Returns the

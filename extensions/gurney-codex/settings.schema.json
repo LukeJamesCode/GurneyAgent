@@ -27,7 +27,7 @@
     },
     "model": {
       "type": "string",
-      "default": "gpt-5-codex",
+      "default": "gpt-5.3-codex",
       "description": "Codex model to route handoffs to."
     },
     "base_url": {

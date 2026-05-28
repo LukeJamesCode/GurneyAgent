@@ -4,9 +4,30 @@
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { createTelegram, type TelegramOptions } from './telegram.js';
+import { createTelegram, splitForTelegram, type TelegramOptions } from './telegram.js';
 import type { Logger } from '../util/log.js';
 import type { ToolHandler, ToolContext } from '../core/tools.js';
+
+test('splitForTelegram leaves short text as a single piece', () => {
+  assert.deepEqual(splitForTelegram('hello'), ['hello']);
+});
+
+test('splitForTelegram chunks long text under the limit, never exceeding it', () => {
+  const long = 'x'.repeat(10_000);
+  const parts = splitForTelegram(long, 4000);
+  assert.ok(parts.length >= 3);
+  for (const p of parts) assert.ok(p.length <= 4000, `part too long: ${p.length}`);
+  assert.equal(parts.join('').length, long.length);
+});
+
+test('splitForTelegram prefers a newline boundary near the limit', () => {
+  // 3990 chars, a newline, then more — the first chunk should end at the newline.
+  const head = 'a'.repeat(3990);
+  const tail = 'b'.repeat(500);
+  const parts = splitForTelegram(`${head}\n${tail}`, 4000);
+  assert.equal(parts[0], head);
+  assert.equal(parts[1], tail);
+});
 
 function silentLogger(): Logger {
   const noop = (): void => {};

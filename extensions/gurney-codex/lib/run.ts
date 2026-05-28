@@ -36,7 +36,7 @@ interface Settings {
 export function readSettings(host: Host): Settings {
   const tz = host.settings.get<string>('time_zone', '');
   const s: Settings = {
-    model: host.settings.get<string>('model', 'gpt-5-codex') || 'gpt-5-codex',
+    model: host.settings.get<string>('model', 'gpt-5.3-codex') || 'gpt-5.3-codex',
     baseUrl:
       host.settings.get<string>('base_url', 'https://chatgpt.com/backend-api/codex') ||
       'https://chatgpt.com/backend-api/codex',
