@@ -133,6 +133,9 @@ export async function callCodex(req: CodexRequest): Promise<CodexResult> {
   };
   if (req.accountId) headers['chatgpt-account-id'] = req.accountId;
 
+  // Note: the ChatGPT Codex backend rejects `max_output_tokens` ("Unsupported
+  // parameter") — it caps output server-side, so req.maxOutputTokens is not
+  // sent. The setting is retained for forward-compat but currently advisory.
   const body = {
     model: req.model,
     instructions: INSTRUCTIONS,
@@ -142,7 +145,6 @@ export async function callCodex(req: CodexRequest): Promise<CodexResult> {
         content: [{ type: 'input_text', text: req.prompt }],
       },
     ],
-    max_output_tokens: req.maxOutputTokens,
     // The ChatGPT Codex backend mandates streaming; see the file header.
     stream: true,
     store: false,
