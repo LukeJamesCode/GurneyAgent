@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { extractText, callCodex, probeAccess, CodexApiError } from './codex.js';
+import { extractText, callCodex, probeAccess, parseRetryAfter, CodexApiError } from './codex.js';
 
 // Build a Server-Sent Events response body the way the Codex backend streams it.
 function sse(events: object[]): Response {
@@ -131,6 +131,35 @@ test('callCodex throws CodexApiError on a 401', async () => {
     }),
     (e: unknown) => e instanceof CodexApiError && e.status === 401,
   );
+});
+
+test('callCodex surfaces a 429 with the Retry-After seconds', async () => {
+  const fakeFetch = (async () =>
+    new Response('rate limited', {
+      status: 429,
+      headers: { 'retry-after': '42' },
+    })) as unknown as typeof fetch;
+  await assert.rejects(
+    callCodex({
+      baseUrl: 'https://x/codex',
+      accessToken: 'T',
+      accountId: null,
+      model: 'm',
+      prompt: 'p',
+      maxOutputTokens: 10,
+      timeoutMs: 1_000,
+      fetchImpl: fakeFetch,
+    }),
+    (e: unknown) => e instanceof CodexApiError && e.status === 429 && e.retryAfterSeconds === 42,
+  );
+});
+
+test('parseRetryAfter reads delta-seconds and an HTTP date', () => {
+  assert.equal(parseRetryAfter(new Headers({ 'retry-after': '30' })), 30);
+  assert.equal(parseRetryAfter(new Headers()), undefined);
+  const future = new Date(Date.now() + 120_000).toUTCString();
+  const secs = parseRetryAfter(new Headers({ 'retry-after': future }));
+  assert.ok(secs !== undefined && secs > 60 && secs <= 120);
 });
 
 test('probeAccess reports failure status without throwing', async () => {

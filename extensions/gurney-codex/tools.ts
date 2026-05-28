@@ -111,6 +111,7 @@ export function register(host: Host): void {
       if (a.context?.trim()) input.context = a.context.trim();
       if (a.success_criteria?.trim()) input.successCriteria = a.success_criteria.trim();
       if (ctx.chatId !== undefined) input.chatId = ctx.chatId;
+      if (ctx.conversationId !== undefined) input.conversationId = ctx.conversationId;
       if (ctx.signal) input.signal = ctx.signal;
 
       const outcome = await runHandoff(host, input);

@@ -11,13 +11,31 @@ import type { Host } from '../../src/core/extensions.js';
 import { runHandoff, readSettings } from './lib/run.js';
 import { localDay, usageToday } from './lib/budget.js';
 import { readTokens, clearTokens } from './lib/store.js';
+import { conversationIdForChat } from './lib/history.js';
 
-// Telegram hard-caps a message at 4096 chars. Leave headroom for a header.
-const TELEGRAM_LIMIT = 3900;
+// Telegram hard-caps a message at 4096 chars. Command replies are sent straight
+// to grammY (the orchestrator's chunked send path isn't on this route), so a
+// long Codex answer would be rejected and silently dropped. Split it into
+// multiple messages on natural boundaries instead of truncating.
+const TELEGRAM_LIMIT = 4000;
 
-function truncateForTelegram(text: string): string {
-  if (text.length <= TELEGRAM_LIMIT) return text;
-  return text.slice(0, TELEGRAM_LIMIT) + '\n\n…(truncated — the full answer was longer)';
+export function splitForTelegram(text: string, limit = TELEGRAM_LIMIT): string[] {
+  if (text.length <= limit) return [text];
+  const parts: string[] = [];
+  let rest = text;
+  while (rest.length > limit) {
+    const window = rest.slice(0, limit);
+    // Prefer to break at a paragraph, then a line, then a space — but only in
+    // the back half so chunks stay reasonably full.
+    let cut = window.lastIndexOf('\n\n');
+    if (cut < limit / 2) cut = window.lastIndexOf('\n');
+    if (cut < limit / 2) cut = window.lastIndexOf(' ');
+    if (cut <= 0) cut = limit;
+    parts.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest) parts.push(rest);
+  return parts;
 }
 
 export function register(host: Host): void {
@@ -32,12 +50,20 @@ export function register(host: Host): void {
         return;
       }
       await ctx.reply('Handing this to Codex…');
-      const outcome = await runHandoff(host, { task, source: 'command', chatId: ctx.chatId });
+      const conversationId = conversationIdForChat(host.db, ctx.chatId);
+      const outcome = await runHandoff(host, {
+        task,
+        source: 'command',
+        chatId: ctx.chatId,
+        ...(conversationId !== undefined ? { conversationId } : {}),
+      });
       if (!outcome.ok) {
         await ctx.reply(outcome.message);
         return;
       }
-      await ctx.reply(truncateForTelegram(outcome.result.text));
+      for (const part of splitForTelegram(outcome.result.text)) {
+        await ctx.reply(part);
+      }
     },
     'Send a task straight to Codex: /codex <task>',
   );

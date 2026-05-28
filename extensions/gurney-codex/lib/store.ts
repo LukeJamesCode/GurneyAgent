@@ -76,16 +76,18 @@ export interface ValidToken {
 }
 
 // Return a usable access token, refreshing transparently when it's expired or
-// about to be. Throws CodexNotAuthedError when nothing is stored.
+// about to be. Pass `force: true` to refresh regardless of expiry — used when a
+// call 401s mid-flight (the token was revoked or expired between the pre-check
+// and the request). Throws CodexNotAuthedError when nothing is stored.
 export async function getValidAccessToken(
   host: Host,
-  deps?: { fetchImpl?: typeof fetch; now?: () => number },
+  deps?: { fetchImpl?: typeof fetch; now?: () => number; force?: boolean },
 ): Promise<ValidToken> {
   const now = (deps?.now ?? Date.now)();
   const run = async (): Promise<ValidToken> => {
     const stored = readTokens(host);
     if (!stored) throw new CodexNotAuthedError();
-    if (stored.expiresAt - REFRESH_MARGIN_MS > now) {
+    if (!deps?.force && stored.expiresAt - REFRESH_MARGIN_MS > now) {
       return { accessToken: stored.accessToken, accountId: stored.accountId };
     }
     host.log.info('refreshing Codex access token');

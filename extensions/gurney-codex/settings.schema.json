@@ -45,6 +45,16 @@
       "default": 4096,
       "description": "Upper bound on Codex completion length per call."
     },
+    "context_turns": {
+      "type": "number",
+      "default": 6,
+      "description": "How many recent conversation turns to attach to each handoff so Codex has context it can't otherwise see. 0 disables (Codex sees only the task). Higher = better continuity but more tokens and more chat sent to OpenAI."
+    },
+    "context_max_chars": {
+      "type": "number",
+      "default": 4000,
+      "description": "Upper bound on the characters of recent-conversation context attached to a handoff. Oldest turns are dropped to fit."
+    },
     "request_timeout_ms": {
       "type": "number",
       "default": 120000,

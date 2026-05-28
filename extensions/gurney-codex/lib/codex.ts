@@ -34,10 +34,29 @@ export class CodexApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    // Seconds to wait before retrying, parsed from a 429's Retry-After header
+    // when present. Lets the caller tell the user when the ChatGPT-plan rate
+    // limit clears instead of a bare "call failed".
+    public retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = 'CodexApiError';
   }
+}
+
+// Read a Retry-After header (delta-seconds or an HTTP date) into seconds.
+// Returns undefined when absent or unparseable.
+export function parseRetryAfter(headers: Headers): number | undefined {
+  const raw = headers.get('retry-after');
+  if (!raw) return undefined;
+  const secs = Number(raw);
+  if (Number.isFinite(secs) && secs >= 0) return secs;
+  const when = Date.parse(raw);
+  if (!Number.isNaN(when)) {
+    const delta = (when - Date.now()) / 1000;
+    if (delta > 0) return delta;
+  }
+  return undefined;
 }
 
 // System instructions handed to Codex for a Gurney handoff. Codex stands in as
@@ -177,7 +196,11 @@ export async function callCodex(req: CodexRequest): Promise<CodexResult> {
   if (!res.ok) {
     clearTimeout(timeoutId);
     const text = await res.text().catch(() => '');
-    throw new CodexApiError(res.status, `Codex responded ${res.status}: ${text.slice(0, 400)}`);
+    throw new CodexApiError(
+      res.status,
+      `Codex responded ${res.status}: ${text.slice(0, 400)}`,
+      parseRetryAfter(res.headers),
+    );
   }
   if (!res.body) {
     clearTimeout(timeoutId);
