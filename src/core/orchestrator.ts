@@ -528,7 +528,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     // dramatically on every tool round — Ollama re-sends the schema block on
     // each follow-up, so over a 2-round tool flow the savings compound. Falls
     // back to all tools when no filter is wired or the filter can't decide.
-    const toolSchemas =
+    let toolSchemas =
       intent === null
         ? opts.tools.schemas()
         : intentSet === undefined
@@ -541,6 +541,35 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
       });
     } else if (intent && intent.length === 0) {
       cl.debug('tool manifest skipped — message looks like trivial chatter');
+    }
+
+    // Deterministic auto-routing. A tool can claim a turn outright via its
+    // `autoRoute` hook (e.g. gurney-codex escalating a clearly-hard task), so
+    // escalation doesn't hinge on a tiny model choosing to call it. The forced
+    // call still runs through execute() below — confirm tier and all — and a
+    // selfReplying tool ships its answer directly. First match wins; only one
+    // tool is expected to claim a given message.
+    let forcedCall: ToolCall | null = null;
+    for (const h of opts.tools.list()) {
+      if (!h.autoRoute) continue;
+      let args: Record<string, unknown> | null = null;
+      try {
+        args = h.autoRoute(msg.text);
+      } catch (e) {
+        cl.warn('tool autoRoute threw; ignoring', {
+          tool: h.name,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+      if (args) {
+        forcedCall = { id: `auto_${Date.now()}`, name: h.name, arguments: args };
+        // Make sure the forced tool is the per-turn allowed set so the loop's
+        // schema gate (allowedToolNames) admits it even if intent pruning
+        // wouldn't have surfaced it.
+        toolSchemas = opts.tools.schemas().filter((s) => s.function.name === h.name);
+        cl.info('turn auto-routed to tool', { tool: h.name });
+        break;
+      }
     }
     let assistantText = '';
     let lastChunk: ChatChunk | null = null;
@@ -577,31 +606,38 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
 
     try {
       const profileForTurn: ProfileName = toolSchemas.length > 0 ? toolProfile : defaultProfile;
-      cl.debug('selected model profile', { profile: profileForTurn });
-      const initial = opts.llm.chat({
-        profile: profileForTurn,
-        messages: built.messages,
-        ...(toolSchemas.length > 0 ? { tools: toolSchemas } : {}),
-        signal: abort.signal,
-      });
-      lastChunk = await drain(initial);
+      if (forcedCall) {
+        // Skip the model entirely: synthesize the tool-call chunk so the tool
+        // loop below executes the forced call (through confirm + selfReplying)
+        // exactly as if the model had asked for it.
+        lastChunk = { delta: '', done: true, toolCalls: [forcedCall] };
+      } else {
+        cl.debug('selected model profile', { profile: profileForTurn });
+        const initial = opts.llm.chat({
+          profile: profileForTurn,
+          messages: built.messages,
+          ...(toolSchemas.length > 0 ? { tools: toolSchemas } : {}),
+          signal: abort.signal,
+        });
+        lastChunk = await drain(initial);
 
-      // Fake-tool-call sanitizer (initial round). If the model wrote
-      // tool-call-shaped text instead of emitting a real tool call, clear
-      // the accumulated reply so the empty-text safety net kicks in and
-      // retries with tools off. Keeps the user from seeing replies like
-      // `[tasks_list]` or ```json {"type":"briefing_tomorrow"}```.
-      if (
-        assistantText &&
-        !(lastChunk?.toolCalls && lastChunk.toolCalls.length > 0) &&
-        toolSchemas.length > 0
-      ) {
-        const allowed = new Set(toolSchemas.map((s) => s.function.name));
-        if (looksLikeFakeToolCall(assistantText, allowed)) {
-          cl.warn('model emitted fake tool-call as plain text — retrying with tools off', {
-            sample: assistantText.slice(0, 120),
-          });
-          assistantText = '';
+        // Fake-tool-call sanitizer (initial round). If the model wrote
+        // tool-call-shaped text instead of emitting a real tool call, clear
+        // the accumulated reply so the empty-text safety net kicks in and
+        // retries with tools off. Keeps the user from seeing replies like
+        // `[tasks_list]` or ```json {"type":"briefing_tomorrow"}```.
+        if (
+          assistantText &&
+          !(lastChunk?.toolCalls && lastChunk.toolCalls.length > 0) &&
+          toolSchemas.length > 0
+        ) {
+          const allowed = new Set(toolSchemas.map((s) => s.function.name));
+          if (looksLikeFakeToolCall(assistantText, allowed)) {
+            cl.warn('model emitted fake tool-call as plain text — retrying with tools off', {
+              sample: assistantText.slice(0, 120),
+            });
+            assistantText = '';
+          }
         }
       }
 

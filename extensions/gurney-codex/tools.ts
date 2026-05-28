@@ -13,6 +13,34 @@
 
 import type { Host } from '../../src/core/extensions.js';
 import { runHandoff } from './lib/run.js';
+import { readTokens } from './lib/store.js';
+
+// Deterministic auto-route heuristic. Returns true when a message looks like a
+// substantial generative task the local model can't do well — so the
+// orchestrator forces the handoff (still behind the Yes/No confirm) instead of
+// trusting a 0.8b model to choose. Conservative by design, and a false positive
+// only costs the user one tap to decline (after which the local model answers).
+//
+//   - PRODUCE_VERB: the user wants something created/produced/reasoned.
+//   - SUBSTANCE: a signal the output is meant to be sizeable/detailed — OR the
+//     request is simply long (>= 18 words).
+//   - LOCAL_ACTION: hard exclude — these are the local model's tool-actions and
+//     personal-data lookups, which Codex cannot do anyway.
+const PRODUCE_VERB =
+  /\b(write|draft|compose|create|build|generate|design|implement|refactor|debug|code|script|program|analy[sz]e|summari[sz]e|explain|research|compare|translate|brainstorm|outline|plan)\b/i;
+const SUBSTANCE =
+  /\b(detailed|step[-\s]?by[-\s]?step|comprehensive|thorough|in[-\s]?depth|full|complete|entire|whole|complex|advanced|robust|production|essay|guide|tutorial|document|report|readme|spec|architecture|algorithm|function|class|module|script|program|plan)\b/i;
+const LOCAL_ACTION =
+  /\b(remind|reminder|alarm|timer|my calendar|my schedule|schedule my|my day|my week|to-?do|todo|weather|forecast|appointment|my events?)\b/i;
+
+export function shouldAutoRoute(message: string): boolean {
+  const m = message.trim();
+  if (m.length < 12) return false;
+  if (LOCAL_ACTION.test(m)) return false;
+  if (!PRODUCE_VERB.test(m)) return false;
+  if (SUBSTANCE.test(m)) return true;
+  return m.split(/\s+/).length >= 18;
+}
 
 // One-line, human-readable summary of `task` for the confirm prompt.
 function previewTask(args: Record<string, unknown>): string {
@@ -38,6 +66,12 @@ export function register(host: Host): void {
       'Each call asks the user to confirm and spends from a small daily budget, so reserve it for tasks you genuinely cannot do at quality.',
     tier: 'confirm',
     confirmPrompt: previewTask,
+    // Deterministic escalation: when the message clearly needs Codex, claim the
+    // turn outright rather than hoping the local model calls the tool. Gated on
+    // auth so an unconfigured install never force-routes (it just lets the local
+    // model answer). The confirm prompt + budget still apply.
+    autoRoute: (userMessage) =>
+      readTokens(host) !== null && shouldAutoRoute(userMessage) ? { task: userMessage } : null,
     // Codex answers in Gurney's voice; ship it straight to the user instead of
     // having the 0.8b model paraphrase (and degrade) it.
     selfReplying: true,

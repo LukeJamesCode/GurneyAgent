@@ -71,6 +71,16 @@ export interface ToolHandler {
   // string) so it can fold the actual arguments into the prompt. Must not
   // throw; the confirm hook guards it but a clean implementation is expected.
   confirmPrompt?: (args: Record<string, unknown>) => string;
+  // Optional deterministic auto-router. Given the raw user message, return the
+  // arguments to invoke this tool with — or null to decline. When a tool
+  // claims a turn this way, the orchestrator forces the call instead of asking
+  // the model to choose, so escalation doesn't depend on a small model's
+  // judgment. The forced call still runs through the normal execute() path, so
+  // the `confirm` tier and `selfReplying` behaviour both apply. Must not throw;
+  // the orchestrator guards it but a clean, fast implementation is expected
+  // (it runs on every user turn). At most one tool should match a given
+  // message; the orchestrator takes the first.
+  autoRoute?: (userMessage: string) => Record<string, unknown> | null;
   invoke(args: Record<string, unknown>, ctx: ToolContext): Promise<string>;
 }
 
