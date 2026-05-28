@@ -572,14 +572,22 @@ function chunkFromParsed(parsed: OllamaChatChunk, fallbackModel: string, log?: L
   };
   const toolCalls = parsed.message?.tool_calls;
   if (toolCalls && toolCalls.length > 0) {
-    chunk.toolCalls = toolCalls.map((tc, i) => ({
-      id: tc.id ?? `call_${i}_${Date.now()}`,
-      name: tc.function.name,
-      arguments:
-        typeof tc.function.arguments === 'string'
-          ? tryParseToolArgs(tc.function.arguments, log)
-          : (tc.function.arguments ?? {}),
-    }));
+    // Defensively skip any tool_call lacking a well-formed `function` block.
+    // Ollama always sends one, but a partial/garbled line can parse as JSON
+    // yet omit it; `tc.function.name` would then throw out of the stream
+    // iterator and abort the whole turn. Skipping matches how tryParseChunk /
+    // tryParseToolArgs tolerate other malformed stream data.
+    const mapped = toolCalls
+      .filter((tc) => tc?.function && typeof tc.function.name === 'string')
+      .map((tc, i) => ({
+        id: tc.id ?? `call_${i}_${Date.now()}`,
+        name: tc.function.name,
+        arguments:
+          typeof tc.function.arguments === 'string'
+            ? tryParseToolArgs(tc.function.arguments, log)
+            : (tc.function.arguments ?? {}),
+      }));
+    if (mapped.length > 0) chunk.toolCalls = mapped;
   }
   if (parsed.prompt_eval_count !== undefined) chunk.promptTokens = parsed.prompt_eval_count;
   if (parsed.eval_count !== undefined) chunk.completionTokens = parsed.eval_count;
@@ -596,26 +604,34 @@ export async function* parseNdjsonStream(
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let nl: number;
-    while ((nl = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, nl).trim();
-      buffer = buffer.slice(nl + 1);
-      if (!line) continue;
-      const parsed = tryParseChunk(line, log);
-      if (!parsed) continue;
-      yield chunkFromParsed(parsed, fallbackModel, log);
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        const parsed = tryParseChunk(line, log);
+        if (!parsed) continue;
+        yield chunkFromParsed(parsed, fallbackModel, log);
+      }
     }
-  }
-  const tail = buffer.trim();
-  if (tail) {
-    const parsed = tryParseChunk(tail, log);
-    if (parsed) {
-      yield { ...chunkFromParsed(parsed, fallbackModel, log), done: true };
+    const tail = buffer.trim();
+    if (tail) {
+      const parsed = tryParseChunk(tail, log);
+      if (parsed) {
+        yield { ...chunkFromParsed(parsed, fallbackModel, log), done: true };
+      }
     }
+  } finally {
+    // If the consumer stops early (e.g. /stop aborts mid-stream), the async
+    // generator's return() runs this finally. Cancel the reader so the locked
+    // body stream and its underlying connection are released promptly instead
+    // of lingering until GC.
+    await reader.cancel().catch(() => {});
   }
 }
 
