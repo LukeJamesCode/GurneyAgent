@@ -1,14 +1,15 @@
 # gurney-codex
 
-**Dual-system escalation.** Keep the cheap local Qwen models doing everyday work, and hand off the hard coding tasks they can't do at quality to **OpenAI Codex** — billed against your existing **ChatGPT Plus/Pro subscription** via OAuth, not a metered API key.
+**Dual-system escalation.** Keep the cheap local Qwen models doing everyday work, and hand off the hard tasks they can't do at quality to **OpenAI Codex** — billed against your existing **ChatGPT Plus/Pro subscription** via OAuth, not a metered API key.
 
-Local stays the default. Codex is only reached on demand, gated by a daily budget, and its answer is summarised back to you by the local model so the assistant keeps one voice.
+Codex is a **general** heavy-lifter: complex coding, deep reasoning, detailed writing/planning/analysis. It's told what Gurney is and answers **as Gurney**, in the assistant's own voice — its reply goes straight to you, so the small model never re-chews (and degrades) it. Local stays the default; Codex is only reached on demand, gated by a per-call confirmation and a daily budget.
 
 ## How it works
 
-- The local model is given one extra tool, `codex_handoff`. The bundled prompt fragment tells it to call this **only** for real coding work that's too big or hard to do well locally (multi-file refactors, careful debugging, producing substantial code). Everything else — chat, explanations, calendar, reminders — stays on the local model.
-- Each handoff is metered against a **daily call ceiling** (`daily_call_ceiling`, default 20). Once you hit it, handoffs are refused until your local midnight. This is the spend guard.
-- You can also invoke Codex explicitly with `/codex <task>` — that's unambiguous consent, so the raw answer comes straight back instead of being summarised.
+- The local model is given one extra tool, `codex_handoff`. The bundled prompt fragment tells it to call this **only** when a task genuinely exceeds what it can do well — hard coding, deep reasoning, substantial writing/planning/analysis. Everything else — chat, quick answers, and all **actions** (calendar, reminders, weather) — stays on the local model, because Codex has no tools and can't see your data.
+- Codex answers in Gurney's voice and that answer is sent to you **verbatim** (the tool is `selfReplying`), so escalating a hard turn doesn't cost you quality.
+- Each handoff pops a **Yes/No confirmation** and is metered against a **daily call ceiling** (`daily_call_ceiling`, default 20). Once you hit the ceiling, handoffs are refused until your local midnight.
+- You can also invoke Codex explicitly with `/codex <task>` — that's unambiguous consent, so it skips the prompt and replies directly.
 
 ## Setup
 
