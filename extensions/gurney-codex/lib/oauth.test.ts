@@ -73,6 +73,20 @@ test('parsePastedRedirect accepts a full URL, a query fragment, and a bare code'
   assert.equal(parsePastedRedirect('two words'), null);
 });
 
+test('parsePastedRedirect handles a scheme-less address bar paste (Chrome)', () => {
+  // The exact shape Chrome shows for a failed localhost redirect, no http://.
+  const pasted =
+    'localhost:1455/auth/callback?code=ac_rlanre3YMCN0zD.AW4Dtnplqg4&scope=openid+profile+email+offline_access&state=5bbd933cf311c0a16bf16dec3512aec2';
+  assert.deepEqual(parsePastedRedirect(pasted), {
+    code: 'ac_rlanre3YMCN0zD.AW4Dtnplqg4',
+    state: '5bbd933cf311c0a16bf16dec3512aec2',
+  });
+});
+
+test('parsePastedRedirect handles bare "code=…&state=…" with no leading ? or scheme', () => {
+  assert.deepEqual(parsePastedRedirect('code=XYZ&state=ST'), { code: 'XYZ', state: 'ST' });
+});
+
 test('callback server resolves the code and rejects state mismatch', async () => {
   const server = setupCallbackServer('127.0.0.1', 0, 'good-state');
   const port = await server.actualPort;

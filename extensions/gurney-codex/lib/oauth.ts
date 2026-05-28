@@ -218,26 +218,38 @@ export function extractAccountId(idToken: string | undefined): string | null {
 // Pasted-redirect parsing (headless fallback)
 // ---------------------------------------------------------------------------
 
+function safeDecode(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
 // Accept either the full redirect URL the browser landed on, or just the bare
 // code. Returns the code and (when present) the state for cross-checking.
+//
+// We extract code/state with a scheme-agnostic regex rather than `new URL()`
+// because the redirect page fails to load, and Chrome frequently copies the
+// address bar WITHOUT the `http://` scheme — e.g.
+//   localhost:1455/auth/callback?code=…&state=…
+// Feeding that to `new URL()` (or faking a scheme) misparses the query and
+// drops the code. The regex handles a full URL, a bare host/path+query, and a
+// lone `?code=…&state=…` fragment identically.
 export function parsePastedRedirect(input: string): { code: string; state?: string } | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
-  // Looks like a URL (or a query fragment) → parse out the params.
-  if (trimmed.includes('?') || trimmed.includes('code=')) {
-    try {
-      const url = trimmed.startsWith('http')
-        ? new URL(trimmed)
-        : new URL(`http://localhost${trimmed.startsWith('?') ? '' : '?'}${trimmed}`);
-      const code = url.searchParams.get('code');
-      const state = url.searchParams.get('state');
-      if (code) return state ? { code, state } : { code };
-    } catch {
-      /* fall through to bare-code handling */
-    }
+
+  const codeMatch = /(?:^|[?&])code=([^&\s#]+)/.exec(trimmed);
+  if (codeMatch) {
+    const code = safeDecode(codeMatch[1]!);
+    const stateMatch = /(?:^|[?&])state=([^&\s#]+)/.exec(trimmed);
+    const state = stateMatch ? safeDecode(stateMatch[1]!) : undefined;
+    if (code) return state ? { code, state } : { code };
   }
-  // Bare code (no spaces, no scheme).
-  if (!/\s/.test(trimmed)) return { code: trimmed };
+
+  // Bare code: a single token with no query syntax and no whitespace.
+  if (!/\s/.test(trimmed) && !trimmed.includes('=')) return { code: trimmed };
   return null;
 }
 
