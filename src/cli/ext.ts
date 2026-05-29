@@ -24,13 +24,16 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isAbsolute, join, resolve } from 'node:path';
+import {
+  extensionFolders,
+  repoExtensionsRoot,
+  userExtensionsRoot,
+} from './extension-paths.js';
 import { open as openDb } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import { ensurePrivateDir, homeDir } from './config-store.js';
@@ -51,11 +54,6 @@ interface InstalledExt {
   version: string;
   folder: string;
   source: 'user' | 'repo';
-}
-
-function repoExtensionsRoot(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, '..', '..', 'extensions');
 }
 
 // Default registry URL. The repo ships a registry.json at this path so a fresh
@@ -96,37 +94,20 @@ async function resolveRegistryEntry(name: string): Promise<RegistryEntry | null>
   }
 }
 
-function userExtensionsRoot(home: string): string {
-  return join(home, 'extensions');
-}
-
 function listInstalled(home: string): InstalledExt[] {
   const out: InstalledExt[] = [];
   const seen = new Set<string>();
-  for (const [root, source] of [
-    [userExtensionsRoot(home), 'user'] as const,
-    [repoExtensionsRoot(), 'repo'] as const,
-  ]) {
-    let entries: string[];
+  for (const { folder, source } of extensionFolders(home)) {
     try {
-      entries = readdirSync(root);
+      const m = JSON.parse(readFileSync(join(folder, 'manifest.json'), 'utf8')) as {
+        name?: string;
+        version?: string;
+      };
+      if (!m.name || !m.version || seen.has(m.name)) continue;
+      seen.add(m.name);
+      out.push({ name: m.name, version: m.version, folder, source });
     } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const folder = join(root, entry);
-      try {
-        if (!statSync(folder).isDirectory()) continue;
-        const m = JSON.parse(readFileSync(join(folder, 'manifest.json'), 'utf8')) as {
-          name?: string;
-          version?: string;
-        };
-        if (!m.name || !m.version || seen.has(m.name)) continue;
-        seen.add(m.name);
-        out.push({ name: m.name, version: m.version, folder, source });
-      } catch {
-        // not an extension or malformed manifest; ignore
-      }
+      // not an extension or malformed manifest; ignore
     }
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));

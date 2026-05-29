@@ -10,9 +10,9 @@
 // between core and any installed extension without re-launching.
 
 import { confirm, input, password, select } from '@inquirer/prompts';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { extensionFolders } from './extension-paths.js';
 import { open as openDb } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import {
@@ -43,37 +43,24 @@ interface ExtensionEntry {
 }
 
 function discoverExtensionsForSettings(home: string): ExtensionEntry[] {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const repoExt = resolve(here, '..', '..', 'extensions');
-  const userExt = join(home, 'extensions');
   const seen = new Set<string>();
   const out: ExtensionEntry[] = [];
-  for (const root of [userExt, repoExt]) {
-    let entries: string[];
+  for (const { folder } of extensionFolders(home)) {
     try {
-      entries = readdirSync(root);
+      const manifest = join(folder, 'manifest.json');
+      if (!existsSync(manifest)) continue;
+      const m = JSON.parse(readFileSync(manifest, 'utf8')) as { name?: string };
+      if (!m.name || seen.has(m.name)) continue;
+      seen.add(m.name);
+      const schemaPath = join(folder, 'settings.schema.json');
+      const schema = existsSync(schemaPath)
+        ? (JSON.parse(readFileSync(schemaPath, 'utf8')) as SettingsSchema)
+        : undefined;
+      out.push({ name: m.name, schema });
     } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const folder = join(root, entry);
-      try {
-        if (!statSync(folder).isDirectory()) continue;
-        const manifest = join(folder, 'manifest.json');
-        if (!existsSync(manifest)) continue;
-        const m = JSON.parse(readFileSync(manifest, 'utf8')) as { name?: string };
-        if (!m.name || seen.has(m.name)) continue;
-        seen.add(m.name);
-        const schemaPath = join(folder, 'settings.schema.json');
-        const schema = existsSync(schemaPath)
-          ? (JSON.parse(readFileSync(schemaPath, 'utf8')) as SettingsSchema)
-          : undefined;
-        out.push({ name: m.name, schema });
-      } catch {
-        // Skip malformed extension folders silently — `gurney doctor` covers
-        // diagnostics. The config TUI shouldn't blow up because one folder
-        // has bad JSON.
-      }
+      // Skip malformed extension folders silently — `gurney doctor` covers
+      // diagnostics. The config TUI shouldn't blow up because one folder
+      // has bad JSON.
     }
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
