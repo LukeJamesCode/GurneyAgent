@@ -4,6 +4,7 @@
 // This is destructive and prompts for confirmation before proceeding.
 
 import { confirm } from '@inquirer/prompts';
+import { spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { homeDir } from './config-store.js';
 import { isAlive, readPid } from './daemon.js';
@@ -58,5 +59,16 @@ export async function run(): Promise<void> {
   await runUpdate();
 
   process.stdout.write('\n--- Running setup wizard ---\n\n');
+  // Re-exec `init` in a FRESH process so it runs the code we just rebuilt, not
+  // the stale modules this `gurney fresh` process loaded before `git pull`.
+  // Without this, a self-update can't change the wizard it runs on the same go.
+  const cliEntry = process.argv[1];
+  if (cliEntry) {
+    const res = spawnSync(process.execPath, [...process.execArgv, cliEntry, 'init'], {
+      stdio: 'inherit',
+    });
+    process.exit(res.status ?? 0);
+  }
+  // Fallback (no resolvable entry script): run in-process.
   await runInit();
 }
