@@ -1,0 +1,275 @@
+/* ===========================================================================
+   Gurney Frontend — design tokens
+   Calm, warm-neutral "self-hosted home control panel".
+   Light + dark themes. Accent drives Running / primary / focus.
+   =========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --font-ui: 'Hanken Grotesk', system-ui, sans-serif;
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --gap: 1;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-lg: 18px;
+
+  --accent: oklch(0.6 0.1 156);
+  --accent-strong: oklch(0.52 0.11 156);
+  --accent-soft: oklch(0.6 0.1 156 / 0.14);
+  --accent-ring: oklch(0.6 0.1 156 / 0.4);
+  --on-accent: #ffffff;
+
+  --ok: oklch(0.6 0.1 156);
+  --warn: oklch(0.74 0.13 75);
+  --err: oklch(0.6 0.17 25);
+  --info: oklch(0.62 0.1 240);
+}
+
+/* ---- LIGHT theme (warm neutrals) — default ---- */
+:root,
+:root[data-theme='light'] {
+  --bg: oklch(0.965 0.006 85);
+  --bg-2: oklch(0.945 0.008 85);
+  --surface: oklch(0.995 0.004 85);
+  --surface-2: oklch(0.975 0.006 85);
+  --raised: oklch(1 0 0);
+  --border: oklch(0.88 0.008 85);
+  --border-2: oklch(0.82 0.01 85);
+  --text: oklch(0.26 0.012 75);
+  --text-2: oklch(0.46 0.012 75);
+  --text-3: oklch(0.62 0.01 75);
+  --shadow: 0 1px 2px oklch(0.4 0.02 75 / 0.06), 0 8px 24px oklch(0.4 0.02 75 / 0.06);
+  --shadow-sm: 0 1px 2px oklch(0.4 0.02 75 / 0.07);
+  --shadow-pop: 0 12px 40px oklch(0.3 0.02 75 / 0.16);
+  --code-bg: oklch(0.955 0.008 85);
+  color-scheme: light;
+}
+
+/* ---- DARK theme (warm-tinted) ---- */
+:root[data-theme='dark'] {
+  --bg: oklch(0.185 0.006 75);
+  --bg-2: oklch(0.165 0.006 75);
+  --surface: oklch(0.225 0.007 75);
+  --surface-2: oklch(0.255 0.008 75);
+  --raised: oklch(0.265 0.008 75);
+  --border: oklch(0.32 0.009 75);
+  --border-2: oklch(0.4 0.01 75);
+  --text: oklch(0.94 0.006 85);
+  --text-2: oklch(0.74 0.008 85);
+  --text-3: oklch(0.58 0.008 85);
+  --shadow: 0 1px 2px oklch(0 0 0 / 0.3), 0 10px 30px oklch(0 0 0 / 0.28);
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.35);
+  --shadow-pop: 0 16px 50px oklch(0 0 0 / 0.5);
+  --code-bg: oklch(0.15 0.006 75);
+  color-scheme: dark;
+}
+
+:root[data-density='roomy'] {
+  --gap: 1.18;
+  --radius: 14px;
+}
+:root[data-density='balanced'] {
+  --gap: 1;
+  --radius: 12px;
+}
+:root[data-density='compact'] {
+  --gap: 0.82;
+  --radius: 10px;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+}
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-size: 15px;
+  line-height: 1.5;
+}
+#root {
+  height: 100%;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-2) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+  border-radius: 99px;
+  border: 3px solid var(--bg);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+p {
+  margin: 0;
+}
+button {
+  font-family: inherit;
+}
+a {
+  color: inherit;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: 'ss01';
+}
+.display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes rise {
+  from {
+    transform: translateY(9px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes dots {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+.rise {
+  animation: rise 0.32s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+.fade {
+  animation: fade 0.3s ease both;
+}
+
+/* boot splash shown before React mounts */
+.boot {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--text-3);
+}
+.boot-mark {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  background: var(--accent);
+  color: var(--on-accent);
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 24px;
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+.boot-text {
+  font-size: 14px;
+}
+
+/* responsive: collapse activity strip + sidebar on narrow screens */
+@media (max-width: 900px) {
+  .chat-grid {
+    flex-direction: column !important;
+  }
+  .activity-strip {
+    width: 100% !important;
+  }
+  .sidebar {
+    width: 72px !important;
+  }
+  .sidebar .display,
+  .sidebar nav span,
+  .sidebar [data-fulltext] {
+    display: none;
+  }
+}
+@media (max-width: 620px) {
+  .sidebar {
+    display: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

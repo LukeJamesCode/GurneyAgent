@@ -4,7 +4,17 @@ import prettier from 'eslint-config-prettier';
 
 export default [
   {
-    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'extensions/**/dist/**', '.claude/**'],
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      'coverage/**',
+      'extensions/**/dist/**',
+      // Browser-side panel assets are transpiled in-browser (CDN React + Babel),
+      // not part of the Node/TS build — they use browser globals ESLint's
+      // Node config doesn't know about.
+      'extensions/**/web/**',
+      '.claude/**',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

@@ -126,6 +126,19 @@ program
   });
 
 program
+  .command('frontend')
+  .argument('[action]', "'stop' to stop a running panel; omit to start it")
+  .option('--detach', 'Run the web panel as a background process')
+  .description('Run the local web control panel (gurney-frontend extension)')
+  .action(async (action: string | undefined, opts: { detach?: boolean }) => {
+    const { run } = await import('./frontend.js');
+    if (action && action !== 'stop') {
+      throw new Error(`Unknown frontend action '${action}'. Use 'gurney frontend [stop] [--detach]'.`);
+    }
+    await call('frontend', run, { detach: !!opts.detach, stop: action === 'stop' });
+  });
+
+program
   .command('update')
   .description('Pull latest code, reinstall dependencies, and rebuild')
   .action(async () => {

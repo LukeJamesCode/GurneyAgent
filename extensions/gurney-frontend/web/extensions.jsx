@@ -1,0 +1,810 @@
+/* global React, window */
+// Extensions tab. Lists the extensions Gurney actually has installed (from
+// GET /api/extensions, which merges each manifest with its readiness state and
+// settings schema). Enable/disable/uninstall shell out to the `gurney` CLI on
+// the server; settings are read/written through the SQLite settings store.
+//
+// Note: there's no "app store" of remotely-installable extensions — you add new
+// ones with `gurney ext install <path|git-url>`. So this tab manages what's
+// present rather than offering a catalog to install from.
+const { useState: useStateExt, useEffect: useEffectExt } = React;
+
+function ExtensionsTab() {
+  const [exts, setExts] = useStateExt(null); // null = loading
+  const [error, setError] = useStateExt(null);
+  const [detail, setDetail] = useStateExt(null); // ext name
+  const [tab, setTab] = useStateExt('all'); // all | enabled | disabled
+  const [confirm, setConfirm] = useStateExt(null); // { ext }
+  const [settingsFor, setSettingsFor] = useStateExt(null); // ext name
+  const [busy, setBusy] = useStateExt(null); // name currently mutating
+
+  const load = async () => {
+    const r = await window.api.get('/api/extensions');
+    if (r.ok) {
+      setExts(r.data.extensions);
+      setError(null);
+    } else setError(r.error || 'Could not load extensions.');
+  };
+  useEffectExt(() => {
+    load();
+  }, []);
+
+  const act = async (name, action) => {
+    setBusy(name + ':' + action);
+    const r = await window.api.post(`/api/extensions/${encodeURIComponent(name)}/${action}`);
+    setBusy(null);
+    await load();
+    return r;
+  };
+
+  const uninstall = async (name) => {
+    setConfirm(null);
+    if (detail === name) setDetail(null);
+    await act(name, 'uninstall');
+  };
+
+  if (exts === null && !error) return <window.SectionTitle>Extensions</window.SectionTitle>;
+
+  if (settingsFor) {
+    const ext = exts.find((e) => e.name === settingsFor);
+    return (
+      <ExtSettings
+        ext={ext}
+        onBack={() => setSettingsFor(null)}
+        onSaved={() => {
+          setSettingsFor(null);
+          load();
+        }}
+      />
+    );
+  }
+
+  if (detail) {
+    const ext = exts.find((e) => e.name === detail);
+    if (!ext) {
+      setDetail(null);
+      return null;
+    }
+    return (
+      <ExtDetail
+        ext={ext}
+        exts={exts}
+        busy={busy}
+        onBack={() => setDetail(null)}
+        onToggle={(v) => act(ext.name, v ? 'enable' : 'disable')}
+        onUninstall={() => setConfirm({ ext })}
+        onSettings={() => setSettingsFor(ext.name)}
+        confirm={confirm}
+        setConfirm={setConfirm}
+        uninstall={uninstall}
+      />
+    );
+  }
+
+  const enabled = exts.filter((e) => e.enabled);
+  const disabled = exts.filter((e) => !e.enabled);
+  const filtered = tab === 'all' ? exts : tab === 'enabled' ? enabled : disabled;
+
+  return (
+    <div>
+      <window.SectionTitle sub="The capabilities Gurney has installed. Each one is opt-in and shows exactly what it can access.">
+        Extensions
+      </window.SectionTitle>
+
+      {error && <ErrorNote text={error} onRetry={load} />}
+
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          marginBottom: 18,
+          flexWrap: 'wrap',
+        }}
+      >
+        <window.Segmented
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: 'all', label: `All (${exts.length})` },
+            { value: 'enabled', label: `Enabled (${enabled.length})` },
+            { value: 'disabled', label: `Disabled (${disabled.length})` },
+          ]}
+        />
+        <span style={{ marginLeft: 'auto', fontSize: 12.5, color: 'var(--text-3)' }}>
+          Add more with <span className="mono">gurney ext install</span>
+        </span>
+      </div>
+
+      {exts.length === 0 && !error && (
+        <div
+          style={{
+            textAlign: 'center',
+            padding: '50px 20px',
+            border: '1px dashed var(--border-2)',
+            borderRadius: 'var(--radius)',
+            color: 'var(--text-3)',
+          }}
+        >
+          <window.Icon name="plug" size={28} style={{ margin: '0 auto 10px' }} />
+          <p style={{ fontSize: 14, color: 'var(--text-2)', fontWeight: 600 }}>
+            No extensions installed
+          </p>
+          <p style={{ fontSize: 13, marginTop: 3 }}>
+            Install one with <span className="mono">gurney ext install &lt;name&gt;</span>.
+          </p>
+        </div>
+      )}
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(330px, 1fr))',
+          gap: 'calc(16px * var(--gap))',
+        }}
+      >
+        {filtered.map((e) => (
+          <ExtCard
+            key={e.name}
+            ext={e}
+            busy={busy}
+            onOpen={() => setDetail(e.name)}
+            onToggle={(v) => act(e.name, v ? 'enable' : 'disable')}
+          />
+        ))}
+      </div>
+
+      <ConfirmUninstall confirm={confirm} setConfirm={setConfirm} uninstall={uninstall} />
+    </div>
+  );
+}
+
+function ErrorNote({ text, onRetry }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        marginBottom: 18,
+        padding: 14,
+        borderRadius: 'var(--radius)',
+        border: '1px solid color-mix(in oklab, var(--err) 30%, transparent)',
+        background: 'color-mix(in oklab, var(--err) 7%, var(--surface))',
+      }}
+    >
+      <window.Icon name="alert" size={18} style={{ color: 'var(--err)' }} />
+      <span style={{ flex: 1, fontSize: 13.5, color: 'var(--text-2)' }}>{text}</span>
+      {onRetry && (
+        <window.Button size="sm" variant="subtle" icon="refresh" onClick={onRetry}>
+          Retry
+        </window.Button>
+      )}
+    </div>
+  );
+}
+
+function prettyName(ext) {
+  return ext.name
+    .replace(/^gurney-/, '')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+function blurbFor(ext) {
+  return (
+    (window.EXT_BLURBS && window.EXT_BLURBS[ext.name]) ||
+    ext.description ||
+    'No description provided.'
+  );
+}
+
+/* ---- capability chips ---- */
+function CapChips({ caps }) {
+  if (!caps || caps.length === 0)
+    return <span style={{ fontSize: 12, color: 'var(--text-3)' }}>No special access</span>;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+      {caps.map((c) => {
+        const m = (window.CAP_LABELS && window.CAP_LABELS[c]) || { label: c, tone: 'neutral' };
+        return (
+          <window.Badge key={c} tone={m.tone} style={{ fontSize: 11 }}>
+            {m.label}
+          </window.Badge>
+        );
+      })}
+    </div>
+  );
+}
+
+function ExtGlyph({ ext, size = 42 }) {
+  const initials = prettyName(ext)
+    .replace(/[^A-Za-z ]/g, '')
+    .split(' ')
+    .slice(0, 2)
+    .map((w) => w[0])
+    .join('');
+  return (
+    <span
+      style={{
+        width: size,
+        height: size,
+        borderRadius: 11,
+        flex: 'none',
+        display: 'grid',
+        placeItems: 'center',
+        background: 'var(--accent-soft)',
+        color: 'var(--accent-strong)',
+        fontWeight: 700,
+        fontFamily: 'var(--font-display)',
+        fontSize: size * 0.36,
+      }}
+    >
+      {initials}
+    </span>
+  );
+}
+
+/* ---- gallery card ---- */
+function ExtCard({ ext, busy, onOpen, onToggle }) {
+  const toggling = busy === ext.name + ':enable' || busy === ext.name + ':disable';
+  return (
+    <div
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow-sm)',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        transition: 'border-color .15s, box-shadow .15s',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.borderColor = 'var(--border-2)';
+        e.currentTarget.style.boxShadow = 'var(--shadow)';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = 'var(--border)';
+        e.currentTarget.style.boxShadow = 'var(--shadow-sm)';
+      }}
+    >
+      <div style={{ padding: 18, flex: 1, cursor: 'pointer' }} onClick={onOpen}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: 12,
+            marginBottom: 10,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <ExtGlyph ext={ext} />
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 15.5 }}>{prettyName(ext)}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+                v{ext.version}
+                {ext.source === 'repo' ? ' · bundled' : ''}
+              </div>
+            </div>
+          </div>
+          <window.Badge tone={ext.enabled ? 'ok' : 'neutral'}>
+            <window.StatusDot state={ext.enabled ? 'ok' : 'stopped'} size={6} />
+            {ext.enabled ? 'Enabled' : 'Disabled'}
+          </window.Badge>
+        </div>
+        <p
+          style={{
+            fontSize: 13.5,
+            color: 'var(--text-2)',
+            lineHeight: 1.5,
+            marginBottom: 14,
+            minHeight: 40,
+          }}
+        >
+          {blurbFor(ext)}
+        </p>
+        <CapChips caps={ext.capabilities} />
+        {ext.needsAuth && (
+          <div style={{ marginTop: 10 }}>
+            <window.Badge tone="warn">
+              <window.Icon name="link" size={11} />
+              Needs a connection
+            </window.Badge>
+          </div>
+        )}
+      </div>
+      <div
+        style={{
+          padding: '12px 18px',
+          borderTop: '1px solid var(--border)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 10,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {toggling ? (
+            <window.Icon
+              name="refresh"
+              size={15}
+              className="spin"
+              style={{ color: 'var(--text-3)' }}
+            />
+          ) : (
+            <window.Toggle checked={ext.enabled} onChange={onToggle} label="Enable" />
+          )}
+          <span style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 500 }}>
+            {ext.enabled ? 'On' : 'Off'}
+          </span>
+        </div>
+        <window.Button size="sm" variant="ghost" onClick={onOpen}>
+          Manage →
+        </window.Button>
+      </div>
+    </div>
+  );
+}
+
+/* ---- detail view ---- */
+function ExtDetail({
+  ext,
+  exts,
+  busy,
+  onBack,
+  onToggle,
+  onUninstall,
+  onSettings,
+  confirm,
+  setConfirm,
+  uninstall,
+}) {
+  const dep = (ext.deps || []).map(
+    (d) => exts.find((e) => e.name === d) || { name: d, installed: false, enabled: false },
+  );
+  const toggling = busy === ext.name + ':enable' || busy === ext.name + ':disable';
+  return (
+    <div className="fade">
+      <button
+        onClick={onBack}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          background: 'none',
+          border: 'none',
+          color: 'var(--text-2)',
+          cursor: 'pointer',
+          fontSize: 13.5,
+          fontWeight: 600,
+          marginBottom: 16,
+          padding: 0,
+        }}
+      >
+        <window.Icon name="back" size={16} /> All extensions
+      </button>
+
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 16,
+          marginBottom: 22,
+          flexWrap: 'wrap',
+        }}
+      >
+        <ExtGlyph ext={ext} size={56} />
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <h2 style={{ fontSize: 23 }}>{prettyName(ext)}</h2>
+            <span style={{ fontSize: 13, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+              v{ext.version}
+            </span>
+            <window.Badge tone={ext.enabled ? 'ok' : 'neutral'}>
+              <window.StatusDot state={ext.enabled ? 'ok' : 'stopped'} size={6} />
+              {ext.enabled ? 'Enabled' : 'Disabled'}
+            </window.Badge>
+            {ext.source === 'repo' && <window.Badge tone="neutral">Bundled</window.Badge>}
+          </div>
+          <p
+            style={{
+              fontSize: 14.5,
+              color: 'var(--text-2)',
+              lineHeight: 1.55,
+              marginTop: 8,
+              maxWidth: 620,
+            }}
+          >
+            {blurbFor(ext)}
+          </p>
+          <div style={{ marginTop: 12 }}>
+            <CapChips caps={ext.capabilities} />
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 9, flexWrap: 'wrap' }}>
+          <window.Button
+            variant="default"
+            icon="gear"
+            onClick={onSettings}
+            disabled={!ext.schema || ext.schema.length === 0}
+            style={{ opacity: !ext.schema || ext.schema.length === 0 ? 0.5 : 1 }}
+          >
+            Settings
+          </window.Button>
+          <window.Button variant="outline_danger" icon="trash" onClick={onUninstall}>
+            Uninstall
+          </window.Button>
+        </div>
+      </div>
+
+      <window.Card
+        style={{
+          marginBottom: 16,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 14,
+          flexWrap: 'wrap',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
+          {toggling ? (
+            <window.Icon
+              name="refresh"
+              size={20}
+              className="spin"
+              style={{ color: 'var(--text-3)' }}
+            />
+          ) : (
+            <window.Toggle checked={ext.enabled} onChange={onToggle} label="Enable extension" />
+          )}
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>
+              {ext.enabled ? 'Extension is enabled' : 'Extension is disabled'}
+            </div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>
+              {ext.enabled
+                ? 'Its tools and commands are available to Gurney.'
+                : 'Turn on to make its tools available.'}
+            </div>
+          </div>
+        </div>
+      </window.Card>
+
+      {ext.status && ext.status !== 'ready' && ext.reasons && ext.reasons.length > 0 && (
+        <window.Card
+          style={{
+            marginBottom: 16,
+            borderColor: 'color-mix(in oklab, var(--warn) 34%, transparent)',
+            background: 'color-mix(in oklab, var(--warn) 7%, var(--surface))',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+          }}
+        >
+          <window.Icon
+            name="alert"
+            size={20}
+            style={{ color: 'var(--warn)', flex: 'none', marginTop: 1 }}
+          />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>Not fully ready</div>
+            <ul
+              style={{
+                fontSize: 13,
+                color: 'var(--text-2)',
+                margin: '4px 0 0',
+                paddingLeft: 18,
+                lineHeight: 1.5,
+              }}
+            >
+              {ext.reasons.map((r, i) => (
+                <li key={i}>{r}</li>
+              ))}
+            </ul>
+            {ext.nextAction && (
+              <div
+                style={{
+                  fontSize: 12.5,
+                  color: 'var(--text-3)',
+                  marginTop: 6,
+                  display: 'flex',
+                  gap: 6,
+                }}
+              >
+                <window.Icon
+                  name="spark"
+                  size={13}
+                  style={{ color: 'var(--warn)', flex: 'none', marginTop: 1 }}
+                />{' '}
+                {ext.nextAction}
+              </div>
+            )}
+          </div>
+        </window.Card>
+      )}
+
+      {dep.length > 0 && (
+        <window.Card style={{ marginBottom: 16 }}>
+          <div
+            style={{
+              fontSize: 12.5,
+              fontWeight: 700,
+              color: 'var(--text-3)',
+              textTransform: 'uppercase',
+              letterSpacing: '.05em',
+              marginBottom: 10,
+            }}
+          >
+            Depends on
+          </div>
+          {dep.map((d) => (
+            <div
+              key={d.name}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14 }}
+            >
+              <window.StatusDot state={d.installed && d.enabled ? 'ok' : 'warn'} size={7} />{' '}
+              {prettyName(d)}
+              <span style={{ color: 'var(--text-3)', fontSize: 12.5 }}>
+                {d.installed && d.enabled
+                  ? 'installed & enabled'
+                  : d.installed
+                    ? 'installed but disabled'
+                    : 'not installed'}
+              </span>
+            </div>
+          ))}
+        </window.Card>
+      )}
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+          gap: 'calc(16px * var(--gap))',
+        }}
+      >
+        <DetailList
+          title="Tools it adds"
+          icon="plug"
+          items={ext.tools}
+          empty="No tools"
+          render={(x) => (
+            <>
+              <span className="mono" style={{ fontSize: 13, color: 'var(--accent-strong)' }}>
+                {x.name}
+              </span>
+              <span style={{ fontSize: 13, color: 'var(--text-2)' }}>{x.desc}</span>
+            </>
+          )}
+        />
+        <DetailList
+          title="Telegram commands"
+          icon="chat"
+          items={ext.commands}
+          empty="No commands"
+          render={(x) => (
+            <>
+              <span className="mono" style={{ fontSize: 13, color: 'var(--text)' }}>
+                {x.cmd}
+              </span>
+              <span style={{ fontSize: 13, color: 'var(--text-2)' }}>{x.desc}</span>
+            </>
+          )}
+        />
+        <DetailList
+          title="Scheduled jobs"
+          icon="refresh"
+          items={(ext.jobs || []).map((j) => ({ name: j }))}
+          empty="No scheduled jobs"
+          render={(x) => <span style={{ fontSize: 13.5, color: 'var(--text)' }}>{x.name}</span>}
+        />
+      </div>
+    </div>
+  );
+}
+
+function DetailList({ title, icon, items, render, empty }) {
+  const list = items || [];
+  return (
+    <window.Card pad={0}>
+      <div
+        style={{
+          padding: '13px 16px',
+          borderBottom: '1px solid var(--border)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+        }}
+      >
+        <window.Icon name={icon} size={15} style={{ color: 'var(--text-3)' }} />
+        <span style={{ fontWeight: 600, fontSize: 13.5 }}>{title}</span>
+        <span
+          style={{
+            marginLeft: 'auto',
+            fontSize: 12,
+            color: 'var(--text-3)',
+            fontFamily: 'var(--font-mono)',
+          }}
+        >
+          {list.length}
+        </span>
+      </div>
+      {list.length === 0 ? (
+        <div style={{ padding: '16px', fontSize: 13, color: 'var(--text-3)' }}>{empty}</div>
+      ) : (
+        list.map((x, i) => (
+          <div
+            key={i}
+            style={{
+              padding: '11px 16px',
+              borderTop: i ? '1px solid var(--border)' : 'none',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 3,
+            }}
+          >
+            {render(x)}
+          </div>
+        ))
+      )}
+    </window.Card>
+  );
+}
+
+/* ---- schema-driven settings form ---- */
+function ExtSettings({ ext, onBack, onSaved }) {
+  const [vals, setVals] = useStateExt(() =>
+    Object.fromEntries((ext.schema || []).map((f) => [f.key, f.value])),
+  );
+  const [saving, setSaving] = useStateExt(false);
+  const [err, setErr] = useStateExt(null);
+  const set = (k, v) => setVals((s) => ({ ...s, [k]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    setErr(null);
+    const r = await window.api.post(
+      `/api/extensions/${encodeURIComponent(ext.name)}/settings`,
+      vals,
+    );
+    setSaving(false);
+    if (r.ok) onSaved();
+    else setErr(r.error || 'Could not save settings.');
+  };
+
+  return (
+    <div className="fade" style={{ maxWidth: 640 }}>
+      <button
+        onClick={onBack}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          background: 'none',
+          border: 'none',
+          color: 'var(--text-2)',
+          cursor: 'pointer',
+          fontSize: 13.5,
+          fontWeight: 600,
+          marginBottom: 16,
+          padding: 0,
+        }}
+      >
+        <window.Icon name="back" size={16} /> {prettyName(ext)}
+      </button>
+      <window.SectionTitle
+        sub={`Generated from ${prettyName(ext)}'s settings schema. Secret fields are masked.`}
+      >
+        {prettyName(ext)} settings
+      </window.SectionTitle>
+      {err && <ErrorNote text={err} />}
+      <window.Card style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+        {(ext.schema || []).map((f) => (
+          <div key={f.key}>
+            <window.Label hint={f.help}>
+              {f.label} {f.required && <span style={{ color: 'var(--err)' }}>*</span>}{' '}
+              {f.type === 'secret' && (
+                <window.Icon
+                  name="lock"
+                  size={12}
+                  style={{ display: 'inline', verticalAlign: 'middle', color: 'var(--text-3)' }}
+                />
+              )}
+            </window.Label>
+            {f.type === 'boolean' ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <window.Toggle
+                  checked={!!vals[f.key]}
+                  onChange={(v) => set(f.key, v)}
+                  label={f.label}
+                />
+                <span style={{ fontSize: 13.5, color: 'var(--text-2)' }}>
+                  {vals[f.key] ? 'On' : 'Off'}
+                </span>
+              </div>
+            ) : f.options ? (
+              <window.Select value={vals[f.key]} onChange={(e) => set(f.key, e.target.value)}>
+                {f.options.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </window.Select>
+            ) : f.type === 'secret' ? (
+              <window.SecretInput
+                value={vals[f.key] || ''}
+                onChange={(e) => set(f.key, e.target.value)}
+                placeholder="Not set"
+              />
+            ) : f.type === 'number' ? (
+              <window.Input
+                type="number"
+                mono
+                value={vals[f.key]}
+                onChange={(e) => set(f.key, e.target.value)}
+                style={{ maxWidth: 180 }}
+              />
+            ) : (
+              <window.Input
+                value={vals[f.key] || ''}
+                onChange={(e) => set(f.key, e.target.value)}
+                placeholder="Not set"
+              />
+            )}
+          </div>
+        ))}
+      </window.Card>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+        <window.Button variant="ghost" onClick={onBack}>
+          Cancel
+        </window.Button>
+        <window.Button
+          variant="primary"
+          icon={saving ? undefined : 'check'}
+          onClick={save}
+          disabled={saving}
+        >
+          {saving ? (
+            <>
+              <window.Icon name="refresh" size={16} className="spin" /> Saving…
+            </>
+          ) : (
+            'Save settings'
+          )}
+        </window.Button>
+      </div>
+    </div>
+  );
+}
+
+/* ---- uninstall confirm ---- */
+function ConfirmUninstall({ confirm, setConfirm, uninstall }) {
+  if (!confirm) return null;
+  return (
+    <window.Modal
+      open={!!confirm}
+      onClose={() => setConfirm(null)}
+      tone="err"
+      title={`Uninstall ${prettyName(confirm.ext)}?`}
+      footer={
+        <>
+          <window.Button variant="ghost" onClick={() => setConfirm(null)}>
+            Cancel
+          </window.Button>
+          <window.Button variant="danger" icon="trash" onClick={() => uninstall(confirm.ext.name)}>
+            Uninstall
+          </window.Button>
+        </>
+      }
+    >
+      <p>
+        This removes the extension and its tools, commands, and scheduled jobs. Bundled extensions
+        can be re-enabled later; installed ones you'd re-add with{' '}
+        <span className="mono">gurney ext install</span>.
+      </p>
+    </window.Modal>
+  );
+}
+
+Object.assign(window, { ExtensionsTab });

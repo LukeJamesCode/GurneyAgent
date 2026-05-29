@@ -16,6 +16,14 @@ export function logFilePath(home: string = homeDir()): string {
   return join(home, 'log', 'gurney.log');
 }
 
+// PID file for the gurney-frontend web server. It runs as its own process
+// (separate from the agent daemon) so the panel's Start/Stop controls can
+// drive the daemon without taking the UI down with it. `gurney frontend stop`
+// reads this to find the server.
+export function frontendPidFilePath(home: string = homeDir()): string {
+  return join(home, 'frontend.pid');
+}
+
 // Snapshot of live counters written by the running daemon. `gurney status`
 // reads this so it can report fast-cache hit rate and nudge counts without
 // having to talk to the bot process.
@@ -35,8 +43,11 @@ export function writePid(pid: number, home: string = homeDir()): void {
 // flag makes the create-or-fail atomic, closing the window where two concurrent
 // `gurney start` invocations both pass the readPid guard and then both boot
 // into two live daemons.
-export function tryAcquirePidLock(pid: number, home: string = homeDir()): boolean {
-  const file = pidFilePath(home);
+export function tryAcquirePidLock(
+  pid: number,
+  home: string = homeDir(),
+  file: string = pidFilePath(home),
+): boolean {
   ensurePrivateDir(dirname(file));
   try {
     writeFileSync(file, String(pid), { encoding: 'utf8', mode: 0o600, flag: 'wx' });

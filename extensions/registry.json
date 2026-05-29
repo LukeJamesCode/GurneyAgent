@@ -28,5 +28,11 @@
     "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
     "subpath": "extensions/gurney-codex",
     "description": "Escalate hard coding tasks from the local Qwen models to OpenAI Codex over a ChatGPT subscription (OAuth). Local-first dual-system to save on usage."
+  },
+  {
+    "name": "gurney-frontend",
+    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
+    "subpath": "extensions/gurney-frontend",
+    "description": "Local web control panel: a friendly browser UI for setup, running the agent, chatting, managing extensions, editing settings, and watching logs/diagnostics — everything the CLI can do, without a terminal."
   }
 ]

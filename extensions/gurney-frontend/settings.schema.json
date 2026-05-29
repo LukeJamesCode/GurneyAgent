@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "properties": {
+    "listen_host": {
+      "type": "string",
+      "default": "127.0.0.1",
+      "description": "Address the web UI binds to. Default 127.0.0.1 (this machine only). Use 0.0.0.0 to reach it from other devices on your LAN — set an auth_token if you do."
+    },
+    "listen_port": {
+      "type": "number",
+      "default": 7777,
+      "description": "TCP port the web UI listens on. Default 7777."
+    },
+    "auth_token": {
+      "type": "string",
+      "secret": true,
+      "description": "Optional shared token required to use the panel. Auto-generated on first setup. Required in practice whenever listen_host is not loopback."
+    },
+    "proactive": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the agent may send unprompted nudges and briefings. Mirrors the Proactive toggle in the Chat Hub."
+    }
+  }
+}

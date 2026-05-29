@@ -1,0 +1,61 @@
+# gurney-frontend
+
+A local web control panel for Gurney. It serves a friendly browser UI on your
+LAN that mirrors the CLI: first-run setup, starting/stopping the agent, chatting
+with your local model, managing extensions, editing core settings, running
+diagnostics, and following logs — without ever opening a terminal.
+
+The CLI stays fully usable on its own; this extension is strictly opt-in.
+
+## Running it
+
+```sh
+gurney ext install gurney-frontend   # generates an access token, prints the URL
+gurney frontend                      # start the panel (Ctrl-C to stop)
+gurney frontend --detach             # run it in the background
+gurney frontend stop                 # stop a backgrounded panel
+```
+
+Then open the printed URL, e.g. `http://127.0.0.1:7777/?token=…`.
+
+## How it works
+
+- **Separate process from the agent daemon.** The panel runs on its own so its
+  Start/Stop buttons can drive `gurney start --detach` / `gurney stop` without
+  the server killing itself. The daemon is "the agent"; the panel just controls
+  it.
+- **`server.ts`** is a small Node `http` server (no extra npm deps). It serves
+  the static UI from `web/` and a JSON API under `/api`. Read-only data reuses
+  the same core helpers the CLI does (`effectiveConfig`, `probeOllama`,
+  `collectDoctorChecks`, `collectExtensionReadiness`, the SQLite settings
+  store); mutating actions shell out to the `gurney` CLI.
+- **`web/`** is a no-build single-page app: React + Babel-standalone from a CDN
+  transpile the `.jsx` files in the browser. A Raspberry Pi can serve it as-is.
+- **Direct chat** streams straight from the configured Ollama chat model — no
+  tools, short in-memory history. It's the honest "talk to the model" surface
+  and is gated on the agent running so it matches your Telegram conversation.
+
+## Settings
+
+| key           | default     | meaning                                                            |
+| ------------- | ----------- | ----------------------------------------------------------------- |
+| `listen_host` | `127.0.0.1` | Bind address. Use `0.0.0.0` to reach it from other LAN devices.   |
+| `listen_port` | `7777`      | TCP port.                                                         |
+| `auth_token`  | _generated_ | Shared token required for the API when not on loopback.           |
+| `proactive`   | `true`      | Whether the agent may send unprompted nudges (Chat Hub toggle).   |
+
+When `listen_host` is not loopback, the API requires the `auth_token` (passed as
+`?token=` once, then kept in `sessionStorage`). Secrets are masked in API
+responses and never overwritten by their masked placeholder.
+
+## Layout
+
+```
+manifest.json          extension manifest (capabilities: network, storage)
+settings.schema.json   host/port/token/proactive schema (drives the UI form)
+setup.ts               install hook: ensure token, print URL
+server.ts              HTTP server + /api
+web/                   the browser UI
+  index.html  styles.css  api.js  data.jsx
+  components.jsx  app.jsx  chathub.jsx  extensions.jsx  settings.jsx  system.jsx  wizard.jsx
+```
