@@ -6,7 +6,7 @@ Gurney runs the same code everywhere. The **defaults** scale to the hardware; no
 
 ## Hardware tiers
 
-`gurney init` detects RAM and CPU count and suggests a tier. You can override it freely — the tier is informational and doesn't gate any features.
+`gurney init` detects RAM and CPU count and suggests a tier. You can override it freely — no feature is ever gated or disabled on a smaller tier. What the tier _does_ control is how generously Gurney sizes the model context window and prompt budget (see [Tier-aware context sizing](#tier-aware-context-sizing) below): a `heavy` host keeps far more conversation history in context than a Pi, because it has the RAM to hold it.
 
 | Tier       | Hardware               | Default chat model    | Reasoning model     | Memory ext  | TTS ext     |
 | ---------- | ---------------------- | --------------------- | ------------------- | ----------- | ----------- |
@@ -84,6 +84,20 @@ Ollama must be a separate process or container. Never bundle it into Gurney's co
 
 ## Gurney performance mechanisms
 
+### Tier-aware context sizing
+
+The configured tier scales three Ollama knobs per model profile — `num_ctx` (context window), `num_predict` (completion cap), and `keep_alive` — plus the orchestrator's prompt budget (how much conversation history the context manager packs before truncating). Bigger windows are the dominant lever for answer quality, and their cost is KV-cache RAM, which a 16/32 GB host has to spare.
+
+| Tier       | Chat `num_ctx` | Prompt budget | Reasoning `num_ctx` | Chat `keep_alive` |
+| ---------- | -------------- | ------------- | ------------------- | ----------------- |
+| `small`    | 4096           | 3584          | 8192                | 30m               |
+| `standard` | 8192           | 6144          | 16384               | 15m               |
+| `heavy`    | 16384          | 12288         | 32768               | 30m               |
+
+The prompt budget is always kept below `num_ctx − num_predict` so a long answer never overflows the window and forces Ollama to shift it mid-turn (which would invalidate the cached KV prefix). Override the per-profile model with `GURNEY_CHAT_MODEL` etc.; the window/budget scaling follows the tier set in `gurney init` or `GURNEY_TIER`.
+
+The tier also raises Ollama's prompt-processing batch size (`num_batch`: `standard` 1024, `heavy` 2048; `small` keeps Ollama's 512 default). A larger batch keeps the CPU better fed while ingesting a prompt, cutting time-to-first-token on long-context turns at the cost of a little RAM per batch.
+
 ### Deterministic prompt prefix for KV cache hits
 
 The context manager always emits the prompt in the same order:
@@ -105,7 +119,7 @@ What doesn't break it: new history turns, which are always appended at the end.
 
 ### Heavy-model eviction
 
-On Standard and Heavy tiers, only one 7–9B model is kept resident at a time. When a reasoning request comes in on a machine that has the chat model warm, Gurney unloads the chat model (`keep_alive=0`) before loading the reasoning model, and vice versa. The idle eviction sweep (default 5 minutes, `GURNEY_HEAVY_IDLE_MS`) proactively evicts a heavy model that hasn't been used so it doesn't pin RAM until the next request.
+On Standard and Heavy tiers, only one 7–9B model is kept resident at a time. When a reasoning request comes in on a machine that has the chat model warm, Gurney unloads the chat model (`keep_alive=0`) before loading the reasoning model, and vice versa. The idle eviction sweep proactively evicts a heavy model that hasn't been used so it doesn't pin RAM until the next request. The default idle window scales with tier — `small` 10 min, `standard` 20 min, `heavy` 45 min — because a RAM-rich host should keep the model warm (the cold reload is the waste), while a Pi should reclaim memory sooner. Override with `GURNEY_HEAVY_IDLE_MS`.
 
 ### Boot warm-up
 
@@ -113,7 +127,7 @@ Gurney calls the chat profile with an empty prompt on startup to trigger Ollama'
 
 ### Tool result truncation
 
-Tool output longer than 2000 characters is truncated before being fed back to the model (`…[truncated]` marker appended). A large tool result — a 30-event calendar dump, a verbose web search — otherwise fills the model's context for several turns. Truncation keeps things fast and focused.
+Tool output is truncated before being fed back to the model (`…[truncated]` marker appended) so a large tool result — a 30-event calendar dump, a verbose web search — doesn't fill the model's context for several turns. The cap scales with tier (`small` 2000, `standard` 4000, `heavy` 6000 chars): a bigger context window can afford richer tool output without crowding out conversation history.
 
 ### Right-sizing profiles
 

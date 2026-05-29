@@ -28,8 +28,9 @@ export interface GurneyConfig {
     // is better at picking the right tool and shaping its arguments.
     tools?: string;
   };
-  // Hardware tier hint. Informational only - consumed by `gurney status` /
-  // `gurney doctor` to surface obvious mismatches.
+  // Hardware tier. Surfaced by `gurney status` / `gurney doctor`, and used at
+  // boot to scale the LLM context windows and prompt budget (see
+  // src/cli/profiles.ts). No feature is gated on it.
   tier?: 'small' | 'standard' | 'heavy';
   logLevel?: 'debug' | 'info' | 'warn' | 'error';
 }

@@ -47,6 +47,19 @@ export function open(opts: OpenOptions): DB {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('synchronous = NORMAL');
+  // Wait up to 5s for a held write lock instead of throwing SQLITE_BUSY
+  // immediately. Under WAL the per-minute scheduler tick and a concurrent
+  // user-turn write can briefly contend; without this, one of them fails the
+  // whole operation rather than waiting out the (millisecond-scale) lock.
+  db.pragma('busy_timeout = 5000');
+  // Larger page cache and memory-mapped reads. Defaults (~2 MB cache, mmap
+  // off) are tuned for tiny embedded targets; on any real host these cut disk
+  // reads for hot tables (history, scheduler queue) at trivial cost. cache_size
+  // is negative => KiB, so this is a 16 MB cache; mmap_size is virtual address
+  // space, not committed RAM, so it's safe even on a 4 GB Pi.
+  db.pragma('cache_size = -16000');
+  db.pragma('mmap_size = 268435456');
+  db.pragma('temp_store = MEMORY');
   ensureSqliteFilesPrivate(opts.path);
   migrate(db, opts.migrationsDir ?? DEFAULT_MIGRATIONS_DIR, opts.log);
   ensureSqliteFilesPrivate(opts.path);

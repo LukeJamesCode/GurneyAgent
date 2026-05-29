@@ -65,6 +65,12 @@ export interface ProfileConfig {
   // ~25-token confirmation, costing ~80s on CPU. Per-profile because the
   // reasoning model genuinely needs more headroom than the tool model does.
   numPredict?: number;
+  // Prompt-processing batch size (`num_batch`). Larger batches keep the CPU
+  // better fed while ingesting the prompt, cutting time-to-first-token on long
+  // prompts — which matter more once the context window is widened. Costs a
+  // little RAM per batch (trivial on a 16/32 GB host). Omitted => Ollama's
+  // default (512). Per-profile because only the bigger tiers raise it.
+  numBatch?: number;
   // Controls the /no_think hint we inject for Qwen3-family models.
   //   'auto' (default) — disable thinking when the model name matches qwen3.
   //   'on'             — never inject /no_think; let the model think.
@@ -441,10 +447,12 @@ export function createOllama(opts: OllamaOptions): LLM {
     // default. The profile default kicks in when the orchestrator doesn't ask
     // for anything specific, which is the common case.
     const predictCap = o.maxTokens ?? target.cfg?.numPredict;
-    if (target.cfg?.contextTokens || predictCap !== undefined) {
+    const numBatch = target.cfg?.numBatch;
+    if (target.cfg?.contextTokens || predictCap !== undefined || numBatch !== undefined) {
       body['options'] = {
         ...(target.cfg?.contextTokens ? { num_ctx: target.cfg.contextTokens } : {}),
         ...(predictCap !== undefined ? { num_predict: predictCap } : {}),
+        ...(numBatch !== undefined ? { num_batch: numBatch } : {}),
       };
     }
 

@@ -20,7 +20,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { open as openDb } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
-import { createOllama, type ProfileConfig, type ProfileName } from '../core/llm.js';
+import { createOllama } from '../core/llm.js';
+import { profilesForTier } from './profiles.js';
 import { createToolRegistry, type ToolHandler, type ToolContext } from '../core/tools.js';
 import { createOrchestrator } from '../core/orchestrator.js';
 import { createScheduler, type Nudge } from '../core/scheduler.js';
@@ -143,58 +144,33 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
 
   const db = openDb({ path: join(home, 'gurney.db'), log });
 
-  // num_predict / keep_alive defaults are picked from ATLAS's production
-  // config — they're already tuned against qwen3.5 family models. Without a
-  // num_predict cap Ollama lets the model ramble for hundreds of tokens past
-  // a natural stopping point, which on CPU costs real seconds. keep_alive is
-  // bumped from Ollama's 5m default so back-to-back user turns don't trigger
-  // a cold reload.
-  const profiles: Partial<Record<ProfileName, ProfileConfig | null>> = {
-    chat: {
-      model: cfg.models.chat,
-      contextTokens: 4096,
-      heavy: false,
-      numPredict: 512,
-      keepAlive: '30m',
-    },
-  };
-  if (cfg.models.reason) {
-    profiles.reason = {
-      model: cfg.models.reason,
-      contextTokens: 8192,
-      heavy: true,
-      numPredict: 2048,
-      keepAlive: '10m',
-    };
-  }
-  if (cfg.models.tools) {
-    // Tool-use profile. heavy=false so it doesn't fight the reasoning model
-    // for the single heavy slot. num_predict capped at 1024 — earlier 256/512
-    // caps clipped mid-tool-call on 2b-class models, but 2048 left so much
-    // ramble headroom that a single turn routinely cost ~60s on CPU. 1024 is
-    // ~4x a typical tool-call payload (~250 tokens) and the orchestrator's
-    // follow-up paraphrase round uses its own tighter per-call cap.
-    profiles.tools = {
-      model: cfg.models.tools,
-      contextTokens: 4096,
-      heavy: false,
-      numPredict: 1024,
-      keepAlive: '10m',
-    };
-  }
+  // num_predict / keep_alive / num_ctx defaults scale with the configured
+  // hardware tier (see profilesForTier). The base values are ATLAS's
+  // production tuning for qwen3.5 family models — a num_predict cap so Ollama
+  // doesn't ramble hundreds of tokens past a natural stop (real seconds on
+  // CPU), and a keep_alive bumped above Ollama's 5m default so back-to-back
+  // turns don't pay a cold reload. The heavy/standard tiers widen the context
+  // window and prompt budget to use the RAM those machines actually have.
+  const {
+    profiles,
+    budgetTokens,
+    idleEvictionMs: tierIdleMs,
+    toolResultMaxChars,
+  } = profilesForTier(cfg.tier, cfg.models);
 
   // Optional resilience tunables. We surface these as env knobs (rather than
   // baking them into config.json) because they're operational levers an
-  // operator might want to flip without touching the config file. Library
-  // defaults handle the common case; these only kick in when set.
-  const idleEvictionMs = envInt('GURNEY_HEAVY_IDLE_MS');
+  // operator might want to flip without touching the config file. The explicit
+  // env value wins; otherwise the tier-scaled default applies (a 32 GB host
+  // keeps heavy models warm far longer than a Pi).
+  const idleEvictionMs = envInt('GURNEY_HEAVY_IDLE_MS') ?? tierIdleMs;
   const inferenceTimeoutMs = envInt('GURNEY_INFERENCE_TIMEOUT_MS');
 
   const llm = createOllama({
     baseUrl: cfg.ollama.url,
     profiles,
     log,
-    ...(idleEvictionMs !== undefined ? { idleEvictionMs } : {}),
+    idleEvictionMs,
     ...(inferenceTimeoutMs !== undefined ? { inferenceTimeoutMs } : {}),
   });
 
@@ -289,6 +265,8 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     log,
     promptFragmentProvider: (filter) => loader.promptFragment(filter),
     toolIntentFilter: (message) => loader.relevantExtensions(message),
+    budgetTokens,
+    toolResultMaxChars,
     ...(cfg.models.tools ? { toolProfile: 'tools' as const } : {}),
     ...(maxToolRounds !== undefined ? { maxToolRounds } : {}),
   });

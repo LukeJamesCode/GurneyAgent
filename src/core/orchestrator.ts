@@ -163,6 +163,11 @@ export interface OrchestratorOptions {
   // dedicated tool-use model keep their old behaviour.
   toolProfile?: ProfileName;
   budgetTokens?: number;
+  // Cap on how many chars of a tool's output are re-fed to the model on the
+  // next round. Defaults to TOOL_RESULT_MAX_CHARS. Scaled up on larger tiers
+  // where the context window can hold richer tool output without crowding out
+  // history. See src/cli/profiles.ts.
+  toolResultMaxChars?: number;
   // Cap on chained tool-call rounds per user turn. qwen3.5:0.8b is over-eager
   // about tool-calling, so the orchestrator needs both a real loop (single
   // round wasn't enough — chained calls left assistantText empty) and a hard
@@ -326,6 +331,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     return profiles[requested] ? requested : defaultProfile;
   })();
   const budgetTokens = opts.budgetTokens ?? 4096;
+  const toolResultMaxChars = opts.toolResultMaxChars ?? TOOL_RESULT_MAX_CHARS;
   const maxToolRounds = opts.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
 
   const slots = new Map<number, ChatSlot>();
@@ -720,7 +726,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           } else {
             allSelfReplying = false;
           }
-          const persisted = truncateToolResult(result.output);
+          const persisted = truncateToolResult(result.output, toolResultMaxChars);
           if (persisted.length < result.output.length) {
             cl.debug('tool result truncated for re-injection', {
               tool: call.name,
