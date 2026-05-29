@@ -1603,17 +1603,19 @@ async function handleApi(
       return streamLogs(req, res);
     }
 
+    // --agent-only on every panel-driven start/stop: clicking Stop in the
+    // panel must not also kill the panel itself (this same process).
     if (path === '/api/agent/start' && method === 'POST') {
-      const r = await runGurney(opts, ['start', '--detach'], 30_000);
+      const r = await runGurney(opts, ['start', '--detach', '--agent-only'], 30_000);
       return sendJson(res, r.code === 0 ? 200 : 500, { ok: r.code === 0, output: r.out + r.err });
     }
     if (path === '/api/agent/stop' && method === 'POST') {
-      const r = await runGurney(opts, ['stop'], 30_000);
+      const r = await runGurney(opts, ['stop', '--agent-only'], 30_000);
       return sendJson(res, r.code === 0 ? 200 : 500, { ok: r.code === 0, output: r.out + r.err });
     }
     if (path === '/api/agent/restart' && method === 'POST') {
-      await runGurney(opts, ['stop'], 30_000);
-      const r = await runGurney(opts, ['start', '--detach'], 30_000);
+      await runGurney(opts, ['stop', '--agent-only'], 30_000);
+      const r = await runGurney(opts, ['start', '--detach', '--agent-only'], 30_000);
       return sendJson(res, r.code === 0 ? 200 : 500, { ok: r.code === 0, output: r.out + r.err });
     }
     if (path === '/api/agent/proactive' && method === 'POST') {

@@ -51,11 +51,12 @@ program
 
 program
   .command('start')
-  .description('Run the bot (Telegram long-poll + Ollama)')
+  .description('Run the bot (Telegram long-poll + Ollama) and the web panel if enabled')
   .option('--detach', 'Run as a background process; write a pid file')
-  .action(async (opts: { detach?: boolean }) => {
+  .option('--agent-only', 'Do not also start the gurney-frontend web panel')
+  .action(async (opts: { detach?: boolean; agentOnly?: boolean }) => {
     const { run } = await import('./start.js');
-    await call('start', run, { detach: !!opts.detach });
+    await call('start', run, { detach: !!opts.detach, agentOnly: !!opts.agentOnly });
   });
 
 program
@@ -93,10 +94,11 @@ program
 
 program
   .command('stop')
-  .description('Stop a running gurney daemon')
-  .action(async () => {
+  .description('Stop a running gurney daemon and the web panel')
+  .option('--agent-only', 'Do not also stop the gurney-frontend web panel')
+  .action(async (opts: { agentOnly?: boolean }) => {
     const { run } = await import('./stop.js');
-    await call('stop', run);
+    await call('stop', run, { agentOnly: !!opts.agentOnly });
   });
 
 program

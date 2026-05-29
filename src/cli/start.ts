@@ -16,9 +16,10 @@
 // deployments that exported TELEGRAM_BOT_TOKEN etc. don't break.
 
 import { spawn } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { open as openDb } from '../storage/db.js';
+import { open as openDb, type DB } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import { createOllama } from '../core/llm.js';
 import { profilesForTier } from './profiles.js';
@@ -42,6 +43,7 @@ import { createTelegram } from '../adapters/telegram.js';
 import { effectiveConfig, ensurePrivateDir, homeDir } from './config-store.js';
 import {
   clearPid,
+  frontendPidFilePath,
   isAlive,
   logFilePath,
   metricsFilePath,
@@ -54,6 +56,67 @@ const HOST_VERSION = '0.1.0';
 
 export interface StartRunOptions {
   detach?: boolean;
+  // Skip spawning the gurney-frontend web panel. The panel calls
+  // /api/agent/start with this so a panel-driven Start doesn't try to
+  // bring up a second copy of itself.
+  agentOnly?: boolean;
+}
+
+// True when gurney-frontend is enabled. Defaults to true for the bundled
+// extension (matching collectExtensionReadiness) when the DB has no row yet.
+function frontendExtensionEnabled(home: string): boolean {
+  const dbPath = join(home, 'gurney.db');
+  if (!existsSync(dbPath)) return true;
+  let db: DB | null = null;
+  try {
+    db = openDb({ path: dbPath, log: createLogger({ level: 'warn' }) });
+    const row = db
+      .prepare(`SELECT enabled FROM extension_state WHERE name = ?`)
+      .get('gurney-frontend') as { enabled: number } | undefined;
+    return row ? row.enabled !== 0 : true;
+  } catch {
+    return true;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+// True when a frontend pidfile names a live process.
+function frontendRunning(home: string): boolean {
+  const pidFile = frontendPidFilePath(home);
+  if (!existsSync(pidFile)) return false;
+  try {
+    const raw = readFileSync(pidFile, 'utf8').trim();
+    const pid = Number.parseInt(raw, 10);
+    return Number.isFinite(pid) && isAlive(pid);
+  } catch {
+    return false;
+  }
+}
+
+// Spawn `gurney frontend --detach` as a sibling background process. Best-
+// effort: a failure here is logged but doesn't break the agent boot.
+function spawnFrontend(home: string): void {
+  if (frontendRunning(home)) return;
+  const here = dirname(fileURLToPath(import.meta.url));
+  const cliEntry = process.argv[1] ?? join(here, 'index.js');
+  try {
+    const child = spawn(
+      process.execPath,
+      [...process.execArgv, cliEntry, 'frontend', '--detach'],
+      { detached: true, stdio: 'ignore', env: process.env },
+    );
+    child.unref();
+  } catch (e) {
+    process.stderr.write(
+      `gurney-frontend failed to start: ${e instanceof Error ? e.message : String(e)}\n` +
+        `  (run 'gurney frontend' manually to see the error.)\n`,
+    );
+  }
 }
 
 function defaultExtensionRoots(home: string): string[] {
@@ -125,8 +188,14 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   }
 
   if (options.detach) {
-    return detach(home);
+    detach(home);
+    if (!options.agentOnly && frontendExtensionEnabled(home)) spawnFrontend(home);
+    return;
   }
+
+  // Foreground boot. Spawn the panel as a separate detached child so killing
+  // the foreground agent (Ctrl-C) doesn't take the panel with it.
+  if (!options.agentOnly && frontendExtensionEnabled(home)) spawnFrontend(home);
 
   // Acquire the PID file as an atomic lock before the (slow) boot. This closes
   // the race where two near-simultaneous starts both pass the readPid guard
