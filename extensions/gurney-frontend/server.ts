@@ -306,6 +306,7 @@ interface ExtView {
   nextAction?: string;
   capabilities: string[];
   needsAuth: boolean;
+  authConnected: boolean;
   deps: string[];
   tools: Array<{ name: string; desc: string }>;
   commands: Array<{ cmd: string; desc: string }>;
@@ -394,6 +395,7 @@ function listExtensions(): ExtView[] {
         desc: c.description,
       }));
       const ep = manifest?.entrypoints ?? {};
+      const needsAuth = !!ep.auth || caps.includes('auth:oauth');
       const tools: ExtView['tools'] = ep.tools
         ? [{ name: 'tools', desc: 'Adds AI-callable tools' }]
         : [];
@@ -414,7 +416,8 @@ function listExtensions(): ExtView[] {
         reasons: r.reasons,
         ...(r.nextAction ? { nextAction: r.nextAction } : {}),
         capabilities: caps,
-        needsAuth: !!ep.auth || caps.includes('auth:oauth'),
+        needsAuth,
+        authConnected: needsAuth && r.status !== 'needs_auth',
         deps: manifest?.deps ?? [],
         tools,
         commands,
@@ -893,7 +896,9 @@ function closeAuthSession(session: AuthSession): void {
   authSessions.delete(session.id);
 }
 
-function startAuthSession(name: string): { ok: true; session: string } | { ok: false; error: string } {
+function startAuthSession(
+  name: string,
+): { ok: true; session: string } | { ok: false; error: string } {
   const home = homeDir();
   const ext = discoverExt(home, name);
   if (!ext) return { ok: false, error: `extension '${name}' not found` };
@@ -930,7 +935,10 @@ function startAuthSession(name: string): { ok: true; session: string } | { ok: f
   };
 
   void runAuthForExt(ext, db, io)
-    .then(() => pushAuthEvent(session, { type: 'done' }))
+    .then(async () => {
+      await closeDirectChatRuntime();
+      pushAuthEvent(session, { type: 'done' });
+    })
     .catch((e: unknown) =>
       pushAuthEvent(session, {
         type: 'error',

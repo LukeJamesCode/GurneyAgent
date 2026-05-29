@@ -477,6 +477,65 @@ test('loader: settings reads defaults from schema and writes round-trip', async 
   }
 });
 
+test('loader: settings sees auth written outside the running extension host', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const tools = createToolRegistry({ log });
+    const sched = createScheduler({ log });
+    const root = join(dir, 'exts');
+    mkdirSync(root);
+    writeExt(
+      root,
+      'cfg',
+      {
+        name: 'cfg',
+        version: '1.0.0',
+        gurney: '*',
+        entrypoints: { tools: './tools.js' },
+      },
+      {
+        'settings.schema.json': JSON.stringify({
+          type: 'object',
+          properties: {
+            google_refresh_token: { type: 'string', secret: true },
+          },
+        }),
+        'tools.js':
+          'export function register(host) {\n' +
+          "  host.tools.register({ name: 'cfg_token', description: '', parameters: {}, tier: 'auto', invoke: async () => host.settings.get('google_refresh_token', '') });\n" +
+          '}\n',
+      },
+    );
+    const loader = createExtensionLoader({
+      roots: [root],
+      stateRoot: join(dir, 'state'),
+      db,
+      llm: fakeLlm,
+      log,
+      scheduler: sched,
+      tools,
+      hostVersion: '0.1.0',
+      chatId: 0,
+      watch: false,
+    });
+    await loader.loadAll();
+
+    assert.equal(await tools.get('cfg_token')!.invoke({}, { log }), '');
+    db.prepare(
+      `INSERT INTO extension_settings (extension, key, value, updated_at)
+       VALUES ('cfg', 'google_refresh_token', 'fresh-token', ?)`,
+    ).run(Date.now());
+
+    assert.equal(await tools.get('cfg_token')!.invoke({}, { log }), 'fresh-token');
+    await loader.shutdown();
+    sched.stop();
+    db.close();
+  } finally {
+    await rmTempDir(dir);
+  }
+});
+
 test('loader: intent filter skips trivial and low-signal messages', async () => {
   const dir = tmp();
   try {
@@ -698,7 +757,9 @@ test('host telegram knownChats exposes only allowlisted chats and default fallba
 
 test('loader: hot-reloads when a nested extension file changes', async (t) => {
   if (!dynamicImportCacheBustWorks()) {
-    t.skip('runtime loader ignores dynamic-import cache-busting (e.g. tsx); hot-reload is verified under native Node');
+    t.skip(
+      'runtime loader ignores dynamic-import cache-busting (e.g. tsx); hot-reload is verified under native Node',
+    );
     return;
   }
   const dir = tmp();

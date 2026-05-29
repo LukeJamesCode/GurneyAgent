@@ -96,6 +96,16 @@ function Button({ variant = 'default', size = 'md', icon, children, style, dange
       color: 'var(--on-accent)',
       boxShadow: 'var(--shadow-sm)',
     },
+    ok: {
+      background: 'var(--ok)',
+      color: '#fff',
+      boxShadow: 'var(--shadow-sm)',
+    },
+    warn: {
+      background: 'var(--warn)',
+      color: '#332100',
+      boxShadow: 'var(--shadow-sm)',
+    },
     default: { background: 'var(--surface)', color: 'var(--text)', borderColor: 'var(--border-2)' },
     ghost: { background: 'transparent', color: 'var(--text-2)' },
     subtle: { background: 'var(--surface-2)', color: 'var(--text)', borderColor: 'var(--border)' },

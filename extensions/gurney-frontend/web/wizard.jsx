@@ -973,10 +973,16 @@ function StepExtensions() {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontWeight: 600, fontSize: 14.5 }}>{pretty(e)}</span>
-                {e.needsAuth && (
+                {e.needsAuth && !e.authConnected && (
                   <window.Badge tone="warn">
                     <window.Icon name="link" size={11} />
                     needs connection
+                  </window.Badge>
+                )}
+                {e.needsAuth && e.authConnected && (
+                  <window.Badge tone="ok">
+                    <window.Icon name="check" size={11} />
+                    connected
                   </window.Badge>
                 )}
               </div>

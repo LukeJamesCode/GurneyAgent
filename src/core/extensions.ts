@@ -591,14 +591,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
         if (v.default !== undefined) defaults[k] = v.default;
       }
     }
-    // Cache the merged (defaults + DB rows) view. The previous behaviour did
-    // a SELECT * + decode on every host.settings.get(), which a chatty
-    // extension can do dozens of times per turn. Invalidated whenever set()
-    // mutates a value — all writes flow through this same instance because
-    // each extension gets its own makeSettings() call.
-    let cache: Record<string, string | number | boolean> | null = null;
     function readAll(): Record<string, string | number | boolean> {
-      if (cache) return cache;
       const rows = opts.db
         .prepare(`SELECT key, value FROM extension_settings WHERE extension = ?`)
         .all(name) as Array<{ key: string; value: string }>;
@@ -609,7 +602,6 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
         else if (decl?.type === 'boolean') out[r.key] = r.value === 'true';
         else out[r.key] = r.value;
       }
-      cache = out;
       return out;
     }
     return {
@@ -626,7 +618,6 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
              ON CONFLICT(extension, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
           )
           .run(name, key, String(value), Date.now());
-        cache = null;
       },
       // Defensive copy so callers can't mutate the cached object.
       all: () => ({ ...readAll() }),
@@ -1191,8 +1182,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
       // folding the byte size in catches a same-mtime length change that the
       // mtime alone would miss.
       const seenStamps = new Map<string, string>();
-      const stampOf = (st: { mtimeMs: number; size: number }): string =>
-        `${st.mtimeMs}:${st.size}`;
+      const stampOf = (st: { mtimeMs: number; size: number }): string => `${st.mtimeMs}:${st.size}`;
       const snapshotMtimes = (dir: string): void => {
         let entries: string[] = [];
         try {

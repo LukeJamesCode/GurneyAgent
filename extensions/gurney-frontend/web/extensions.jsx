@@ -319,11 +319,19 @@ function ExtCard({ ext, busy, onOpen, onToggle }) {
           {blurbFor(ext)}
         </p>
         <CapChips caps={ext.capabilities} />
-        {ext.needsAuth && (
+        {ext.needsAuth && !ext.authConnected && (
           <div style={{ marginTop: 10 }}>
             <window.Badge tone="warn">
               <window.Icon name="link" size={11} />
               Needs a connection
+            </window.Badge>
+          </div>
+        )}
+        {ext.needsAuth && ext.authConnected && (
+          <div style={{ marginTop: 10 }}>
+            <window.Badge tone="ok">
+              <window.Icon name="check" size={11} />
+              Connected
             </window.Badge>
           </div>
         )}
@@ -454,8 +462,12 @@ function ExtDetail({
         </div>
         <div style={{ display: 'flex', gap: 9, flexWrap: 'wrap' }}>
           {ext.needsAuth && (
-            <window.Button variant="primary" icon="link" onClick={onConnect}>
-              Connect
+            <window.Button
+              variant={ext.authConnected ? 'ok' : 'warn'}
+              icon={ext.authConnected ? 'check' : 'link'}
+              onClick={onConnect}
+            >
+              {ext.authConnected ? 'Connected' : 'Connect'}
             </window.Button>
           )}
           <window.Button
