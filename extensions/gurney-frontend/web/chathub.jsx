@@ -361,11 +361,21 @@ function ChatHub({
             </span>
           </div>
 
-          <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: 14, minHeight: 120 }}>
+          <div
+            ref={scrollRef}
+            style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: 14,
+              minHeight: 120,
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
             {messages.length === 0 && phase === 'idle' && (
               <EmptyChat running={running} onPrompt={setDraft} />
             )}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 'auto' }}>
               {messages.map((m) => (
                 <Bubble key={m.id} m={m} devmode={devmode} />
               ))}

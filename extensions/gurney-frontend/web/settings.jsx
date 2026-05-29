@@ -69,7 +69,7 @@ function SettingsTab({ onReRunWizard, onSaved }) {
   const locks = cfg.envLocks || {};
 
   return (
-    <div style={{ maxWidth: 760 }}>
+    <div style={{ maxWidth: 760, margin: '0 auto' }}>
       <window.SectionTitle
         sub="Everything in Gurney Core's config, in plain language. Changes apply on the next restart."
         right={
