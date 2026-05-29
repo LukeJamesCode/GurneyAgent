@@ -128,12 +128,28 @@ async function startWebSetup(
   // extension (disabled), so the web Extensions tab can list and toggle them.
   presetExtensionStates(home, bundled, [frontendExt.name]);
 
-  // Run the panel's setup entrypoint (generates the access token and prints the
-  // URL). We deliberately skip the generic settings prompts — the point of this
-  // path is to NOT ask terminal questions.
+  // The panel binds to loopback (127.0.0.1) by default — reachable only from
+  // this machine. On a headless box (a Pi, a mini PC, a Proxmox VM) you open it
+  // from another device on your network, which needs it bound to all
+  // interfaces. Ask once, and set listen_host before we generate + print the
+  // URL so the URL we show is the one that actually works.
   const log = createLogger({ level: 'warn' });
   const db = openDb({ path: join(home, 'gurney.db'), log });
   try {
+    const fromAnotherDevice = await confirm({
+      message: 'Will you open the panel from another device (phone, another computer)?',
+      default: true,
+    });
+    if (fromAnotherDevice) {
+      db.prepare(
+        `INSERT INTO extension_settings (extension, key, value, updated_at)
+         VALUES (?, 'listen_host', '0.0.0.0', ?)
+         ON CONFLICT(extension, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      ).run(frontendExt.name, Date.now());
+    }
+    // Run the panel's setup entrypoint (generates the access token and prints
+    // the URL). We skip the generic settings prompts — the point of this path
+    // is to NOT ask a pile of terminal questions.
     await configureNativeDepsForExtension(frontendExt, db, home);
   } finally {
     try {
