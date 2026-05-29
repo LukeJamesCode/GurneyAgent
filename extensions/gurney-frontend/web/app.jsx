@@ -32,8 +32,28 @@ function useTheme() {
   return [theme, setTheme];
 }
 
+function useDensity() {
+  const [density, setDensity] = useState(() => {
+    try {
+      return localStorage.getItem('gurney_density') || 'balanced';
+    } catch (e) {
+      return 'balanced';
+    }
+  });
+  useEffect(() => {
+    document.documentElement.setAttribute('data-density', density);
+    try {
+      localStorage.setItem('gurney_density', density);
+    } catch (e) {
+      /* ignore */
+    }
+  }, [density]);
+  return [density, setDensity];
+}
+
 function App() {
   const [theme, setTheme] = useTheme();
+  const [density, setDensity] = useDensity();
   const [state, setState] = useState(null);
   const [offline, setOffline] = useState(false);
   const [route, setRoute] = useState('chat');
@@ -132,7 +152,7 @@ function App() {
   const models = state.models || {};
 
   return (
-    <div style={{ height: '100%', display: 'flex', overflow: 'hidden' }}>
+    <div className="app-shell">
       <Sidebar
         route={route}
         setRoute={setRoute}
@@ -143,32 +163,14 @@ function App() {
         extCount={state.extensions ? state.extensions.enabled : 0}
         theme={theme}
         setTheme={setTheme}
+        density={density}
+        setDensity={setDensity}
       />
 
-      <main
-        style={{
-          flex: 1,
-          minWidth: 0,
-          minHeight: 0,
-          overflowY: 'auto',
-          display: 'flex',
-          flexDirection: 'column',
-        }}
-      >
+      <main className="main-panel">
         {offline && <OfflineBar onRetry={refresh} />}
         {state.cfgError && <ConfigErrorBar message={state.cfgError} />}
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            padding: 'calc(22px * var(--gap))',
-            maxWidth: 1240,
-            width: '100%',
-            margin: '0 auto',
-            display: 'flex',
-            flexDirection: 'column',
-          }}
-        >
+        <div className="content-shell">
           {route === 'chat' && (
             <window.ChatHub
               agent={agentStatus}
@@ -187,6 +189,10 @@ function App() {
                 .filter(Boolean)
                 .join(' · ')}
               lastError={state.lastError || null}
+              scheduler={state.scheduler}
+              extensions={state.extensions}
+              tier={state.tier}
+              allowlistCount={state.allowlistCount}
             />
           )}
           {route === 'extensions' && <window.ExtensionsTab />}
@@ -314,10 +320,7 @@ function Wordmark() {
         </span>
       </span>
       <div style={{ lineHeight: 1.05 }}>
-        <div
-          className="display"
-          style={{ fontSize: 16.5, fontWeight: 700, letterSpacing: '-0.02em' }}
-        >
+        <div className="display" style={{ fontSize: 16.5, fontWeight: 700, letterSpacing: 0 }}>
           Gurney
         </div>
         <div style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 500 }}>
@@ -339,23 +342,25 @@ function Sidebar({
   extCount,
   theme,
   setTheme,
+  density,
+  setDensity,
 }) {
   return (
     <aside
       style={{
-        width: 256,
+        width: 236,
         flex: 'none',
         background: 'var(--bg-2)',
         borderRight: '1px solid var(--border)',
         display: 'flex',
         flexDirection: 'column',
-        padding: '18px 14px',
+        padding: '14px 12px',
       }}
       className="sidebar"
     >
       <div
         style={{
-          padding: '4px 8px 18px',
+          padding: '2px 6px 14px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -378,8 +383,8 @@ function Sidebar({
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: 11,
-                padding: '10px 12px',
+                gap: 10,
+                padding: '9px 10px',
                 borderRadius: 'var(--radius-sm)',
                 border: 'none',
                 cursor: 'pointer',
@@ -388,7 +393,7 @@ function Sidebar({
                 color: on ? 'var(--text)' : 'var(--text-2)',
                 boxShadow: on ? 'var(--shadow-sm)' : 'none',
                 fontWeight: on ? 600 : 500,
-                fontSize: 14.5,
+                fontSize: 14,
                 transition: 'background .12s, color .12s',
               }}
               onMouseEnter={(e) => {
@@ -423,13 +428,13 @@ function Sidebar({
       <div style={{ flex: 1 }} />
       <div
         style={{
-          padding: '12px',
+          padding: '10px',
           background: 'var(--surface)',
           border: '1px solid var(--border)',
           borderRadius: 'var(--radius)',
           display: 'flex',
           flexDirection: 'column',
-          gap: 10,
+          gap: 9,
         }}
       >
         <span
@@ -438,12 +443,30 @@ function Sidebar({
             color: 'var(--text-3)',
             fontWeight: 600,
             textTransform: 'uppercase',
-            letterSpacing: '0.05em',
+            letterSpacing: 0,
           }}
         >
           Agent
         </span>
         <GlobalStatus agentStatus={agentStatus} onStart={onStart} onStop={onStop} busy={busy} />
+        <div className="density-control" aria-label="Layout density">
+          {[
+            { id: 'compact', icon: 'menu', label: 'Compact' },
+            { id: 'balanced', icon: 'pulse', label: 'Balanced' },
+            { id: 'roomy', icon: 'spark', label: 'Roomy' },
+          ].map((d) => (
+            <button
+              key={d.id}
+              className="density-button"
+              data-active={density === d.id}
+              title={`${d.label} density`}
+              aria-label={`${d.label} density`}
+              onClick={() => setDensity(d.id)}
+            >
+              <window.Icon name={d.icon} size={14} />
+            </button>
+          ))}
+        </div>
       </div>
     </aside>
   );

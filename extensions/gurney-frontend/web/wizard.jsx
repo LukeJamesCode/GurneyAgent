@@ -324,7 +324,7 @@ function StepHead({ kicker, title, children }) {
           {kicker}
         </div>
       )}
-      <h1 style={{ fontSize: 30, letterSpacing: '-0.025em', lineHeight: 1.1 }}>{title}</h1>
+      <h1 style={{ fontSize: 30, letterSpacing: 0, lineHeight: 1.1 }}>{title}</h1>
       {children && (
         <p style={{ fontSize: 15.5, color: 'var(--text-2)', lineHeight: 1.6, marginTop: 12 }}>
           {children}
