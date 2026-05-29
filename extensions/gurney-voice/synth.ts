@@ -9,9 +9,10 @@
 // `runShell` defaults to a real spawn but tests pass a stub.
 
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { collectChildOutput } from './shell.js';
 
 export interface SynthRequest {
   text: string;
@@ -44,52 +45,18 @@ export class TtsSynthError extends Error {
   }
 }
 
-// Hard cap on piper/ffmpeg wall time. These run inside the Telegram afterReply
-// and speaker turn paths; without a kill a wedged binary hangs the reply
-// forever. Short clips finish in well under a second, so 120s is generous.
-const SHELL_TIMEOUT_MS = 120_000;
-
-const defaultRunShell: RunShell = (cmd, args, { input, outputPath }) =>
-  new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, {
-      stdio: outputPath ? ['pipe', 'ignore', 'pipe'] : ['pipe', 'pipe', 'pipe'],
-    });
-    const stdoutChunks: Buffer[] = [];
-    let stderr = '';
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.kill('SIGKILL');
-      reject(new Error(`${cmd} timed out after ${SHELL_TIMEOUT_MS}ms`));
-    }, SHELL_TIMEOUT_MS);
-    timer.unref?.();
-    if (!outputPath) {
-      child.stdout?.on('data', (c: Buffer) => stdoutChunks.push(c));
-    }
-    child.stderr?.on('data', (c: Buffer) => (stderr += c.toString('utf8')));
-    // A child that exits before reading stdin makes the write below emit EPIPE
-    // on the stdin stream — an unhandled 'error' event would crash the process.
-    child.stdin?.on('error', () => {});
-    child.on('error', (e) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        stdout: Buffer.concat(stdoutChunks),
-        stderr,
-        code: code ?? -1,
-      });
-    });
-    if (input) child.stdin?.end(input);
-    else child.stdin?.end();
+const defaultRunShell: RunShell = (cmd, args, { input, outputPath }) => {
+  const child = spawn(cmd, args, {
+    stdio: outputPath ? ['pipe', 'ignore', 'pipe'] : ['pipe', 'pipe', 'pipe'],
   });
+  // A child that exits before reading stdin makes the write below emit EPIPE
+  // on the stdin stream — an unhandled 'error' event would crash the process.
+  child.stdin?.on('error', () => {});
+  const result = collectChildOutput(child, cmd, { collectStdout: !outputPath });
+  if (input) child.stdin?.end(input);
+  else child.stdin?.end();
+  return result;
+};
 
 export async function synthesize(
   req: SynthRequest,
@@ -128,23 +95,4 @@ export async function synthesize(
       rmSync(dir, { recursive: true, force: true });
     },
   };
-}
-
-// Test helper: produce an in-memory pseudo-OGG file so the smoke test for the
-// after-reply hook can exercise the wiring without piper installed.
-export function writeStubOgg(): SynthResult {
-  const dir = mkdtempSync(join(tmpdir(), 'gurney-voice-stub-'));
-  const oggPath = join(dir, 'stub.ogg');
-  writeFileSync(oggPath, Buffer.from([0x4f, 0x67, 0x67, 0x53])); // "OggS"
-  return {
-    oggPath,
-    cleanup() {
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-}
-
-// Used by tests / debug to peek at the bytes the synth produced.
-export function readSynthBytes(r: SynthResult): Buffer {
-  return readFileSync(r.oggPath);
 }

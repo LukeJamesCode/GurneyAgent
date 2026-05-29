@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { collectChildOutput } from './shell.js';
 
 export interface TranscribeRequest {
   // Path to the incoming voice note (OGG/Opus) on disk.
@@ -58,42 +59,13 @@ export class SttError extends Error {
   }
 }
 
-// Hard cap on ffmpeg/whisper wall time. These run inside the voice-message and
-// speaker turn paths; without a kill a wedged binary hangs transcription
-// forever. A short clip transcribes in seconds, so 120s is generous.
-const SHELL_TIMEOUT_MS = 120_000;
-
-const defaultRunShell: RunShell = (cmd, args, { cwd }) =>
-  new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      ...(cwd ? { cwd } : {}),
-    });
-    const stdoutChunks: Buffer[] = [];
-    let stderr = '';
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.kill('SIGKILL');
-      reject(new Error(`${cmd} timed out after ${SHELL_TIMEOUT_MS}ms`));
-    }, SHELL_TIMEOUT_MS);
-    timer.unref?.();
-    child.stdout?.on('data', (c: Buffer) => stdoutChunks.push(c));
-    child.stderr?.on('data', (c: Buffer) => (stderr += c.toString('utf8')));
-    child.on('error', (e) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ stdout: Buffer.concat(stdoutChunks), stderr, code: code ?? -1 });
-    });
+const defaultRunShell: RunShell = (cmd, args, { cwd }) => {
+  const child = spawn(cmd, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...(cwd ? { cwd } : {}),
   });
+  return collectChildOutput(child, cmd, { collectStdout: true });
+};
 
 // Normalise whisper's text output. The model occasionally emits leading
 // whitespace, repeated punctuation, and `[BLANK_AUDIO]`-style markers for

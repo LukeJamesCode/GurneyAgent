@@ -9,11 +9,12 @@
 // var name and now nothing works" support case.
 
 import { createServer } from 'node:net';
-import { existsSync, readdirSync, statSync, statfsSync } from 'node:fs';
+import { existsSync, statfsSync } from 'node:fs';
 import { freemem, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { effectiveConfig, homeDir } from './config-store.js';
+import { extensionFolders } from './extension-paths.js';
 import { probeOllama } from './ollama-probe.js';
 import { loadMigrations } from '../storage/db.js';
 import Database from 'better-sqlite3';
@@ -154,29 +155,11 @@ function checkRam(): CheckResult {
 }
 
 function checkExtensions(home: string): CheckResult {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const repoExt = resolve(here, '..', '..', 'extensions');
-  const userExt = join(home, 'extensions');
   let count = 0;
   let bad = 0;
-  for (const root of [userExt, repoExt]) {
-    let entries: string[];
-    try {
-      entries = readdirSync(root);
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const folder = join(root, entry);
-      try {
-        if (!statSync(folder).isDirectory()) continue;
-        const m = join(folder, 'manifest.json');
-        if (existsSync(m)) count += 1;
-        else bad += 1;
-      } catch {
-        bad += 1;
-      }
-    }
+  for (const { folder } of extensionFolders(home)) {
+    if (existsSync(join(folder, 'manifest.json'))) count += 1;
+    else bad += 1;
   }
   if (bad > 0) {
     return {

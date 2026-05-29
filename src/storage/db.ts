@@ -141,10 +141,6 @@ export function migrate(db: DB, dir: string, log?: Logger, opts: MigrateOptions 
   }
 }
 
-export function close(db: DB): void {
-  db.close();
-}
-
 function ensureSqliteFilesPrivate(path: string): void {
   ensurePrivateFile(path);
   for (const suffix of ['-wal', '-shm']) {

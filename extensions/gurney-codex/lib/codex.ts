@@ -10,6 +10,7 @@
 // of talking to the backend.
 
 import { randomUUID } from 'node:crypto';
+import { composeAbort } from '../../../src/util/abort.js';
 
 export interface CodexRequest {
   baseUrl: string;
@@ -149,7 +150,7 @@ export async function callCodex(req: CodexRequest): Promise<CodexResult> {
   const timeoutCtl = new AbortController();
   const timeoutId = setTimeout(() => timeoutCtl.abort(), req.timeoutMs);
   timeoutId.unref?.();
-  const signal = req.signal ? anySignal(req.signal, timeoutCtl.signal) : timeoutCtl.signal;
+  const signal = req.signal ? composeAbort(req.signal, timeoutCtl.signal) : timeoutCtl.signal;
 
   const headers: Record<string, string> = {
     authorization: `Bearer ${req.accessToken}`,
@@ -308,28 +309,3 @@ export async function probeAccess(opts: {
   }
 }
 
-// Combine signals. Prefer the platform combinator (`AbortSignal.any`, Node
-// >= 20.3): it holds the source signals weakly, so listeners don't pile up on
-// a caller signal reused across many handoffs. The manual fallback tears its
-// own listeners down once any source fires so survivors don't linger.
-function anySignal(...signals: AbortSignal[]): AbortSignal {
-  const anyFn = (AbortSignal as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
-  if (typeof anyFn === 'function') return anyFn(signals);
-
-  const ctl = new AbortController();
-  const cleanups: Array<() => void> = [];
-  const finish = (reason: unknown): void => {
-    for (const c of cleanups.splice(0)) c();
-    ctl.abort(reason);
-  };
-  for (const s of signals) {
-    if (s.aborted) {
-      finish(s.reason);
-      break;
-    }
-    const onAbort = (): void => finish(s.reason);
-    s.addEventListener('abort', onAbort, { once: true });
-    cleanups.push(() => s.removeEventListener('abort', onAbort));
-  }
-  return ctl.signal;
-}

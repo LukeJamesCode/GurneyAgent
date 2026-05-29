@@ -10,22 +10,15 @@ import {
   type TasksClient,
   type TasksCredentials,
 } from '../api/tasks.js';
+import { readGoogleOAuth } from './google-creds.js';
 
 // Separate WeakMap from helpers/calendar.ts — keeps the two token caches isolated.
 const tokenCaches = new WeakMap<Host, { current: TasksAccessTokenCache | null }>();
 
 export function getCredentials(host: Host): TasksCredentials | null {
-  const s = host.settings;
-  const id = s.get<string>('google_client_id');
-  const secret = s.get<string>('google_client_secret');
-  const refresh = s.get<string>('google_refresh_token');
-  if (!id || !secret || !refresh) return null;
-  return {
-    client_id: id,
-    client_secret: secret,
-    refresh_token: refresh,
-    default_tasklist: s.get<string>('default_tasklist', '@default')!,
-  };
+  const base = readGoogleOAuth(host);
+  if (!base) return null;
+  return { ...base, default_tasklist: host.settings.get<string>('default_tasklist', '@default')! };
 }
 
 export function getClient(host: Host, signal?: AbortSignal): TasksClient | null {

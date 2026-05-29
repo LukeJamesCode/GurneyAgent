@@ -11,9 +11,9 @@
 // or any monitoring shim that just needs one shell call. Both modes read
 // the same data so they stay aligned automatically.
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { extensionFolders } from './extension-paths.js';
 import { open as openDb } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import { readMetrics } from '../core/metrics.js';
@@ -185,32 +185,19 @@ export async function run(options: StatusRunOptions = {}): Promise<void> {
 }
 
 function listInstalled(home: string): Array<{ name: string }> {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const repoExt = resolve(here, '..', '..', 'extensions');
-  const userExt = join(home, 'extensions');
   const seen = new Set<string>();
   const out: Array<{ name: string }> = [];
-  for (const root of [userExt, repoExt]) {
-    let entries: string[];
+  for (const { folder } of extensionFolders(home)) {
     try {
-      entries = readdirSync(root);
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const folder = join(root, entry);
-      try {
-        if (!statSync(folder).isDirectory()) continue;
-        const m = JSON.parse(readFileSync(join(folder, 'manifest.json'), 'utf8')) as {
-          name?: string;
-        };
-        if (m.name && !seen.has(m.name)) {
-          seen.add(m.name);
-          out.push({ name: m.name });
-        }
-      } catch {
-        /* ignore */
+      const m = JSON.parse(readFileSync(join(folder, 'manifest.json'), 'utf8')) as {
+        name?: string;
+      };
+      if (m.name && !seen.has(m.name)) {
+        seen.add(m.name);
+        out.push({ name: m.name });
       }
+    } catch {
+      /* ignore */
     }
   }
   return out;

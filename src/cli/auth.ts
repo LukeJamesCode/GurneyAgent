@@ -6,9 +6,10 @@
 // returned settings into the extension_settings table.
 
 import { input, password } from '@inquirer/prompts';
-import { existsSync, readFileSync, mkdirSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { extensionFolders } from './extension-paths.js';
 import { open as openDb, type DB } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import type { AuthFlow, AuthFlowIO, Host, Manifest } from '../core/extensions.js';
@@ -22,27 +23,14 @@ export interface DiscoveredExtension {
 }
 
 export function discover(home: string, name: string): DiscoveredExtension | null {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const repoExt = resolve(here, '..', '..', 'extensions');
-  const userExt = join(home, 'extensions');
-  for (const root of [userExt, repoExt]) {
-    let entries: string[];
+  for (const { folder } of extensionFolders(home)) {
     try {
-      entries = readdirSync(root);
+      const manifestPath = join(folder, 'manifest.json');
+      if (!existsSync(manifestPath)) continue;
+      const m = JSON.parse(readFileSync(manifestPath, 'utf8')) as Manifest;
+      if (m.name === name) return { name: m.name, folder, manifest: m };
     } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const folder = join(root, entry);
-      try {
-        if (!statSync(folder).isDirectory()) continue;
-        const manifestPath = join(folder, 'manifest.json');
-        if (!existsSync(manifestPath)) continue;
-        const m = JSON.parse(readFileSync(manifestPath, 'utf8')) as Manifest;
-        if (m.name === name) return { name: m.name, folder, manifest: m };
-      } catch {
-        /* ignore */
-      }
+      /* ignore */
     }
   }
   return null;

@@ -9,6 +9,7 @@ import {
   type CalendarClient,
   type CalendarCredentials,
 } from '../api/calendar.js';
+import { readGoogleOAuth } from './google-creds.js';
 
 // One in-memory token cache per host instance, captured by closure on first
 // access. Separate WeakMap from helpers/tasks.ts so the two token caches
@@ -16,17 +17,9 @@ import {
 const tokenCaches = new WeakMap<Host, { current: CalendarAccessTokenCache | null }>();
 
 export function getCredentials(host: Host): CalendarCredentials | null {
-  const s = host.settings;
-  const id = s.get<string>('google_client_id');
-  const secret = s.get<string>('google_client_secret');
-  const refresh = s.get<string>('google_refresh_token');
-  if (!id || !secret || !refresh) return null;
-  return {
-    client_id: id,
-    client_secret: secret,
-    refresh_token: refresh,
-    calendar_id: s.get<string>('calendar_id', 'primary')!,
-  };
+  const base = readGoogleOAuth(host);
+  if (!base) return null;
+  return { ...base, calendar_id: host.settings.get<string>('calendar_id', 'primary')! };
 }
 
 export function getClient(host: Host, signal?: AbortSignal): CalendarClient | null {

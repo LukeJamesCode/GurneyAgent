@@ -21,6 +21,7 @@
 //   to Telegram in chunks.
 
 import type { Logger } from '../util/log.js';
+import { composeAbort } from '../util/abort.js';
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
@@ -641,36 +642,6 @@ export async function* parseNdjsonStream(
     // of lingering until GC.
     await reader.cancel().catch(() => {});
   }
-}
-
-// Combine N AbortSignals into one. Aborts when any input aborts.
-//
-// Prefer the platform combinator (`AbortSignal.any`, Node >= 20.3): it holds
-// the source signals weakly, so the composed signal and its listeners are
-// reclaimed when the round ends instead of piling up on a long-lived per-turn
-// signal across tool rounds. The manual fallback (older runtimes) at least
-// tears its own listeners down once any source fires, so the survivors don't
-// linger on the shared signal.
-function composeAbort(...signals: AbortSignal[]): AbortSignal {
-  const anyFn = (AbortSignal as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
-  if (typeof anyFn === 'function') return anyFn(signals);
-
-  const ctl = new AbortController();
-  const cleanups: Array<() => void> = [];
-  const finish = (reason: unknown): void => {
-    for (const c of cleanups.splice(0)) c();
-    ctl.abort(reason);
-  };
-  for (const s of signals) {
-    if (s.aborted) {
-      finish(s.reason);
-      return ctl.signal;
-    }
-    const onAbort = (): void => finish(s.reason);
-    s.addEventListener('abort', onAbort, { once: true });
-    cleanups.push(() => s.removeEventListener('abort', onAbort));
-  }
-  return ctl.signal;
 }
 
 interface OllamaChatChunk {

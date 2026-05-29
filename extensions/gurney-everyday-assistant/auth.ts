@@ -1,7 +1,6 @@
-import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import type { Host } from '../../src/core/extensions.js';
+import { setupOAuthCallbackServer } from '../../src/util/oauth-loopback.js';
 
 // Combined scope: both Calendar and Tasks in one consent screen.
 const SCOPE = 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/tasks';
@@ -17,59 +16,16 @@ export function setupCallbackServer(
   port: number,
   expectedState: string,
 ): { actualPort: Promise<number>; code: Promise<string> } {
-  let resolvePort!: (p: number) => void;
-  let rejectPort!: (e: Error) => void;
-  let resolveCode!: (c: string) => void;
-  let rejectCode!: (e: Error) => void;
-
-  const portP = new Promise<number>((res, rej) => {
-    rejectPort = rej;
-    const r = res;
-    resolvePort = r;
+  const { actualPort, code } = setupOAuthCallbackServer({
+    bindAddr,
+    port,
+    expectedState,
+    callbackPath: '/callback',
+    completionMessage:
+      'Authorization complete. You can close this tab and return to the terminal.',
+    noCodeError: 'no code returned by Google',
   });
-  const codeP = new Promise<string>((res, rej) => {
-    resolveCode = res;
-    rejectCode = rej;
-  });
-
-  const timer = setTimeout(() => {
-    server.close();
-    rejectCode(new Error('OAuth timed out (5 minutes)'));
-  }, 5 * 60_000);
-
-  const server = createServer((req, res) => {
-    if (!req.url?.startsWith('/callback')) {
-      res.statusCode = 404;
-      res.end();
-      return;
-    }
-    const addr = server.address() as AddressInfo;
-    const url = new URL(req.url, `http://localhost:${addr.port}`);
-    const code = url.searchParams.get('code');
-    const error = url.searchParams.get('error');
-    const state = url.searchParams.get('state');
-    res.statusCode = 200;
-    res.setHeader('content-type', 'text/plain');
-    res.end('Authorization complete. You can close this tab and return to the terminal.');
-    clearTimeout(timer);
-    server.close();
-    if (state !== expectedState) rejectCode(new Error('OAuth state mismatch'));
-    else if (code) resolveCode(code);
-    else rejectCode(new Error(error ?? 'no code returned by Google'));
-  });
-
-  server.on('error', (e) => {
-    clearTimeout(timer);
-    const err = e instanceof Error ? e : new Error(String(e));
-    rejectPort(err);
-    rejectCode(err);
-  });
-
-  server.listen(port, bindAddr, () => {
-    resolvePort((server.address() as AddressInfo).port);
-  });
-
-  return { actualPort: portP, code: codeP };
+  return { actualPort, code };
 }
 
 async function exchangeCode(
