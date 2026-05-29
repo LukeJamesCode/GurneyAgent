@@ -34,7 +34,21 @@ Then open the printed URL, e.g. `http://127.0.0.1:7777/?token=…`.
 - **Direct chat** streams through Gurney's orchestrator: the same model profile
   routing, extension tools, conversation history, prompt fragments, and
   guardrails used by Telegram. It is gated on the agent running so it matches
-  your Telegram conversation.
+  your Telegram conversation. The Chat Hub has full parity with the Telegram
+  chat surface:
+  - **Full tool use, incl. confirm-tier tools.** A confirm-tier tool (e.g.
+    `gurney-codex`'s `codex_handoff`) pops an inline Approve/Decline card via a
+    `confirm` SSE event (`/api/chat/confirm`); it fails closed on
+    timeout/disconnect, exactly like Telegram's Yes/No prompt.
+  - **Commands & buttons.** Core text commands (`/help`, `/model`, `/status`,
+    `/extensions`, `/lasterror`) and every enabled extension command (`/codex`,
+    `/codexstatus`, …) run via `/api/command` and surface as one-click buttons.
+    No-arg commands run immediately; arg commands prefill the input.
+  - **Dev mode.** A toggle appends model/timing/tool diagnostics under each
+    reply (parity with Telegram `/devmode`).
+  - **Voice both ways.** With `gurney-voice` installed, spoken replies stream
+    back as a `voice` SSE event and autoplay; the mic button records and POSTs
+    to `/api/chat/voice-in` (whisper.cpp), then sends the transcript.
 
 ## Settings
 

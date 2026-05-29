@@ -1,10 +1,33 @@
-/* global React, window */
+/* global React, window, MediaRecorder, navigator, Blob */
 // Chat Hub — the home screen. A hero control bar (start/stop/restart/new-chat/
-// proactive) over a live direct-chat column and a right-hand activity strip.
+// proactive/devmode) over a live direct-chat column and a right-hand activity
+// strip.
 //
 // The chat talks to POST /api/chat, which streams through Gurney's orchestrator:
-// same profile routing, tools, history, and guardrails as Telegram.
+// same profile routing, tools, history, and guardrails as Telegram. It has full
+// parity with the Telegram surface: confirm-tier tools (Codex) pop an inline
+// approval card, extension/core commands run via /api/command and surface as
+// buttons, and voice flows both ways (mic → /api/chat/voice-in transcription,
+// spoken replies stream back as a `voice` SSE event and autoplay).
 const { useState: useStateCH, useRef: useRefCH, useEffect: useEffectCH } = React;
+
+function useDevmode() {
+  const [devmode, setDevmode] = useStateCH(() => {
+    try {
+      return localStorage.getItem('gurney_devmode') === 'true';
+    } catch (e) {
+      return false;
+    }
+  });
+  useEffectCH(() => {
+    try {
+      localStorage.setItem('gurney_devmode', devmode ? 'true' : 'false');
+    } catch (e) {
+      /* ignore */
+    }
+  }, [devmode]);
+  return [devmode, setDevmode];
+}
 
 function ChatHub({
   agent,
@@ -25,10 +48,14 @@ function ChatHub({
   const running = agent === 'running';
   const [messages, setMessages] = useStateCH([]);
   const [draft, setDraft] = useStateCH('');
-  const [phase, setPhase] = useStateCH('idle'); // idle | streaming
+  const [phase, setPhase] = useStateCH('idle'); // idle | streaming | command
   const [streamText, setStreamText] = useStateCH('');
+  const [commands, setCommands] = useStateCH({ core: [], extensions: [] });
+  const [confirmReq, setConfirmReq] = useStateCH(null); // { id, prompt, tool }
+  const [devmode, setDevmode] = useDevmode();
   const scrollRef = useRefCH(null);
   const streamRef = useRefCH(null); // active postStream handle (for abort)
+  const inputRef = useRefCH(null);
 
   useEffectCH(
     () => () => {
@@ -40,17 +67,46 @@ function ChatHub({
   useEffectCH(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, streamText, phase]);
+  }, [messages, streamText, phase, confirmReq]);
 
-  const send = () => {
-    if (!draft.trim() || !running || phase !== 'idle') return;
-    const text = draft.trim();
-    setDraft('');
+  // Pull the live command reference (core + enabled extension commands) so the
+  // command bar can surface buttons. Refreshes whenever the agent comes up or
+  // the installed-extension count changes.
+  useEffectCH(() => {
+    if (!running) return;
+    let cancelled = false;
+    window.api.get('/api/commands').then((r) => {
+      if (!cancelled && r.ok && r.data) {
+        setCommands({ core: r.data.core || [], extensions: r.data.extensions || [] });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [running, extensions && extensions.enabled]);
+
+  // Append a synthesized voice clip to the most recent assistant bubble.
+  const attachVoice = (id) => {
+    setMessages((m) => {
+      for (let i = m.length - 1; i >= 0; i--) {
+        if (m[i].role === 'assistant' && !m[i].voice) {
+          const copy = m.slice();
+          copy[i] = { ...copy[i], voice: id };
+          return copy;
+        }
+      }
+      return m;
+    });
+  };
+
+  // Stream a normal (non-slash) message through the orchestrator.
+  const stream = (text) => {
     setMessages((m) => [...m, { id: Date.now(), role: 'user', text, time: now() }]);
     setPhase('streaming');
     setStreamText('');
 
     let acc = '';
+    let metaAcc = null;
     streamRef.current = window.api.postStream(
       '/api/chat',
       { text },
@@ -62,25 +118,38 @@ function ChatHub({
           } else if (ev === 'replace' && data && typeof data.text === 'string') {
             acc = data.text;
             setStreamText(acc);
+          } else if (ev === 'meta' && data) {
+            metaAcc = data;
+          } else if (ev === 'confirm' && data && data.id) {
+            setConfirmReq({ id: data.id, prompt: data.prompt, tool: data.tool });
           } else if (ev === 'instant' && data && typeof data.text === 'string') {
             // A finished reply from an extension intercept (instant-responses):
-            // land it as its own bubble immediately, separate from any streamed
-            // orchestrator reply that may follow.
+            // land it as its own bubble immediately.
             setMessages((m) => [
               ...m,
               { id: Date.now() + Math.random(), role: 'assistant', text: data.text, time: now() },
             ]);
+          } else if (ev === 'voice' && data && data.id) {
+            attachVoice(data.id);
           } else if (ev === 'done') {
             const finalText = (data && data.text) || acc;
             if (finalText) {
               setMessages((m) => [
                 ...m,
-                { id: Date.now(), role: 'assistant', text: finalText, time: now() },
+                {
+                  id: Date.now(),
+                  role: 'assistant',
+                  text: finalText,
+                  time: now(),
+                  meta: metaAcc,
+                },
               ]);
             }
             setStreamText('');
+            setConfirmReq(null);
             setPhase('idle');
-            streamRef.current = null;
+            // Don't null the handle — the stream stays open briefly for a
+            // trailing `voice` event from afterReply. It closes on its own.
           } else if (ev === 'error') {
             setMessages((m) => [
               ...m,
@@ -93,17 +162,88 @@ function ChatHub({
               },
             ]);
             setStreamText('');
+            setConfirmReq(null);
             setPhase('idle');
             streamRef.current = null;
           }
         },
       },
     );
-    streamRef.current.done.catch(() => {
-      setStreamText('');
-      setPhase('idle');
-      streamRef.current = null;
-    });
+    streamRef.current.done
+      .catch(() => {})
+      .finally(() => {
+        // The stream is fully over once `done` resolves (server closes it after
+        // afterReply voice). Force idle as a safety net for an abnormal close
+        // that never emitted a `done`/`error` event. `setPhase`'s updater form
+        // avoids clobbering a phase a later turn may have set.
+        setStreamText('');
+        setPhase((p) => (p === 'streaming' ? 'idle' : p));
+        streamRef.current = null;
+      });
+  };
+
+  // Run a slash command line (e.g. "/codex fix this") — the web parity of the
+  // Telegram command dispatch. newchat/stop map to the existing controls.
+  const runCommandLine = async (line) => {
+    const sp = line.indexOf(' ');
+    const head = (sp === -1 ? line.slice(1) : line.slice(1, sp)).trim();
+    const args = sp === -1 ? '' : line.slice(sp + 1).trim();
+    const low = head.toLowerCase();
+    if (low === 'newchat') return newChat();
+    if (low === 'stop') return abort();
+    setMessages((m) => [...m, { id: Date.now(), role: 'user', text: line, time: now() }]);
+    setPhase('command');
+    const r = await window.api.post('/api/command', { name: head, args });
+    setPhase('idle');
+    const replies = r.ok && r.data && Array.isArray(r.data.replies) ? r.data.replies : [];
+    if (replies.length > 0) {
+      setMessages((m) => [
+        ...m,
+        ...replies.map((t) => ({
+          id: Date.now() + Math.random(),
+          role: 'assistant',
+          text: t,
+          time: now(),
+        })),
+      ]);
+    } else {
+      const err = (r.data && r.data.error) || r.error || 'Command produced no output.';
+      setMessages((m) => [
+        ...m,
+        { id: Date.now(), role: 'assistant', text: '⚠️ ' + err, time: now(), error: true },
+      ]);
+    }
+  };
+
+  // Single entry point for sending — handles slash commands and plain messages.
+  const submit = (raw) => {
+    const text = (raw || '').trim();
+    if (!text || !running || phase !== 'idle') return;
+    setDraft('');
+    if (text.startsWith('/')) {
+      runCommandLine(text);
+      return;
+    }
+    stream(text);
+  };
+  const send = () => submit(draft);
+
+  // Run a command from a button. No-arg commands fire immediately; commands that
+  // take arguments prefill the input so the user can type the rest.
+  const runCommandButton = (cmd, desc) => {
+    const name = cmd.replace(/^\//, '');
+    if (commandNeedsArgs(desc)) {
+      setDraft('/' + name + ' ');
+      if (inputRef.current) inputRef.current.focus();
+    } else {
+      submit('/' + name);
+    }
+  };
+
+  const answerConfirm = async (ok) => {
+    const req = confirmReq;
+    setConfirmReq(null);
+    if (req) await window.api.post('/api/chat/confirm', { id: req.id, ok });
   };
 
   const abort = () => {
@@ -117,6 +257,7 @@ function ChatHub({
         { id: Date.now(), role: 'assistant', text: streamText, time: now() },
       ]);
     setStreamText('');
+    setConfirmReq(null);
     setPhase('idle');
   };
   const newChat = () => {
@@ -125,10 +266,18 @@ function ChatHub({
       streamRef.current = null;
     }
     setStreamText('');
+    setConfirmReq(null);
     setPhase('idle');
     setMessages([]);
     window.api.post('/api/chat/clear');
   };
+
+  // Mic → transcript → auto-send (so a spoken reply can follow via afterReply).
+  const onTranscript = (transcript) => {
+    if (transcript && transcript.trim()) submit(transcript.trim());
+  };
+
+  const streaming = phase === 'streaming' || phase === 'command';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
@@ -139,13 +288,15 @@ function ChatHub({
         onStop={onStop}
         proactive={proactive}
         onProactive={onProactive}
+        devmode={devmode}
+        onDevmode={setDevmode}
         onRestart={() => {
           newChat();
           onRestart();
         }}
         onNewChat={newChat}
         onAbort={abort}
-        streaming={phase !== 'idle'}
+        streaming={streaming}
       />
 
       <OverviewGrid
@@ -188,7 +339,7 @@ function ChatHub({
             <window.Icon name="chat" size={17} style={{ color: 'var(--text-3)' }} />
             <span style={{ fontWeight: 600, fontSize: 14.5 }}>Direct chat</span>
             <span style={{ fontSize: 12.5, color: 'var(--text-3)' }}>
-              — talks to your local model{activeModel ? ` (${activeModel})` : ''}
+              — full tool use, commands &amp; voice{activeModel ? ` · ${activeModel}` : ''}
             </span>
           </div>
 
@@ -198,12 +349,16 @@ function ChatHub({
             )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               {messages.map((m) => (
-                <Bubble key={m.id} m={m} />
+                <Bubble key={m.id} m={m} devmode={devmode} />
               ))}
-              {phase === 'streaming' && !streamText && <Thinking label="Thinking…" />}
+              {phase === 'streaming' && !streamText && !confirmReq && (
+                <Thinking label="Thinking…" />
+              )}
+              {phase === 'command' && <Thinking label="Running command…" />}
               {phase === 'streaming' && streamText && (
                 <Bubble m={{ role: 'assistant', text: streamText, time: now() }} streaming />
               )}
+              {confirmReq && <ConfirmCard req={confirmReq} onAnswer={answerConfirm} />}
             </div>
           </div>
 
@@ -229,8 +384,16 @@ function ChatHub({
                 <window.StatusDot state="stopped" /> Agent is stopped — start it to send messages.
               </div>
             )}
+            {running && (
+              <CommandBar
+                commands={commands}
+                disabled={phase !== 'idle'}
+                onCommand={runCommandButton}
+              />
+            )}
             <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
               <textarea
+                ref={inputRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 rows={1}
@@ -240,7 +403,9 @@ function ChatHub({
                     send();
                   }
                 }}
-                placeholder={running ? 'Message Gurney…' : 'Start the agent to chat'}
+                placeholder={
+                  running ? 'Message Gurney…  (try /help or /codex)' : 'Start the agent to chat'
+                }
                 disabled={!running}
                 onFocus={(e) => {
                   e.target.style.borderColor = 'var(--accent)';
@@ -268,7 +433,12 @@ function ChatHub({
                   opacity: running ? 1 : 0.6,
                 }}
               />
-              {phase === 'streaming' ? (
+              <MicButton
+                running={running}
+                disabled={phase !== 'idle'}
+                onTranscript={onTranscript}
+              />
+              {streaming ? (
                 <window.Button variant="subtle" icon="stop" onClick={abort} style={{ height: 44 }}>
                   Stop
                 </window.Button>
@@ -305,6 +475,188 @@ function now() {
 }
 function calc(px) {
   return `calc(${px}px * var(--gap))`;
+}
+
+// Heuristic: does a command take arguments? "<task>" or an "on|off" style hint
+// in the description means yes (prefill), otherwise it's a no-arg command (run).
+function commandNeedsArgs(desc) {
+  if (!desc) return false;
+  return desc.includes('<') || /\b\w+\|\w+/.test(desc);
+}
+
+/* ---- command bar: core + extension command buttons ---- */
+function CommandBar({ commands, disabled, onCommand }) {
+  const core = (commands.core || []).filter((c) =>
+    ['/help', '/status', '/model', '/extensions'].includes(c.cmd),
+  );
+  const exts = commands.extensions || [];
+  if (core.length === 0 && exts.length === 0) return null;
+  const chip = (c, accent) => (
+    <button
+      key={c.cmd}
+      className="prompt-chip"
+      disabled={disabled}
+      title={c.desc || c.cmd}
+      onClick={() => onCommand(c.cmd, c.desc)}
+      style={{
+        opacity: disabled ? 0.5 : 1,
+        cursor: disabled ? 'default' : 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        ...(accent ? { borderColor: 'var(--accent)', color: 'var(--accent-strong)' } : {}),
+      }}
+    >
+      <window.Icon name={accent ? 'plug' : 'terminal'} size={12} />
+      {c.cmd}
+    </button>
+  );
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: 7,
+        marginBottom: 10,
+        alignItems: 'center',
+      }}
+    >
+      {exts.map((c) => chip(c, true))}
+      {exts.length > 0 && core.length > 0 && (
+        <span style={{ width: 1, height: 18, background: 'var(--border)', margin: '0 2px' }} />
+      )}
+      {core.map((c) => chip(c, false))}
+    </div>
+  );
+}
+
+/* ---- confirm-tier tool approval card ---- */
+function ConfirmCard({ req, onAnswer }) {
+  return (
+    <div
+      className="rise"
+      style={{
+        alignSelf: 'flex-start',
+        maxWidth: '88%',
+        border: '1px solid color-mix(in oklab, var(--warn) 45%, var(--border))',
+        background: 'color-mix(in oklab, var(--warn) 9%, var(--surface-2))',
+        borderRadius: 14,
+        borderBottomLeftRadius: 4,
+        padding: '12px 14px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <window.Icon name="shield" size={15} style={{ color: 'var(--warn)' }} />
+        <span style={{ fontWeight: 700, fontSize: 13.5 }}>Approval needed</span>
+        {req.tool && (
+          <span
+            className="mono"
+            style={{ fontSize: 11.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}
+          >
+            {req.tool}
+          </span>
+        )}
+      </div>
+      <p style={{ fontSize: 14, lineHeight: 1.5, color: 'var(--text)', whiteSpace: 'pre-wrap' }}>
+        {req.prompt}
+      </p>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <window.Button variant="primary" icon="check" size="sm" onClick={() => onAnswer(true)}>
+          Approve
+        </window.Button>
+        <window.Button variant="subtle" icon="stop" size="sm" onClick={() => onAnswer(false)}>
+          Decline
+        </window.Button>
+      </div>
+    </div>
+  );
+}
+
+/* ---- mic button: record → /api/chat/voice-in → transcript ---- */
+function MicButton({ running, disabled, onTranscript }) {
+  const [state, setState] = useStateCH('idle'); // idle | recording | working
+  const recorderRef = useRefCH(null);
+  const chunksRef = useRefCH([]);
+  const startedRef = useRefCH(0);
+
+  const supported =
+    typeof MediaRecorder !== 'undefined' &&
+    navigator.mediaDevices &&
+    navigator.mediaDevices.getUserMedia;
+  if (!supported) return null;
+
+  const stop = () => {
+    const rec = recorderRef.current;
+    if (rec && rec.state !== 'inactive') rec.stop();
+  };
+
+  const start = async () => {
+    try {
+      const streamMedia = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+          ? 'audio/ogg;codecs=opus'
+          : '';
+      const rec = mime
+        ? new MediaRecorder(streamMedia, { mimeType: mime })
+        : new MediaRecorder(streamMedia);
+      chunksRef.current = [];
+      startedRef.current = Date.now();
+      rec.ondataavailable = (e) => {
+        if (e.data && e.data.size) chunksRef.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        streamMedia.getTracks().forEach((t) => t.stop());
+        const ms = Date.now() - startedRef.current;
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
+        setState('working');
+        const r = await window.api.postBlob(
+          '/api/chat/voice-in?ms=' + ms,
+          blob,
+          rec.mimeType || 'audio/webm',
+        );
+        setState('idle');
+        if (r.ok && r.data && r.data.ok && r.data.transcript) {
+          onTranscript(r.data.transcript);
+        } else {
+          const msg = (r.data && r.data.error) || r.error || 'Could not transcribe.';
+          window.alert(msg);
+        }
+      };
+      rec.start();
+      recorderRef.current = rec;
+      setState('recording');
+    } catch (e) {
+      setState('idle');
+      window.alert('Microphone access was denied or unavailable.');
+    }
+  };
+
+  const onClick = () => {
+    if (state === 'recording') stop();
+    else if (state === 'idle') start();
+  };
+
+  const recording = state === 'recording';
+  return (
+    <window.Button
+      variant={recording ? 'primary' : 'subtle'}
+      icon={state === 'working' ? 'refresh' : 'mic'}
+      onClick={onClick}
+      disabled={!running || (disabled && state === 'idle') || state === 'working'}
+      title={recording ? 'Stop recording' : 'Record a voice message'}
+      style={{
+        height: 44,
+        ...(recording ? { borderColor: 'var(--err)', color: 'var(--err)' } : {}),
+      }}
+    >
+      {recording ? 'Stop' : ''}
+    </window.Button>
+  );
 }
 
 function OverviewGrid({ agent, health, activeModel, scheduler, extensions, tier, allowlistCount }) {
@@ -414,6 +766,8 @@ function AgentControlBar({
   onStop,
   proactive,
   onProactive,
+  devmode,
+  onDevmode,
   onRestart,
   onNewChat,
   onAbort,
@@ -505,6 +859,21 @@ function AgentControlBar({
           <window.Toggle checked={proactive} onChange={onProactive} label="Proactive nudges" />
           <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)' }}>Proactive</span>
         </div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '6px 12px 6px 6px',
+            borderRadius: 99,
+            border: '1px solid var(--border)',
+            background: 'var(--surface-2)',
+          }}
+          title="Append model, timing, and tool activity under each reply."
+        >
+          <window.Toggle checked={devmode} onChange={onDevmode} label="Dev mode diagnostics" />
+          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)' }}>Dev mode</span>
+        </div>
         <window.Button
           variant="ghost"
           size="sm"
@@ -546,7 +915,7 @@ function AgentControlBar({
 }
 
 /* ---- chat bubble ---- */
-function Bubble({ m, streaming }) {
+function Bubble({ m, streaming, devmode }) {
   const isUser = m.role === 'user';
   return (
     <div
@@ -610,9 +979,44 @@ function Bubble({ m, streaming }) {
             />
           )}
         </div>
+        {m.voice && (
+          <audio
+            controls
+            autoPlay
+            src={window.api.url('/api/chat/voice/' + m.voice)}
+            style={{ height: 34, marginTop: 2, maxWidth: 260 }}
+          />
+        )}
+        {devmode && m.meta && !isUser && <MetaFooter meta={m.meta} />}
         {m.time && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{m.time}</span>}
       </div>
     </div>
+  );
+}
+
+/* ---- devmode diagnostics footer (parity with Telegram /devmode) ---- */
+function MetaFooter({ meta }) {
+  const tools = Array.isArray(meta.tools) ? meta.tools : [];
+  const parts = [];
+  if (meta.model) parts.push(meta.model);
+  if (typeof meta.elapsedMs === 'number') parts.push(`${meta.elapsedMs}ms`);
+  if (typeof meta.promptTokens === 'number') parts.push(`${meta.promptTokens}p`);
+  if (typeof meta.completionTokens === 'number') parts.push(`${meta.completionTokens}c`);
+  const toolStr =
+    tools.length > 0
+      ? tools.map((t) => `${t.name}${t.ok === false ? '✗' : ''}`).join(', ')
+      : 'none';
+  return (
+    <span
+      style={{
+        fontSize: 11,
+        color: 'var(--text-3)',
+        fontFamily: 'var(--font-mono)',
+        marginTop: 2,
+      }}
+    >
+      {parts.join(' · ')} · tools: {toolStr}
+    </span>
   );
 }
 
@@ -665,8 +1069,8 @@ function EmptyChat({ running, onPrompt }) {
   const prompts = [
     'What should I focus on today?',
     'Check my upcoming reminders.',
-    'Draft a concise status update.',
-    'What extensions are available?',
+    '/codex refactor this function for clarity',
+    '/help',
   ];
   return (
     <div
@@ -699,7 +1103,7 @@ function EmptyChat({ running, onPrompt }) {
       <p style={{ fontWeight: 600, color: 'var(--text-2)', fontSize: 15 }}>No messages yet</p>
       <p style={{ fontSize: 13.5, maxWidth: 280 }}>
         {running
-          ? 'Say hello below — this talks to the same local model your Telegram bot uses.'
+          ? 'Say hello below — same model, tools, commands and voice as your Telegram bot.'
           : 'Start the agent to begin chatting.'}
       </p>
       {running && (

@@ -122,12 +122,47 @@
     return { abort: () => controller.abort(), done: promise };
   }
 
+  /* POST a binary body (e.g. a recorded voice note). Resolves like request(). */
+  async function postBlob(path, blob, contentType) {
+    try {
+      const h = headers();
+      if (contentType) h['content-type'] = contentType;
+      const res = await fetch(path, { method: 'POST', headers: h, body: blob });
+      const text = await res.text();
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch (e) {
+        data = { raw: text };
+      }
+      if (!res.ok) {
+        return {
+          ok: false,
+          status: res.status,
+          error: (data && data.error) || res.statusText,
+          data,
+        };
+      }
+      return { ok: true, status: res.status, data };
+    } catch (e) {
+      return { ok: false, error: String(e && e.message ? e.message : e), offline: true };
+    }
+  }
+
+  /* Build a tokenized URL for direct use in <audio src> / fetch (GET routes). */
+  function url(path) {
+    if (!token || path.indexOf('token=') !== -1) return path;
+    return path + (path.indexOf('?') === -1 ? '?' : '&') + 'token=' + encodeURIComponent(token);
+  }
+
   window.api = {
     get hasToken() {
       return !!token;
     },
     get: (path) => request('GET', path),
     post: (path, body) => request('POST', path, body),
+    postBlob,
+    url,
     streamSSE,
     postStream,
   };

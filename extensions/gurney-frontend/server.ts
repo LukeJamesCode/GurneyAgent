@@ -14,9 +14,17 @@
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
+import {
+  copyFileSync,
+  createReadStream,
+  existsSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { freemem, networkInterfaces, totalmem } from 'node:os';
+import { freemem, networkInterfaces, tmpdir, totalmem } from 'node:os';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,15 +32,18 @@ import { open as openDb, type DB } from '../../src/storage/db.js';
 import { createLogger } from '../../src/util/log.js';
 import { createOllama } from '../../src/core/llm.js';
 import { createOrchestrator, type Orchestrator } from '../../src/core/orchestrator.js';
-import { createToolRegistry } from '../../src/core/tools.js';
+import { createToolRegistry, type ToolContext, type ToolHandler } from '../../src/core/tools.js';
 import { createScheduler, type Nudge } from '../../src/core/scheduler.js';
 import { createPrefsStore } from '../../src/core/prefs.js';
 import { setupFollowups } from '../../src/core/followups.js';
 import {
   createExtensionLoader,
+  type AfterTurnContext,
   type ExtensionLoader,
   type HostOrchestrator,
+  type TelegramCommandContext,
   type TelegramInterceptContext,
+  type TelegramVoiceMessage,
   type VoicePayload,
 } from '../../src/core/extensions.js';
 import { profilesForTier } from '../../src/cli/profiles.js';
@@ -62,6 +73,30 @@ const REPO_ROOT = resolve(HERE, '..', '..');
 const EXT_NAME = 'gurney-frontend';
 const VERSION = '0.1.0';
 const HOST_VERSION = '0.1.0';
+
+// How long a confirm-tier prompt waits for a Yes/No before giving up and
+// failing closed. Mirrors the Telegram adapter's CONFIRM_TIMEOUT_MS.
+const CONFIRM_TIMEOUT_MS = 2 * 60_000;
+
+// SSE event emitter for the currently-streaming chat request. Confirm prompts
+// (mid-turn) and voice clips (post-turn) are pushed through it.
+type ChatSink = (event: string, data: unknown) => void;
+
+// Synthesized voice replies waiting to be fetched once by the browser. Kept in
+// memory (clips are small OGGs) and dropped on first GET or after a TTL so a
+// reload can't accumulate audio. Module-global because the GET that serves a
+// clip is a different request than the chat stream that produced it.
+interface VoiceClip {
+  bytes: Buffer;
+  mime: string;
+  at: number;
+}
+const voiceClips = new Map<string, VoiceClip>();
+const VOICE_CLIP_TTL_MS = 5 * 60_000;
+function reapVoiceClips(): void {
+  const cutoff = Date.now() - VOICE_CLIP_TTL_MS;
+  for (const [id, clip] of voiceClips) if (clip.at < cutoff) voiceClips.delete(id);
+}
 
 export interface FrontendRunOptions {
   // The CLI entry script to re-exec when spawning `gurney` subcommands. Passed
@@ -138,6 +173,25 @@ async function readJson<T>(req: IncomingMessage): Promise<T> {
   const raw = await readBody(req);
   if (!raw.trim()) return {} as T;
   return JSON.parse(raw) as T;
+}
+
+// Collect a binary request body (e.g. a recorded voice note) into a Buffer.
+function readRawBody(req: IncomingMessage, limitBytes = 16 * 1024 * 1024): Promise<Buffer> {
+  return new Promise((resolveBody, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > limitBytes) {
+        reject(new Error('request body too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolveBody(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
 }
 
 function maskToken(token: string): string {
@@ -474,6 +528,12 @@ interface DirectChatRuntime {
   scheduler: ReturnType<typeof createScheduler>;
   orchestrator: Orchestrator;
   log: ReturnType<typeof createLogger>;
+  // SSE emitter for the in-flight chat request, or null when idle. The
+  // confirm-tier tool gate and the voice sink push events through it.
+  sink: { current: ChatSink | null };
+  // Parked confirm-tier prompts keyed by id; resolved by POST /api/chat/confirm
+  // (or fail-closed on timeout/abort/disconnect).
+  pendingConfirms: Map<string, (ok: boolean) => void>;
 }
 
 let directChatRuntime: Promise<DirectChatRuntime> | null = null;
@@ -577,15 +637,53 @@ async function getDirectChatRuntime(cfg: GurneyConfig): Promise<DirectChatRuntim
       idleEvictionMs,
       ...(inferenceTimeoutMs !== undefined ? { inferenceTimeoutMs } : {}),
     });
+    // Shared mutable state between the live chat stream and the tool/voice
+    // hooks created below. `sink.current` is the SSE emitter while a chat
+    // request is in flight (null when idle); pendingConfirms parks confirm-tier
+    // prompts until the browser answers them.
+    const sink: { current: ChatSink | null } = { current: null };
+    const pendingConfirms = new Map<string, (ok: boolean) => void>();
+
+    // Confirm-tier tool gate for the web UI — the parity of telegram.ts's
+    // confirmToolCall. Pops a Yes/No prompt in the browser chat and resolves to
+    // the user's choice. Fails closed when there's no live stream to ask in, the
+    // turn was cancelled, or the user doesn't answer in time.
+    const confirm = async (
+      handler: ToolHandler,
+      args: Record<string, unknown>,
+      ctx: ToolContext,
+    ): Promise<boolean> => {
+      const emit = sink.current;
+      if (!emit || ctx.signal?.aborted) return false;
+      const id = randomUUID();
+      let preview: string;
+      try {
+        preview = handler.confirmPrompt ? handler.confirmPrompt(args) : `Run ${handler.name}?`;
+      } catch {
+        preview = `Run ${handler.name}?`;
+      }
+      emit('confirm', { id, prompt: preview, tool: handler.name });
+      return await new Promise<boolean>((resolveConfirm) => {
+        let settled = false;
+        const finish = (ok: boolean): void => {
+          if (settled) return;
+          settled = true;
+          pendingConfirms.delete(id);
+          clearTimeout(timer);
+          ctx.signal?.removeEventListener('abort', onAbort);
+          resolveConfirm(ok);
+        };
+        const onAbort = (): void => finish(false);
+        const timer = setTimeout(() => finish(false), CONFIRM_TIMEOUT_MS);
+        timer.unref?.();
+        ctx.signal?.addEventListener('abort', onAbort, { once: true });
+        pendingConfirms.set(id, finish);
+      });
+    };
+
     const tools = createToolRegistry({
       log,
-      confirm: async (handler) => {
-        log.warn(
-          'direct chat blocked confirm-tier tool because the web UI has no confirm prompt yet',
-          { tool: handler.name },
-        );
-        return false;
-      },
+      confirm,
       isOwner: (ctx) => ctx.chatId === ids.chatId,
     });
     const prefs = createPrefsStore(db);
@@ -623,9 +721,28 @@ async function getDirectChatRuntime(cfg: GurneyConfig): Promise<DirectChatRuntim
       allowedUserIds: cfg.telegram.allowedIds,
       watch: false,
       orchestrator: orchestratorBridge,
-      sendVoice: async (_chatId: number, _voice: VoicePayload) => {
-        void _chatId;
-        void _voice;
+      // Voice replies (gurney-voice Piper TTS) land here via afterReply. Read
+      // the synthesized OGG into memory, stash it for one-shot fetch, and tell
+      // the browser to play it. No-op when no chat stream is live.
+      sendVoice: async (_chatId: number, voice: VoicePayload) => {
+        const emit = sink.current;
+        if (!emit) return;
+        let bytes: Buffer | null = voice.data ?? null;
+        if (!bytes && voice.path) {
+          try {
+            bytes = readFileSync(voice.path);
+          } catch (e) {
+            log.warn('failed to read synthesized voice file', {
+              error: e instanceof Error ? e.message : String(e),
+            });
+            return;
+          }
+        }
+        if (!bytes || bytes.length === 0) return;
+        reapVoiceClips();
+        const id = randomUUID();
+        voiceClips.set(id, { bytes, mime: 'audio/ogg', at: Date.now() });
+        emit('voice', { id, mime: 'audio/ogg' });
       },
     });
     await loader.loadAll();
@@ -655,6 +772,8 @@ async function getDirectChatRuntime(cfg: GurneyConfig): Promise<DirectChatRuntim
       scheduler,
       orchestrator,
       log,
+      sink,
+      pendingConfirms,
     };
     directChatRuntimeValue = rt;
     return rt;
@@ -688,10 +807,16 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
   };
 
   const runtime = await getDirectChatRuntime(cfg);
+  // Route confirm prompts and voice clips emitted during this turn to this
+  // request's SSE stream.
+  runtime.sink.current = sse;
   const controller = new AbortController();
   req.on('close', () => {
     controller.abort();
     runtime.orchestrator.stop(runtime.chatId);
+    // Fail closed: a disconnect mid-confirm must never leave a confirm-tier
+    // tool waiting (and thus eligible to run) on a dead stream.
+    for (const finish of [...runtime.pendingConfirms.values()]) finish(false);
   });
 
   // Mirror the Telegram adapter: run the registered intercept chain first so
@@ -702,6 +827,7 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
   // fall through to the orchestrator. Each `reply` lands as its own chat bubble.
   let full = '';
   let orchestratorRan = false;
+  let afterTurnBase: AfterTurnContext | undefined;
 
   const runOrchestrator = async (): Promise<void> => {
     orchestratorRan = true;
@@ -720,9 +846,12 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
           sse('replace', { text: full });
         }
         if (chunk.done && chunk.meta) {
+          afterTurnBase = chunk.meta.afterTurn;
           sse('meta', {
             model: chunk.meta.model,
             elapsedMs: chunk.meta.elapsedMs,
+            promptTokens: chunk.meta.promptTokens,
+            completionTokens: chunk.meta.completionTokens,
             tools: chunk.meta.afterTurn?.toolCalls ?? [],
           });
         }
@@ -764,15 +893,235 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
   try {
     await runNext();
     sse('done', { text: orchestratorRan ? full : '' });
+    // Post-turn hooks, same as the Telegram adapter. afterReply is what drives
+    // gurney-voice's spoken reply (its sendVoice lands on this still-open
+    // stream as a `voice` event); afterTurn feeds learning/routine extensions.
+    // Keep the stream open until they settle so the voice clip is delivered.
+    if (orchestratorRan && full && !controller.signal.aborted) {
+      await runAfterReplies(runtime, runtime.chatId, runtime.userId, full);
+      if (afterTurnBase) {
+        await runAfterTurns(runtime, {
+          ...afterTurnBase,
+          assistantText: full,
+          finishedAt: Date.now(),
+        });
+      }
+    }
   } catch (e) {
     sse('error', { message: e instanceof Error ? e.message : String(e) });
   } finally {
+    runtime.sink.current = null;
     res.end();
+  }
+}
+
+// Run extension afterReply hooks (gurney-voice TTS, etc.) for a finished web
+// chat turn. Errors are isolated so one extension can't abort the others.
+async function runAfterReplies(
+  runtime: DirectChatRuntime,
+  chatId: number,
+  userId: number,
+  reply: string,
+): Promise<void> {
+  if (!reply || reply === '(no reply)') return;
+  for (const h of runtime.loader.afterReplies()) {
+    try {
+      await h.handler({
+        chatId,
+        userId,
+        text: reply,
+        log: runtime.log.child({ ext: h.extension, hook: 'afterReply' }),
+      });
+    } catch (e) {
+      runtime.log.warn('afterReply hook failed', {
+        ext: h.extension,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+}
+
+// Run rich afterTurn hooks (learning/routine extensions) for a finished turn.
+async function runAfterTurns(runtime: DirectChatRuntime, turn: AfterTurnContext): Promise<void> {
+  if (!turn.assistantText || turn.assistantText === '(no reply)') return;
+  for (const h of runtime.loader.afterTurns()) {
+    try {
+      await h.handler(turn);
+    } catch (e) {
+      runtime.log.warn('afterTurn hook failed', {
+        ext: h.extension,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
   }
 }
 
 function hhmm(): string {
   return new Date().toTimeString().slice(0, 5);
+}
+
+// ---------------------------------------------------------------------------
+// Command execution: the web parity of the Telegram adapter's slash-command
+// dispatch. Core text commands are answered from local state; everything else
+// is routed to an extension command handler (loader.commands()).
+// ---------------------------------------------------------------------------
+const CORE_TEXT_COMMANDS = new Set(['help', 'model', 'status', 'extensions', 'lasterror']);
+
+async function coreCommandText(runtime: DirectChatRuntime, name: string): Promise<string> {
+  switch (name) {
+    case 'help': {
+      const ref = commandReference();
+      const lines = ['Core commands:', ...ref.core.map((c) => `${c.cmd} — ${c.desc}`)];
+      if (ref.extensions.length > 0) {
+        lines.push('', 'Extension commands:');
+        for (const c of ref.extensions) lines.push(`${c.cmd}${c.desc ? ' — ' + c.desc : ''}`);
+      }
+      return lines.join('\n');
+    }
+    case 'model': {
+      const profiles = runtime.llm.listProfiles();
+      const lines = Object.entries(profiles).map(([n, cfg]) =>
+        cfg ? `${n}: ${cfg.model} (ctx ${cfg.contextTokens})` : `${n}: (not configured)`,
+      );
+      return lines.join('\n') || 'No model profiles configured.';
+    }
+    case 'status': {
+      const health = await runtime.llm.health();
+      const exts = listExtensions().filter((e) => e.enabled);
+      return [
+        `llm: ${health.ok ? 'ok' : 'down'} (${health.models.length} models)`,
+        `extensions: ${exts.length === 0 ? 'none' : exts.map((e) => e.name).join(', ')}`,
+      ].join('\n');
+    }
+    case 'extensions': {
+      const exts = listExtensions();
+      if (exts.length === 0) return 'No extensions installed.';
+      return [
+        'Extensions:',
+        ...exts.map((e) => `• ${e.name} — ${e.enabled ? e.status : 'disabled'}`),
+      ].join('\n');
+    }
+    case 'lasterror': {
+      const e = runtime.orchestrator.lastError(runtime.chatId);
+      return e ? `Last error: ${e}` : 'No recent errors.';
+    }
+    default:
+      return `Unknown command /${name}.`;
+  }
+}
+
+async function runCommand(
+  runtime: DirectChatRuntime,
+  name: string,
+  args: string,
+): Promise<{ ok: boolean; replies?: string[]; error?: string }> {
+  const lower = name.toLowerCase();
+  if (CORE_TEXT_COMMANDS.has(lower)) {
+    return { ok: true, replies: [await coreCommandText(runtime, lower)] };
+  }
+  const rec = runtime.loader.commands().find((c) => c.name === lower);
+  if (!rec) return { ok: false, error: `/${name} is not a known command` };
+  const replies: string[] = [];
+  const cctx: TelegramCommandContext = {
+    chatId: runtime.chatId,
+    userId: runtime.userId,
+    args,
+    reply: async (t) => {
+      replies.push(t);
+    },
+  };
+  try {
+    await rec.handler(cctx);
+  } catch (e) {
+    runtime.log.warn('extension command failed', {
+      ext: rec.extension,
+      command: lower,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true, replies };
+}
+
+// Transcribe a recorded voice note via gurney-voice's onVoiceMessage handler,
+// the web parity of telegram.ts's bot.on('message:voice'). Returns the
+// transcript only — the browser then sends it as a normal chat turn, so a
+// spoken reply (if /voice on) follows the same afterReply path.
+async function voiceIn(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  let cfg: GurneyConfig;
+  try {
+    cfg = effectiveConfig(homeDir());
+  } catch (e) {
+    return sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+  }
+  const runtime = await getDirectChatRuntime(cfg);
+  const handlers = runtime.loader.voiceMessages();
+  if (handlers.length === 0) {
+    return sendJson(res, 200, {
+      ok: false,
+      error: 'Voice transcription isn’t available — install and enable gurney-voice.',
+    });
+  }
+
+  let bytes: Buffer;
+  try {
+    bytes = await readRawBody(req);
+  } catch {
+    return sendJson(res, 413, { ok: false, error: 'recording too large' });
+  }
+  if (bytes.length === 0) return sendJson(res, 400, { ok: false, error: 'empty recording' });
+
+  const contentType = String(req.headers['content-type'] ?? '');
+  const ms = Number(url.searchParams.get('ms'));
+  const durationSec = Number.isFinite(ms) && ms > 0 ? Math.round(ms / 1000) : 0;
+  const fileExt = contentType.includes('ogg') ? '.ogg' : '.webm';
+  const tmp = join(tmpdir(), `gurney-voicein-${randomUUID()}${fileExt}`);
+  writeFileSync(tmp, bytes);
+
+  const msg: TelegramVoiceMessage = {
+    chatId: runtime.chatId,
+    userId: runtime.userId,
+    fileId: '',
+    durationSec,
+    ...(contentType ? { mimeType: contentType } : {}),
+    log: runtime.log,
+    downloadToFile: async (dest: string) => {
+      copyFileSync(tmp, dest);
+    },
+  };
+
+  let transcript: string | null = null;
+  try {
+    for (const h of handlers) {
+      try {
+        const r = await h.handler(msg);
+        if (r && 'transcript' in r && r.transcript.trim().length > 0) {
+          transcript = r.transcript.trim();
+          break;
+        }
+      } catch (e) {
+        runtime.log.warn('voice-in handler failed', {
+          ext: h.extension,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!transcript) {
+    return sendJson(res, 200, {
+      ok: false,
+      error:
+        'Couldn’t transcribe that. Make sure voice transcription is on (/voice transcribe on).',
+    });
+  }
+  return sendJson(res, 200, { ok: true, transcript });
 }
 
 // ---------------------------------------------------------------------------
@@ -1190,8 +1539,54 @@ async function handleApi(
       return sendJson(res, 200, commandReference());
     }
 
+    // Run a core text command or an extension command (the codex buttons, etc.).
+    if (path === '/api/command' && method === 'POST') {
+      const { name, args } = await readJson<{ name?: string; args?: string }>(req);
+      if (!name || !name.trim()) return sendJson(res, 400, { ok: false, error: 'missing command' });
+      const cfg = effectiveConfig(homeDir());
+      const runtime = await getDirectChatRuntime(cfg);
+      const r = await runCommand(runtime, name.trim(), (args ?? '').trim());
+      return sendJson(res, r.ok ? 200 : r.error?.includes('not a known') ? 404 : 500, r);
+    }
+
     if (path === '/api/chat' && method === 'POST') {
       return streamChat(req, res);
+    }
+
+    // Resolve a parked confirm-tier prompt (fail-closed everywhere else).
+    if (path === '/api/chat/confirm' && method === 'POST') {
+      const { id, ok } = await readJson<{ id?: string; ok?: boolean }>(req);
+      const rt = directChatRuntimeValue;
+      const finish = rt && id ? rt.pendingConfirms.get(id) : undefined;
+      if (!finish) {
+        return sendJson(res, 409, { ok: false, error: 'no confirmation is waiting' });
+      }
+      finish(!!ok);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // Transcribe a recorded voice note (gurney-voice / whisper.cpp).
+    if (path === '/api/chat/voice-in' && method === 'POST') {
+      return voiceIn(req, res, url);
+    }
+
+    // Serve a synthesized voice reply once, then drop it.
+    const voiceServe = /^\/api\/chat\/voice\/([a-f0-9-]+)$/i.exec(path);
+    if (voiceServe && method === 'GET') {
+      const clip = voiceClips.get(voiceServe[1]!);
+      if (!clip) {
+        res.writeHead(404);
+        res.end('not found');
+        return;
+      }
+      voiceClips.delete(voiceServe[1]!);
+      res.writeHead(200, {
+        'content-type': clip.mime,
+        'content-length': String(clip.bytes.length),
+        'cache-control': 'no-store',
+      });
+      res.end(clip.bytes);
+      return;
     }
 
     if (path === '/api/chat/clear' && method === 'POST') {
