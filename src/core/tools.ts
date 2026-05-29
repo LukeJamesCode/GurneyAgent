@@ -8,6 +8,7 @@
 
 import type { ToolCall, ToolSchema } from './llm.js';
 import type { Logger } from '../util/log.js';
+import { composeAbort } from '../util/abort.js';
 
 export type ToolPermissionTier = 'auto' | 'confirm' | 'owner';
 
@@ -318,34 +319,6 @@ export function createToolRegistry(opts: RegistryOptions): ToolRegistry {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-// Combine N AbortSignals into one. Aborts when any input aborts.
-//
-// Prefer the platform combinator (`AbortSignal.any`, Node >= 20.3): it holds
-// the source signals weakly, so listeners don't accumulate on a long-lived
-// per-turn signal across tool rounds. The manual fallback tears its own
-// listeners down once any source fires.
-function composeAbort(...signals: AbortSignal[]): AbortSignal {
-  const anyFn = (AbortSignal as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
-  if (typeof anyFn === 'function') return anyFn(signals);
-
-  const ctl = new AbortController();
-  const cleanups: Array<() => void> = [];
-  const finish = (reason: unknown): void => {
-    for (const c of cleanups.splice(0)) c();
-    ctl.abort(reason);
-  };
-  for (const s of signals) {
-    if (s.aborted) {
-      finish(s.reason);
-      return ctl.signal;
-    }
-    const onAbort = (): void => finish(s.reason);
-    s.addEventListener('abort', onAbort, { once: true });
-    cleanups.push(() => s.removeEventListener('abort', onAbort));
-  }
-  return ctl.signal;
-}
 
 // Tiny JSON-schema validator. Matches what extensions actually write in
 // their `parameters` blocks — type, properties, required, enum, items —
