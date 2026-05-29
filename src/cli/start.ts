@@ -104,11 +104,10 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   }
   if (existing) clearPid(home);
 
-  if (options.detach) {
-    return detach(home);
-  }
-
   const cfg = effectiveConfig(home);
+  // Validate the config in the parent — before any fork — so a missing or
+  // malformed token fails loudly here instead of crashing a detached child
+  // that the parent already reported as "started in background".
   if (!cfg.telegram.token) {
     throw new Error("Telegram bot token is not set. Run 'gurney init' or set TELEGRAM_BOT_TOKEN.");
   }
@@ -122,6 +121,10 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     throw new Error(
       "No Telegram user IDs are allowlisted. Run 'gurney init' or set TELEGRAM_ALLOWED_IDS.",
     );
+  }
+
+  if (options.detach) {
+    return detach(home);
   }
 
   const log = createLogger({
@@ -435,11 +438,13 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
 // Spawn ourselves as a detached child running `gurney start` (without
 // --detach) and exit. The child writes its PID once it's fully wired up.
 function detach(home: string): void {
+  // Re-exec the *same* entry script this process was launched with. Hardcoding
+  // ./index.js broke `src`-via-tsx runs (only index.ts exists there) and any
+  // install whose bin lives elsewhere; argv[1] is always the real entrypoint.
+  // Fall back to the sibling index.js for the built layout if argv[1] is absent.
   const here = dirname(fileURLToPath(import.meta.url));
-  // We're running either from dist/cli/start.js (built) or from src via tsx.
-  // In both cases the parent CLI entrypoint is alongside us at ./index.{js,ts}.
-  const cliEntry = join(here, 'index.js');
-  const child = spawn(process.execPath, [cliEntry, 'start'], {
+  const cliEntry = process.argv[1] ?? join(here, 'index.js');
+  const child = spawn(process.execPath, [...process.execArgv, cliEntry, 'start'], {
     detached: true,
     stdio: 'ignore',
     env: process.env,

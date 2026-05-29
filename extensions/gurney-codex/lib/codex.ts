@@ -308,16 +308,28 @@ export async function probeAccess(opts: {
   }
 }
 
-// Combine signals without depending on AbortSignal.any (Node 20 has it, but
-// being explicit keeps the floor low and the intent obvious).
+// Combine signals. Prefer the platform combinator (`AbortSignal.any`, Node
+// >= 20.3): it holds the source signals weakly, so listeners don't pile up on
+// a caller signal reused across many handoffs. The manual fallback tears its
+// own listeners down once any source fires so survivors don't linger.
 function anySignal(...signals: AbortSignal[]): AbortSignal {
+  const anyFn = (AbortSignal as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+  if (typeof anyFn === 'function') return anyFn(signals);
+
   const ctl = new AbortController();
+  const cleanups: Array<() => void> = [];
+  const finish = (reason: unknown): void => {
+    for (const c of cleanups.splice(0)) c();
+    ctl.abort(reason);
+  };
   for (const s of signals) {
     if (s.aborted) {
-      ctl.abort(s.reason);
+      finish(s.reason);
       break;
     }
-    s.addEventListener('abort', () => ctl.abort(s.reason), { once: true });
+    const onAbort = (): void => finish(s.reason);
+    s.addEventListener('abort', onAbort, { once: true });
+    cleanups.push(() => s.removeEventListener('abort', onAbort));
   }
   return ctl.signal;
 }

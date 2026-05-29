@@ -28,15 +28,26 @@ export async function run(): Promise<void> {
     return;
   }
 
-  // Stop a running daemon before wiping its home dir.
+  // Stop a running daemon before wiping its home dir. Poll until it actually
+  // exits rather than sleeping a flat interval — the daemon's shutdown budget
+  // is several seconds, and wiping the DB/WAL/logs out from under a still-live
+  // process can corrupt state or crash it mid-shutdown.
   const pid = readPid(home);
   if (pid && isAlive(pid)) {
     process.stdout.write(`Stopping running daemon (pid ${pid})...\n`);
     try {
       process.kill(pid, 'SIGTERM');
-      await new Promise<void>((resolve) => setTimeout(resolve, 1500));
     } catch {
       // Already gone - fine.
+    }
+    const deadlineMs = Date.now() + 10_000;
+    while (isAlive(pid) && Date.now() < deadlineMs) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+    }
+    if (isAlive(pid)) {
+      process.stdout.write(
+        `Daemon (pid ${pid}) did not exit within 10s; continuing with wipe anyway.\n`,
+      );
     }
   }
 

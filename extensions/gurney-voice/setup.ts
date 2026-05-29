@@ -10,7 +10,7 @@ import {
   statSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ExtensionSetupContext } from '../../src/core/extensions.js';
 
@@ -80,15 +80,40 @@ function defaultRunStep(step: InstallStep): number | null {
   return result.status;
 }
 
+// Abort a download if no bytes arrive for this long. Reset-on-progress stall
+// timer, not a total deadline, so a large but progressing model download still
+// completes while a wedged connection can't hang setup forever.
+const DOWNLOAD_STALL_MS = 60_000;
+
 async function defaultDownloadFile(url: string, destPath: string): Promise<void> {
-  const res = await fetch(url, { redirect: 'follow' });
-  if (!res.ok || !res.body) {
-    throw new Error(`download failed: ${url} -> HTTP ${res.status}`);
+  const ctl = new AbortController();
+  let stall: ReturnType<typeof setTimeout> | undefined;
+  const resetStall = (): void => {
+    if (stall) clearTimeout(stall);
+    stall = setTimeout(() => ctl.abort(new Error('download stalled')), DOWNLOAD_STALL_MS);
+    stall.unref?.();
+  };
+  resetStall();
+  try {
+    const res = await fetch(url, { redirect: 'follow', signal: ctl.signal });
+    if (!res.ok || !res.body) {
+      throw new Error(`download failed: ${url} -> HTTP ${res.status}`);
+    }
+    const monitor = new Transform({
+      transform(chunk, _enc, cb): void {
+        resetStall();
+        cb(null, chunk);
+      },
+    });
+    await pipeline(
+      Readable.fromWeb(res.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>),
+      monitor,
+      createWriteStream(destPath),
+      { signal: ctl.signal },
+    );
+  } finally {
+    if (stall) clearTimeout(stall);
   }
-  await pipeline(
-    Readable.fromWeb(res.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>),
-    createWriteStream(destPath),
-  );
 }
 
 async function downloadWithPartFile(
@@ -682,7 +707,7 @@ export async function ensureWhisperModel(
   const home = opts.home;
   const stdout = opts.stdout ?? ((text: string) => process.stdout.write(text));
   const downloadFile = opts.downloadFile ?? defaultDownloadFile;
-  const modelId = (opts.modelId?.trim() || DEFAULT_WHISPER_MODEL).replace(/\.bin$/i, '');
+  let modelId = (opts.modelId?.trim() || DEFAULT_WHISPER_MODEL).replace(/\.bin$/i, '');
 
   if (!home) {
     stdout('  whisper model cannot be downloaded without a Gurney home directory.\n');
@@ -694,6 +719,9 @@ export async function ensureWhisperModel(
       `  Invalid whisper model id '${modelId}'. Expected something like ggml-base.en or ggml-tiny.\n` +
         `  Falling back to ${DEFAULT_WHISPER_MODEL}.\n`,
     );
+    // Actually fall back — otherwise the invalid id flows into the path and
+    // download URL below, writing a bogus file the loader can never use.
+    modelId = DEFAULT_WHISPER_MODEL.replace(/\.bin$/i, '');
   }
 
   const dir = join(home, 'extension_state', 'gurney-voice', 'whisper-models');

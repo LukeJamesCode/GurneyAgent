@@ -44,6 +44,11 @@ export class TtsSynthError extends Error {
   }
 }
 
+// Hard cap on piper/ffmpeg wall time. These run inside the Telegram afterReply
+// and speaker turn paths; without a kill a wedged binary hangs the reply
+// forever. Short clips finish in well under a second, so 120s is generous.
+const SHELL_TIMEOUT_MS = 120_000;
+
 const defaultRunShell: RunShell = (cmd, args, { input, outputPath }) =>
   new Promise((resolve, reject) => {
     const child = spawn(cmd, args, {
@@ -51,18 +56,37 @@ const defaultRunShell: RunShell = (cmd, args, { input, outputPath }) =>
     });
     const stdoutChunks: Buffer[] = [];
     let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGKILL');
+      reject(new Error(`${cmd} timed out after ${SHELL_TIMEOUT_MS}ms`));
+    }, SHELL_TIMEOUT_MS);
+    timer.unref?.();
     if (!outputPath) {
       child.stdout?.on('data', (c: Buffer) => stdoutChunks.push(c));
     }
     child.stderr?.on('data', (c: Buffer) => (stderr += c.toString('utf8')));
-    child.on('error', reject);
-    child.on('close', (code) =>
+    // A child that exits before reading stdin makes the write below emit EPIPE
+    // on the stdin stream — an unhandled 'error' event would crash the process.
+    child.stdin?.on('error', () => {});
+    child.on('error', (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       resolve({
         stdout: Buffer.concat(stdoutChunks),
         stderr,
         code: code ?? -1,
-      }),
-    );
+      });
+    });
     if (input) child.stdin?.end(input);
     else child.stdin?.end();
   });

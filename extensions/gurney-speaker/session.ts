@@ -85,6 +85,15 @@ export interface SessionDeps {
 // in 16-bit terms, which is well below room-tone noise on the INMP441.
 const SILENCE_MEAN_ABS = 600;
 
+// Captured audio is 16 kHz, 16-bit mono PCM. The wall-clock maxUtteranceSec
+// timer bounds a turn in real time, but a device (or a misbehaving/hostile one
+// that completed HELLO) can stream frames far faster than realtime over the
+// WS, so bytes accumulate at arrival rate, not playback rate. Cap total
+// buffered PCM at ~2x the nominal max-duration size so RAM can't grow without
+// bound before the timer fires.
+const PCM_SAMPLE_RATE = 16000;
+const PCM_BYTES_PER_SAMPLE = 2;
+
 export class DeviceSession {
   state: DeviceState;
   private cfg: SessionConfig;
@@ -168,6 +177,18 @@ export class DeviceSession {
     this.pcm.push(payload);
     this.pcmBytes += payload.length;
     this.lastFrameAt = this.deps.now();
+
+    // Hard byte ceiling independent of the wall-clock timer (see PCM_* above).
+    // Close the turn with what we have rather than buffer without bound.
+    const maxPcmBytes = this.cfg.maxUtteranceSec * PCM_SAMPLE_RATE * PCM_BYTES_PER_SAMPLE * 2;
+    if (this.pcmBytes >= maxPcmBytes) {
+      this.deps.log.warn('pcm buffer hit byte ceiling, closing turn', {
+        deviceId: this.cfg.deviceId,
+        pcmBytes: this.pcmBytes,
+      });
+      void this.closeTurn('max-duration');
+      return;
+    }
 
     // Reset the silence timer every time we see a non-silent frame; if the
     // frame is below the silence threshold, let the timer keep running.

@@ -9,8 +9,15 @@
 import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import type { Logger } from '../../src/util/log.js';
+
+// Abort a download if no bytes arrive for this long. A stall timer (reset on
+// every chunk) rather than a total deadline lets a large model download over a
+// slow-but-progressing link finish, while a truly wedged connection — which
+// would otherwise hang ensureVoiceModel forever, including inside afterReply —
+// is cut loose.
+const DOWNLOAD_STALL_MS = 60_000;
 
 export interface VoiceSpec {
   id: string;
@@ -91,14 +98,30 @@ export async function ensureVoiceModel(
 
 async function download(url: string, destPath: string, log: Logger): Promise<void> {
   const tmp = `${destPath}.part`;
-  const res = await fetch(url, { redirect: 'follow' });
-  if (!res.ok || !res.body) {
-    throw new Error(`download failed: ${url} → HTTP ${res.status}`);
-  }
+  const ctl = new AbortController();
+  let stall: ReturnType<typeof setTimeout> | undefined;
+  const resetStall = (): void => {
+    if (stall) clearTimeout(stall);
+    stall = setTimeout(() => ctl.abort(new Error('download stalled')), DOWNLOAD_STALL_MS);
+    stall.unref?.();
+  };
+  resetStall();
   try {
+    const res = await fetch(url, { redirect: 'follow', signal: ctl.signal });
+    if (!res.ok || !res.body) {
+      throw new Error(`download failed: ${url} → HTTP ${res.status}`);
+    }
+    const monitor = new Transform({
+      transform(chunk, _enc, cb): void {
+        resetStall();
+        cb(null, chunk);
+      },
+    });
     await pipeline(
       Readable.fromWeb(res.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>),
+      monitor,
       createWriteStream(tmp),
+      { signal: ctl.signal },
     );
     renameSync(tmp, destPath);
   } catch (e) {
@@ -108,5 +131,7 @@ async function download(url: string, destPath: string, log: Logger): Promise<voi
       error: e instanceof Error ? e.message : String(e),
     });
     throw e;
+  } finally {
+    if (stall) clearTimeout(stall);
   }
 }
