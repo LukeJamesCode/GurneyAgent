@@ -12,6 +12,7 @@
 // already does).
 
 import { createServer, type Server as HttpServer } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
   OP,
@@ -68,14 +69,34 @@ export interface WsServerHandle {
 }
 
 const HELLO_TIMEOUT_MS = 5_000;
+// Ping interval for liveness. A half-open socket (device drops off WiFi without
+// a TCP FIN) would otherwise linger in `sessions` forever, holding its timers
+// and buffered PCM, since 'close'/'error' may never fire. We ping on this
+// cadence and terminate any client that missed the previous pong.
+const HEARTBEAT_MS = 30_000;
+
+// Constant-time shared-secret comparison. A plain `!==` on a LAN-exposed
+// listener is a (weak) timing oracle on the secret; compare in fixed time once
+// lengths match. The length check leaks only the length, which is acceptable.
+function secretsMatch(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 export function startWsServer(opts: WsServerOptions): WsServerHandle {
   const httpServer: HttpServer | null = opts.noBind ? null : createServer();
   const wss = new WebSocketServer({ noServer: opts.noBind, server: httpServer ?? undefined });
   const sessions = new Set<DeviceSession>();
+  // Liveness flag per socket, set on every pong. WeakMap so a closed socket is
+  // reclaimed without explicit cleanup.
+  const alive = new WeakMap<WebSocket, boolean>();
 
   function handleConnection(socket: WebSocket): void {
     const log = opts.log.child({ component: 'gurney-speaker/ws' });
+    alive.set(socket, true);
+    socket.on('pong', () => alive.set(socket, true));
     let session: DeviceSession | null = null;
     let helloDeadline: ReturnType<typeof setTimeout> | null = setTimeout(() => {
       log.warn('hello timeout, dropping socket');
@@ -132,7 +153,7 @@ export function startWsServer(opts: WsServerOptions): WsServerHandle {
           }
           return;
         }
-        if (!hello.secret || hello.secret !== opts.sharedSecret) {
+        if (!hello.secret || !secretsMatch(hello.secret, opts.sharedSecret)) {
           log.warn('hello rejected: secret mismatch', { deviceId: hello.deviceId });
           send(encodeJson(OP.WELCOME, { ok: false, reason: 'auth' }));
           try {
@@ -224,6 +245,29 @@ export function startWsServer(opts: WsServerOptions): WsServerHandle {
 
   wss.on('connection', handleConnection);
 
+  // Heartbeat sweep: terminate any client that didn't pong since the last tick,
+  // then ping the survivors. Operates on real bound connections (wss.clients);
+  // unref'd so it never holds the process open on its own.
+  const heartbeat = setInterval(() => {
+    for (const client of wss.clients) {
+      if (alive.get(client) === false) {
+        try {
+          client.terminate();
+        } catch {
+          /* ignore */
+        }
+        continue;
+      }
+      alive.set(client, false);
+      try {
+        client.ping();
+      } catch {
+        /* ignore */
+      }
+    }
+  }, HEARTBEAT_MS);
+  heartbeat.unref?.();
+
   // Without these, a transport-level error (bind failure, malformed
   // listen_host setting) throws an unhandled 'error' event and kills the
   // whole Gurney process. Log and continue instead.
@@ -265,6 +309,7 @@ export function startWsServer(opts: WsServerOptions): WsServerHandle {
   return {
     port: opts.port,
     async close(): Promise<void> {
+      clearInterval(heartbeat);
       for (const s of sessions) s.shutdown();
       sessions.clear();
       await new Promise<void>((resolve) => wss.close(() => resolve()));

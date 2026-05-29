@@ -30,6 +30,24 @@ export function writePid(pid: number, home: string = homeDir()): void {
   ensurePrivateFile(file);
 }
 
+// Atomically create the PID file as a startup lock. Returns true if we won the
+// lock, false if another process already holds it (file exists). The 'wx' open
+// flag makes the create-or-fail atomic, closing the window where two concurrent
+// `gurney start` invocations both pass the readPid guard and then both boot
+// into two live daemons.
+export function tryAcquirePidLock(pid: number, home: string = homeDir()): boolean {
+  const file = pidFilePath(home);
+  ensurePrivateDir(dirname(file));
+  try {
+    writeFileSync(file, String(pid), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw e;
+  }
+  ensurePrivateFile(file);
+  return true;
+}
+
 export function readPid(home: string = homeDir()): number | null {
   const file = pidFilePath(home);
   if (!existsSync(file)) return null;

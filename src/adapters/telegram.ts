@@ -542,7 +542,12 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
   // callback update — safe because the orchestrator turn runs detached from the
   // long-poll (dispatchOrchestratorTurn uses `void`), so awaiting the prompt
   // never blocks update processing.
-  const pendingConfirms = new Map<string, (ok: boolean) => void>();
+  // confirmSeq is process-global, so the id alone doesn't identify the chat a
+  // prompt belongs to. Bind each pending confirm to its originating chat and
+  // verify it on the callback, otherwise an allowlisted user in chat B could
+  // press `confirm:<id>:yes` and approve a confirm-tier (often destructive)
+  // tool that chat A is waiting on.
+  const pendingConfirms = new Map<string, { chatId: number; resolve: (ok: boolean) => void }>();
   let confirmSeq = 0;
 
   async function confirmToolCall(
@@ -600,12 +605,14 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
       );
       timer.unref?.();
       ctx.signal?.addEventListener('abort', onAbort, { once: true });
-      pendingConfirms.set(id, (ok) =>
-        // On approval the tool may take a while (e.g. a Codex call) and we send
-        // no interim text, so the edited prompt is the user's only "it's
-        // working" signal — say so rather than a terse "Approved."
-        finish(ok, ok ? `${preview}\n\n✅ On it — working…` : `${preview}\n\n❌ Declined.`),
-      );
+      pendingConfirms.set(id, {
+        chatId,
+        resolve: (ok) =>
+          // On approval the tool may take a while (e.g. a Codex call) and we send
+          // no interim text, so the edited prompt is the user's only "it's
+          // working" signal — say so rather than a terse "Approved."
+          finish(ok, ok ? `${preview}\n\n✅ On it — working…` : `${preview}\n\n❌ Declined.`),
+      });
     });
   }
 
@@ -830,6 +837,7 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
               // (e.g. a Codex handoff answer) would otherwise be rejected by
               // the API and silently dropped — the user would see nothing.
               for (const part of splitForTelegram(display)) {
+                if (part.trim().length === 0) continue; // Telegram rejects empty text
                 await ctx.reply(part);
               }
             } catch (e) {
@@ -1030,11 +1038,20 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
       const id = sep === -1 ? rest : rest.slice(0, sep);
       const choice = sep === -1 ? '' : rest.slice(sep + 1);
       const ok = choice === 'yes';
-      await answerCallback(ctx, ok ? 'Approved' : 'Declined');
-      const resolve = pendingConfirms.get(id);
+      const pending = pendingConfirms.get(id);
       // Missing id = stale prompt (already resolved by timeout/cancel, or from a
-      // previous process). Nothing to do beyond the ack above.
-      if (resolve) resolve(ok);
+      // previous process). Reject a press from a different chat than the one the
+      // prompt was issued in — the global id must not be approvable cross-chat.
+      if (!pending) {
+        await answerCallback(ctx);
+        return;
+      }
+      if (pending.chatId !== ctx.chat.id) {
+        await answerCallback(ctx, 'This confirmation belongs to another chat.');
+        return;
+      }
+      await answerCallback(ctx, ok ? 'Approved' : 'Declined');
+      pending.resolve(ok);
       return;
     }
 
@@ -1385,11 +1402,16 @@ export function splitForTelegram(text: string, limit = TELEGRAM_CHUNK): string[]
     if (cut < limit * 0.5) cut = window.lastIndexOf('\n');
     if (cut < limit * 0.5) cut = window.lastIndexOf(' ');
     if (cut < limit * 0.5) cut = limit; // no good boundary — hard cut
-    out.push(rest.slice(0, cut).trimEnd());
+    // Skip an all-whitespace chunk: pushing it would make the send loop call
+    // ctx.reply('') which Telegram rejects with a 400, aborting the rest of a
+    // long reply.
+    const piece = rest.slice(0, cut).trimEnd();
+    if (piece.length > 0) out.push(piece);
     rest = rest.slice(cut).trimStart();
   }
   if (rest.length > 0) out.push(rest);
-  return out;
+  // Guarantee a non-empty result even for pathological all-whitespace input.
+  return out.length > 0 ? out : [text];
 }
 
 // Pure command handler for /quiet so it's directly testable. Returns the

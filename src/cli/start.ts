@@ -46,7 +46,7 @@ import {
   metricsFilePath,
   pidFilePath,
   readPid,
-  writePid,
+  tryAcquirePidLock,
 } from './daemon.js';
 
 const HOST_VERSION = '0.1.0';
@@ -125,6 +125,15 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
 
   if (options.detach) {
     return detach(home);
+  }
+
+  // Acquire the PID file as an atomic lock before the (slow) boot. This closes
+  // the race where two near-simultaneous starts both pass the readPid guard
+  // above and then both wire up a full daemon. We've already validated config,
+  // so a lingering lock here only ever points at a real boot attempt; if that
+  // boot crashes, the next start's isAlive() check reaps the dead pid.
+  if (!tryAcquirePidLock(process.pid, home)) {
+    throw new Error("gurney is already starting. Use 'gurney stop' first if this is stale.");
   }
 
   const log = createLogger({
@@ -345,7 +354,8 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   });
   metricsWriter.start();
 
-  writePid(process.pid, home);
+  // PID file was already written as a lock at the top of run() (see
+  // tryAcquirePidLock); nothing more to do here.
 
   // Best-effort warm-up. `/api/tags` proves Ollama is reachable, then the
   // tiny capped chat call actually loads the configured chat model so the

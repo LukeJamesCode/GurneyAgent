@@ -29,6 +29,16 @@ test('splitForTelegram prefers a newline boundary near the limit', () => {
   assert.equal(parts[1], tail);
 });
 
+test('splitForTelegram never emits an empty/whitespace-only part', () => {
+  // A run of blank lines straddling the boundary used to produce an empty
+  // chunk, which the send loop then handed to ctx.reply('') — Telegram 400s on
+  // empty text, truncating the rest of a long reply.
+  const text = 'a'.repeat(3990) + '\n'.repeat(60) + 'b'.repeat(3990);
+  const parts = splitForTelegram(text, 4000);
+  for (const p of parts) assert.ok(p.trim().length > 0, `empty part produced: ${JSON.stringify(p)}`);
+  assert.ok(parts.length >= 2);
+});
+
 function silentLogger(): Logger {
   const noop = (): void => {};
   const l: Logger = {
@@ -106,11 +116,11 @@ function tick(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0));
 }
 
-async function pressButton(fb: FakeBot, data: string): Promise<void> {
+async function pressButton(fb: FakeBot, data: string, chatId = 5): Promise<void> {
   const cb = fb.handlers.get('callback_query:data');
   assert.ok(cb, 'callback_query:data handler should be registered');
   await cb({
-    chat: { id: 5 },
+    chat: { id: chatId },
     from: { id: 1 },
     callbackQuery: { data },
     answerCallbackQuery: async () => {},
@@ -167,6 +177,21 @@ test('aborting the turn (/stop) while waiting resolves false', async () => {
   assert.equal(fb.sent.length, 1);
   ctl.abort();
   assert.equal(await p, false);
+});
+
+test('a confirm press from a different chat cannot approve another chat’s prompt', async () => {
+  const fb = fakeBot();
+  const adapter = makeAdapter(fb);
+  const ctx: ToolContext = { chatId: 5, log: silentLogger() };
+  const p = adapter.confirmToolCall(handler, { task: 'rm -rf' }, ctx);
+  await tick();
+  // Press from chat 6 — must be rejected (different chat than the prompt).
+  await pressButton(fb, 'confirm:1:yes', 6);
+  const state = await Promise.race([p.then(() => 'settled'), tick().then(() => 'pending')]);
+  assert.equal(state, 'pending', 'cross-chat press must not resolve the confirm');
+  // The legitimate chat can still approve.
+  await pressButton(fb, 'confirm:1:yes', 5);
+  assert.equal(await p, true);
 });
 
 test('a stale button press (unknown id) is ignored without throwing', async () => {

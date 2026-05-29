@@ -162,6 +162,10 @@ const DEFAULT_RATE_LIMIT: RateLimit = { max: 1, windowMs: 5 * 60_000 };
 const DEFERRED_SWEEP_EXTENSION = 'core';
 const DEFERRED_SWEEP_JOB = 'deferred-nudges-sweep';
 const DEFERRED_SWEEP_LIMIT = 50;
+// Backoff applied to a deferred nudge whose dispatch attempt threw, so a
+// persistently-failing send (e.g. the user blocked the bot) can't be retried
+// every minute indefinitely.
+const DEFERRED_RETRY_BACKOFF_MS = 10 * 60_000;
 
 type DeferrableReason = 'rate_limit' | QuietReason;
 
@@ -474,6 +478,17 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         job: jobLabel,
         error: e instanceof Error ? e.message : String(e),
       });
+      // Back off a deferred row whose dispatch *attempt* threw (e.g. the user
+      // blocked the bot). Without this its not_before stays in the past and the
+      // sweep retries it every single minute forever; bump it so a persistent
+      // failure can't hot-loop. expires_at (when set) still eventually drops it.
+      if (opts.db && dispatchOpts.sourceDeferredId !== undefined) {
+        opts.db
+          .prepare(
+            `UPDATE deferred_nudges SET not_before = ? WHERE id = ? AND delivered_at IS NULL`,
+          )
+          .run(now().getTime() + DEFERRED_RETRY_BACKOFF_MS, dispatchOpts.sourceDeferredId);
+      }
       return false;
     } finally {
       const cur = pendingByChat.get(n.chatId) ?? 0;
@@ -568,10 +583,15 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   }
 
   function scheduleNextTick(): void {
-    const next = new Date(now().getTime());
+    // Read the clock once: computing the next-minute boundary and the delay
+    // from two separate now() reads can race a clock step (NTP / mocked clock)
+    // across the boundary, yielding delay 0 and a double-fire of the same
+    // minute.
+    const nowMs = now().getTime();
+    const next = new Date(nowMs);
     next.setSeconds(0, 0);
     next.setMinutes(next.getMinutes() + 1);
-    const delay = Math.max(0, next.getTime() - now().getTime());
+    const delay = Math.max(0, next.getTime() - nowMs);
     timer = setTimeout(() => {
       void tickAt(now()).finally(() => {
         if (timer) scheduleNextTick();
