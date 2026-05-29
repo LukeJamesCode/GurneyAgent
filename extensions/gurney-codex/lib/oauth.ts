@@ -25,9 +25,8 @@
 // settings override) can adjust them without editing logic if OpenAI rotates
 // them.
 
-import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { randomBytes, createHash } from 'node:crypto';
+import { setupOAuthCallbackServer } from '../../../src/util/oauth-loopback.js';
 
 // Public Codex CLI OAuth client id. This is a public client (no secret); PKCE
 // is what protects the exchange.
@@ -272,64 +271,14 @@ export function setupCallbackServer(
   expectedState: string,
   timeoutMs = 5 * 60_000,
 ): CallbackServer {
-  let resolvePort!: (p: number) => void;
-  let rejectPort!: (e: Error) => void;
-  let resolveCode!: (c: string) => void;
-  let rejectCode!: (e: Error) => void;
-
-  const portP = new Promise<number>((res, rej) => {
-    resolvePort = res;
-    rejectPort = rej;
+  return setupOAuthCallbackServer({
+    bindAddr,
+    port,
+    expectedState,
+    timeoutMs,
+    callbackPath: CALLBACK_PATH,
+    completionMessage:
+      'Codex authorization complete. You can close this tab and return to the terminal.',
+    noCodeError: 'no code returned by OpenAI',
   });
-  const codeP = new Promise<string>((res, rej) => {
-    resolveCode = res;
-    rejectCode = rej;
-  });
-
-  const timer = setTimeout(() => {
-    server.close();
-    rejectCode(new Error('OAuth timed out (5 minutes)'));
-  }, timeoutMs);
-  timer.unref?.();
-
-  const server = createServer((req, res) => {
-    if (!req.url?.startsWith(CALLBACK_PATH)) {
-      res.statusCode = 404;
-      res.end();
-      return;
-    }
-    const addr = server.address() as AddressInfo;
-    const url = new URL(req.url, `http://localhost:${addr.port}`);
-    const code = url.searchParams.get('code');
-    const error = url.searchParams.get('error');
-    const state = url.searchParams.get('state');
-    res.statusCode = 200;
-    res.setHeader('content-type', 'text/plain');
-    res.end('Codex authorization complete. You can close this tab and return to the terminal.');
-    clearTimeout(timer);
-    server.close();
-    if (state !== expectedState) rejectCode(new Error('OAuth state mismatch'));
-    else if (code) resolveCode(code);
-    else rejectCode(new Error(error ?? 'no code returned by OpenAI'));
-  });
-
-  server.on('error', (e) => {
-    clearTimeout(timer);
-    const err = e instanceof Error ? e : new Error(String(e));
-    rejectPort(err);
-    rejectCode(err);
-  });
-
-  server.listen(port, bindAddr, () => {
-    resolvePort((server.address() as AddressInfo).port);
-  });
-
-  return {
-    actualPort: portP,
-    code: codeP,
-    close: () => {
-      clearTimeout(timer);
-      server.close();
-    },
-  };
 }
