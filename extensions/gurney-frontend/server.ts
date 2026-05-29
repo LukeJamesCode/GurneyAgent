@@ -1425,7 +1425,23 @@ export async function run(opts: FrontendRunOptions = {}): Promise<Server> {
   });
 
   await new Promise<void>((resolveListen, reject) => {
-    server.once('error', reject);
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        // A stale/orphaned panel often holds the port without being tracked in
+        // frontend.pid, so `gurney frontend stop` can't see it. Tell the user
+        // how to find and free it rather than surfacing the raw errno.
+        reject(
+          new Error(
+            `port ${port} on ${host} is already in use — another gurney-frontend may be running.\n` +
+              `  Find it:  lsof -i :${port}\n` +
+              `  Free it:  fuser -k ${port}/tcp   (or kill the PID it shows)\n` +
+              `  Then retry: gurney frontend`,
+          ),
+        );
+      } else {
+        reject(err);
+      }
+    });
     server.listen(port, host, () => resolveListen());
   });
 

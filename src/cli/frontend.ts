@@ -71,7 +71,13 @@ export async function run(options: FrontendRunOptions = {}): Promise<void> {
     run: (opts: { cliEntry?: string; execArgv?: string[] }) => Promise<unknown>;
   };
 
-  const cleanup = (): void => clearFrontendPid(pidFile);
+  // Only remove the pidfile if it still names us. Without this guard, a start
+  // that fails to bind (port held by another panel) would, on exit, delete a
+  // pidfile that points at the live server — leaving `gurney frontend stop`
+  // unable to find it.
+  const cleanup = (): void => {
+    if (readFrontendPid(pidFile) === process.pid) clearFrontendPid(pidFile);
+  };
   process.once('exit', cleanup);
 
   await mod.run({
