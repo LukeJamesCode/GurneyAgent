@@ -36,6 +36,8 @@ const EXT_BLURBS = {
     'Connect a small ESP32 speaker/mic on your network and talk to Gurney out loud.',
   'gurney-codex':
     'Escalate hard coding tasks to a more capable cloud model — local-first, with a cloud fallback.',
+  'gurney-frontend':
+    "This control panel itself — the browser UI you're using right now. Always on while you're here.",
 };
 
 // Shown only when the server is unreachable, so the wizard/settings still render.

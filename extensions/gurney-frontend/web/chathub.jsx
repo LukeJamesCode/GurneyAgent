@@ -58,11 +58,22 @@ function ChatHub({
           } else if (ev === 'replace' && data && typeof data.text === 'string') {
             acc = data.text;
             setStreamText(acc);
-          } else if (ev === 'done') {
+          } else if (ev === 'instant' && data && typeof data.text === 'string') {
+            // A finished reply from an extension intercept (instant-responses):
+            // land it as its own bubble immediately, separate from any streamed
+            // orchestrator reply that may follow.
             setMessages((m) => [
               ...m,
-              { id: Date.now(), role: 'assistant', text: (data && data.text) || acc, time: now() },
+              { id: Date.now() + Math.random(), role: 'assistant', text: data.text, time: now() },
             ]);
+          } else if (ev === 'done') {
+            const finalText = (data && data.text) || acc;
+            if (finalText) {
+              setMessages((m) => [
+                ...m,
+                { id: Date.now(), role: 'assistant', text: finalText, time: now() },
+              ]);
+            }
             setStreamText('');
             setPhase('idle');
             streamRef.current = null;

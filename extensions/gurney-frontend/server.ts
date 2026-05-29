@@ -13,6 +13,7 @@
 // install (start/stop, ext install/enable/disable/uninstall).
 
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { freemem, networkInterfaces, totalmem } from 'node:os';
@@ -31,11 +32,14 @@ import {
   createExtensionLoader,
   type ExtensionLoader,
   type HostOrchestrator,
+  type TelegramInterceptContext,
   type VoicePayload,
 } from '../../src/core/extensions.js';
 import { profilesForTier } from '../../src/cli/profiles.js';
 import { probeOllama } from '../../src/cli/ollama-probe.js';
 import { collectDoctorChecks } from '../../src/cli/doctor.js';
+import { configureNativeDepsForExtension } from '../../src/cli/ext-setup.js';
+import { discover as discoverExt, runAuthForExt, type AuthRunnerIO } from '../../src/cli/auth.js';
 import {
   collectExtensionReadiness,
   type ExtensionReadiness,
@@ -288,6 +292,15 @@ interface ExtView {
   source: 'user' | 'repo';
   installed: boolean;
   enabled: boolean;
+  // True only for the panel extension itself — the UI renders it read-only
+  // since you're using it right now.
+  self: boolean;
+  // Whether `gurney ext uninstall` can remove it. Bundled (repo) extensions
+  // can only be disabled, not uninstalled.
+  removable: boolean;
+  // Whether the extension declares a setup entrypoint (native deps to bootstrap
+  // when it's enabled).
+  hasSetup: boolean;
   status: ExtensionReadiness['status'];
   reasons: string[];
   nextAction?: string;
@@ -371,7 +384,6 @@ function listExtensions(): ExtView[] {
     }) ?? new Map<string, Map<string, string>>();
 
   return readiness
-    .filter((r) => r.name !== EXT_NAME)
     .map((r) => {
       const manifest = readManifest(r.folder);
       const schema = readSchema(r.folder);
@@ -386,13 +398,18 @@ function listExtensions(): ExtView[] {
         ? [{ name: 'tools', desc: 'Adds AI-callable tools' }]
         : [];
       const jobs: string[] = ep.jobs ? ['Runs scheduled background jobs'] : [];
+      const isSelf = r.name === EXT_NAME;
       return {
         name: r.name,
         version: r.version,
         description: manifest?.description ?? '',
         source: r.source,
         installed: true,
-        enabled: r.enabled,
+        // The panel is always "on" while you're looking at it.
+        enabled: isSelf ? true : r.enabled,
+        self: isSelf,
+        removable: r.source === 'user' && !isSelf,
+        hasSetup: !!ep.setup,
         status: r.status,
         reasons: r.reasons,
         ...(r.nextAction ? { nextAction: r.nextAction } : {}),
@@ -453,6 +470,7 @@ interface DirectChatRuntime {
   loader: ExtensionLoader;
   scheduler: ReturnType<typeof createScheduler>;
   orchestrator: Orchestrator;
+  log: ReturnType<typeof createLogger>;
 }
 
 let directChatRuntime: Promise<DirectChatRuntime> | null = null;
@@ -633,6 +651,7 @@ async function getDirectChatRuntime(cfg: GurneyConfig): Promise<DirectChatRuntim
       loader,
       scheduler,
       orchestrator,
+      log,
     };
     directChatRuntimeValue = rt;
     return rt;
@@ -672,8 +691,17 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     runtime.orchestrator.stop(runtime.chatId);
   });
 
+  // Mirror the Telegram adapter: run the registered intercept chain first so
+  // extensions like gurney-instant-responses get a crack at the message before
+  // the orchestrator does. An intercept that fully handles the turn (a trivial
+  // or deterministic reply) sends its text via `reply` and never calls next(),
+  // so the LLM never runs. One that just acks ("On it.") calls next() and we
+  // fall through to the orchestrator. Each `reply` lands as its own chat bubble.
   let full = '';
-  try {
+  let orchestratorRan = false;
+
+  const runOrchestrator = async (): Promise<void> => {
+    orchestratorRan = true;
     await runtime.orchestrator.handleUserMessage({
       chatId: runtime.chatId,
       userId: runtime.userId,
@@ -698,7 +726,41 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
       },
     });
     chatHistory.push({ role: 'assistant', text: full, time: hhmm() });
-    sse('done', { text: full });
+  };
+
+  const intercepts = runtime.loader.intercepts();
+  let i = 0;
+  const runNext = async (): Promise<void> => {
+    const item = intercepts[i++];
+    if (!item) {
+      await runOrchestrator();
+      return;
+    }
+    const ictx: TelegramInterceptContext = {
+      chatId: runtime.chatId,
+      userId: runtime.userId,
+      text,
+      args: text,
+      reply: async (t) => {
+        if (controller.signal.aborted) return;
+        chatHistory.push({ role: 'assistant', text: t, time: hhmm() });
+        sse('instant', { text: t });
+      },
+      next: runNext,
+    };
+    try {
+      await item.handler(ictx);
+    } catch (e) {
+      runtime.log.warn('direct-chat intercept failed', {
+        ext: item.extension,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
+
+  try {
+    await runNext();
+    sse('done', { text: orchestratorRan ? full : '' });
   } catch (e) {
     sse('error', { message: e instanceof Error ? e.message : String(e) });
   } finally {
@@ -764,6 +826,165 @@ function streamLogs(req: IncomingMessage, res: ServerResponse): void {
   req.on('close', () => {
     clearInterval(tick);
     clearInterval(keepAlive);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Interactive auth bridge.
+//
+// `gurney auth <ext>` runs an extension's OAuth/credential flow with terminal
+// prompts. Those flows are just sequences of print()/prompt() over the
+// AuthFlowIO, plus a callback server the flow binds itself. We run the exact
+// same runner (runAuthForExt) here, but wire its io to the browser: print()
+// lines stream out over SSE, and prompt() parks the flow until the user types
+// an answer in the panel and POSTs it back. This gives the web UI the same
+// auto-auth the CLI has, for Codex, Everyday Assistant, or any extension that
+// declares an auth entrypoint.
+// ---------------------------------------------------------------------------
+interface AuthSseEvent {
+  // Monotonic index so a reconnecting EventSource (which gets the whole buffer
+  // replayed) can skip events it already processed instead of duplicating them.
+  seq?: number;
+  type: 'print' | 'prompt' | 'done' | 'error';
+  line?: string;
+  question?: string;
+  secret?: boolean;
+  message?: string;
+}
+
+interface AuthSession {
+  id: string;
+  ext: string;
+  events: AuthSseEvent[]; // replay buffer for late/reconnecting subscribers
+  pending: { resolve: (value: string) => void; reject: (e: Error) => void } | null;
+  subscribers: Set<(e: AuthSseEvent) => void>;
+  finished: boolean;
+  db: DB;
+}
+
+const authSessions = new Map<string, AuthSession>();
+
+function pushAuthEvent(session: AuthSession, evt: AuthSseEvent): void {
+  evt.seq = session.events.length;
+  session.events.push(evt);
+  for (const sub of session.subscribers) {
+    try {
+      sub(evt);
+    } catch {
+      /* a dead subscriber must not break the others */
+    }
+  }
+}
+
+function closeAuthSession(session: AuthSession): void {
+  if (session.pending) {
+    try {
+      session.pending.reject(new Error('auth session closed'));
+    } catch {
+      /* ignore */
+    }
+    session.pending = null;
+  }
+  try {
+    session.db.close();
+  } catch {
+    /* ignore */
+  }
+  authSessions.delete(session.id);
+}
+
+function startAuthSession(name: string): { ok: true; session: string } | { ok: false; error: string } {
+  const home = homeDir();
+  const ext = discoverExt(home, name);
+  if (!ext) return { ok: false, error: `extension '${name}' not found` };
+  if (!ext.manifest.entrypoints?.auth) {
+    return { ok: false, error: `'${name}' does not have an auth flow` };
+  }
+
+  // Only one live auth session per extension — replace any stale one.
+  for (const s of authSessions.values()) {
+    if (s.ext === name && !s.finished) closeAuthSession(s);
+  }
+
+  const log = createLogger({ level: 'warn' });
+  const db = openDb({ path: join(home, 'gurney.db'), log });
+  const session: AuthSession = {
+    id: randomUUID(),
+    ext: name,
+    events: [],
+    pending: null,
+    subscribers: new Set(),
+    finished: false,
+    db,
+  };
+  authSessions.set(session.id, session);
+
+  const io: AuthRunnerIO = {
+    print: (line) => pushAuthEvent(session, { type: 'print', line }),
+    announce: (line) => pushAuthEvent(session, { type: 'print', line }),
+    prompt: (question, opts) =>
+      new Promise<string>((resolve, reject) => {
+        session.pending = { resolve, reject };
+        pushAuthEvent(session, { type: 'prompt', question, secret: !!opts?.secret });
+      }),
+  };
+
+  void runAuthForExt(ext, db, io)
+    .then(() => pushAuthEvent(session, { type: 'done' }))
+    .catch((e: unknown) =>
+      pushAuthEvent(session, {
+        type: 'error',
+        message: e instanceof Error ? e.message : String(e),
+      }),
+    )
+    .finally(() => {
+      session.finished = true;
+      session.pending = null;
+      try {
+        db.close();
+      } catch {
+        /* ignore */
+      }
+      // Keep the finished session around briefly so the SSE delivers the final
+      // event to whoever is watching, then drop it.
+      setTimeout(() => authSessions.delete(session.id), 60_000).unref();
+    });
+
+  return { ok: true, session: session.id };
+}
+
+function answerAuthSession(id: string, value: string): boolean {
+  const session = authSessions.get(id);
+  if (!session || !session.pending) return false;
+  const { resolve } = session.pending;
+  session.pending = null;
+  resolve(value);
+  return true;
+}
+
+function streamAuthSession(req: IncomingMessage, res: ServerResponse, id: string): void {
+  const session = authSessions.get(id);
+  res.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-store',
+    connection: 'keep-alive',
+  });
+  if (!session) {
+    res.write(`data: ${JSON.stringify({ type: 'error', message: 'auth session expired' })}\n\n`);
+    res.end();
+    return;
+  }
+  const send = (evt: AuthSseEvent): void => {
+    res.write(`data: ${JSON.stringify(evt)}\n\n`);
+  };
+  // Replay everything so far (a prompt or the final result may predate this
+  // connection), then subscribe to live events.
+  for (const evt of session.events) send(evt);
+  session.subscribers.add(send);
+  const keepAlive = setInterval(() => res.write(': ping\n\n'), 20_000);
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    session.subscribers.delete(send);
   });
 }
 
@@ -888,7 +1109,7 @@ async function handleApi(
     }
 
     const extAction =
-      /^\/api\/extensions\/([a-z0-9._-]+)\/(enable|disable|install|uninstall|settings)$/i.exec(
+      /^\/api\/extensions\/([a-z0-9._-]+)\/(enable|disable|install|uninstall|settings|setup)$/i.exec(
         path,
       );
     if (extAction) {
@@ -900,16 +1121,60 @@ async function handleApi(
       if (action === 'settings' && method === 'POST') {
         return saveExtSettings(res, name, await readJson<Record<string, unknown>>(req));
       }
+      if (action === 'setup' && method === 'POST') {
+        const r = await runExtSetup(name);
+        return sendJson(res, r.ok ? 200 : 500, r);
+      }
       if (method === 'POST') {
         const args =
           action === 'uninstall'
             ? ['ext', 'uninstall', name, ...(url.searchParams.get('purge') ? ['--purge'] : [])]
             : ['ext', action, name];
         const r = await runGurney(opts, args);
+        // Enabling an extension should also bootstrap its native dependencies,
+        // mirroring `gurney init`'s post-selection setup. Best-effort: a failed
+        // setup doesn't undo the enable (the user can retry from settings).
+        let setupOutput = '';
+        if (r.code === 0 && action === 'enable') {
+          try {
+            const s = await runExtSetup(name);
+            setupOutput = s.output;
+          } catch (e) {
+            setupOutput = e instanceof Error ? e.message : String(e);
+          }
+        }
         return sendJson(res, r.code === 0 ? 200 : 500, {
           ok: r.code === 0,
-          output: r.out + r.err,
+          output: r.out + r.err + setupOutput,
         });
+      }
+    }
+
+    const authAction =
+      /^\/api\/extensions\/([a-z0-9._-]+)\/auth\/(start|stream|answer|cancel)$/i.exec(path);
+    if (authAction) {
+      const name = authAction[1]!;
+      const action = authAction[2]!;
+      if (action === 'start' && method === 'POST') {
+        const r = startAuthSession(name);
+        return sendJson(res, r.ok ? 200 : 404, r);
+      }
+      if (action === 'stream' && method === 'GET') {
+        return streamAuthSession(req, res, url.searchParams.get('session') ?? '');
+      }
+      if (action === 'answer' && method === 'POST') {
+        const { session, value } = await readJson<{ session?: string; value?: string }>(req);
+        const ok = answerAuthSession(session ?? '', value ?? '');
+        return sendJson(res, ok ? 200 : 409, {
+          ok,
+          ...(ok ? {} : { error: 'no question is waiting for an answer' }),
+        });
+      }
+      if (action === 'cancel' && method === 'POST') {
+        const { session } = await readJson<{ session?: string }>(req);
+        const s = session ? authSessions.get(session) : undefined;
+        if (s) closeAuthSession(s);
+        return sendJson(res, 200, { ok: true });
       }
     }
 
@@ -1037,6 +1302,50 @@ async function validateTelegram(res: ServerResponse, token: string): Promise<voi
   }
 }
 
+// Run an extension's `setup` entrypoint (native-dependency bootstrap) the same
+// way `gurney init` does after the user picks extensions, but non-interactively
+// so it can never block on a terminal prompt. No-ops for extensions without a
+// setup entrypoint. Used when an extension is enabled from the panel/wizard.
+async function runExtSetup(name: string): Promise<{ ok: boolean; output: string }> {
+  let folder: string | null = null;
+  for (const root of extensionsRoots()) {
+    const candidate = join(root, name);
+    if (existsSync(join(candidate, 'manifest.json'))) {
+      folder = candidate;
+      break;
+    }
+  }
+  if (!folder) return { ok: false, output: `extension '${name}' not found` };
+  let manifest: Manifest;
+  try {
+    manifest = JSON.parse(readFileSync(join(folder, 'manifest.json'), 'utf8')) as Manifest;
+  } catch (e) {
+    return { ok: false, output: e instanceof Error ? e.message : String(e) };
+  }
+  if (!manifest.entrypoints?.setup) return { ok: true, output: '' };
+  const home = homeDir();
+  const log = createLogger({ level: 'warn' });
+  const db = openDb({ path: join(home, 'gurney.db'), log });
+  let captured = '';
+  try {
+    await configureNativeDepsForExtension({ name, folder, manifest }, db, home, {
+      interactive: false,
+      stdout: (text) => {
+        captured += text;
+      },
+    });
+    return { ok: true, output: captured };
+  } catch (e) {
+    return { ok: false, output: captured + (e instanceof Error ? e.message : String(e)) };
+  } finally {
+    try {
+      db.close();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 function getExtSettings(res: ServerResponse, name: string): void {
   const roots = extensionsRoots();
   let folder: string | null = null;
@@ -1129,6 +1438,7 @@ export async function run(opts: FrontendRunOptions = {}): Promise<Server> {
   );
 
   const shutdown = (): void => {
+    for (const session of [...authSessions.values()]) closeAuthSession(session);
     void closeDirectChatRuntime().finally(() => {
       server.close(() => process.exit(0));
     });

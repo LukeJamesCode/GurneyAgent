@@ -14,7 +14,11 @@ export async function probeOllama(
   fetchImpl: typeof fetch = fetch,
 ): Promise<ProbeResult> {
   try {
-    const res = await fetchImpl(`${url.replace(/\/+$/, '')}/api/tags`);
+    // Cap the probe so an unreachable-but-routable host can't hang the caller
+    // (doctor, the panel's /api/state poll) on the OS TCP timeout.
+    const res = await fetchImpl(`${url.replace(/\/+$/, '')}/api/tags`, {
+      signal: AbortSignal.timeout(5000),
+    });
     if (!res.ok) {
       return { ok: false, models: [], error: `http ${res.status}` };
     }

@@ -145,12 +145,27 @@ function setupSettings(db: DB, extName: string): ExtensionSettings {
   };
 }
 
-async function runSetupEntrypoint(ext: DiscoveredExtension, db: DB, home: string): Promise<void> {
+export interface NativeDepsSetupOptions {
+  // Force the setup context's interactivity. Defaults to detecting a TTY. The
+  // web panel passes `false` so a setup entrypoint can never block on an
+  // inquirer prompt the browser can't answer.
+  interactive?: boolean;
+  // Where the entrypoint's progress text goes. Defaults to process.stdout.
+  stdout?: (text: string) => void;
+}
+
+async function runSetupEntrypoint(
+  ext: DiscoveredExtension,
+  db: DB,
+  home: string,
+  opts: NativeDepsSetupOptions = {},
+): Promise<void> {
   const entry = ext.manifest.entrypoints?.setup;
   if (!entry) return;
   const setupPath = join(ext.folder, entry);
+  const stdout = opts.stdout ?? ((text: string) => process.stdout.write(text));
   if (!existsSync(setupPath)) {
-    process.stdout.write(`  Setup entrypoint not found: ${entry}\n`);
+    stdout(`  Setup entrypoint not found: ${entry}\n`);
     return;
   }
   const mtime = statSync(setupPath).mtimeMs;
@@ -159,7 +174,7 @@ async function runSetupEntrypoint(ext: DiscoveredExtension, db: DB, home: string
   )) as SetupEntrypointModule;
   const fn = mod.setup ?? mod.run;
   if (!fn) {
-    process.stdout.write(`  Setup entrypoint has no setup(ctx) or run(ctx) export: ${entry}\n`);
+    stdout(`  Setup entrypoint has no setup(ctx) or run(ctx) export: ${entry}\n`);
     return;
   }
   const ctx: ExtensionSetupContext = {
@@ -167,8 +182,8 @@ async function runSetupEntrypoint(ext: DiscoveredExtension, db: DB, home: string
     folder: ext.folder,
     home,
     db,
-    interactive: process.stdin.isTTY && process.stdout.isTTY,
-    stdout: (text) => process.stdout.write(text),
+    interactive: opts.interactive ?? (process.stdin.isTTY && process.stdout.isTTY),
+    stdout,
     settings: setupSettings(db, ext.name),
   };
   await fn(ctx);
@@ -178,8 +193,9 @@ export async function configureNativeDepsForExtension(
   ext: DiscoveredExtension,
   db: DB,
   home: string = homeDir(),
+  opts: NativeDepsSetupOptions = {},
 ): Promise<void> {
-  await runSetupEntrypoint(ext, db, home);
+  await runSetupEntrypoint(ext, db, home, opts);
 }
 
 // Run the auth + settings wizard for one extension using an already-open DB.

@@ -7,7 +7,7 @@
 // Note: there's no "app store" of remotely-installable extensions — you add new
 // ones with `gurney ext install <path|git-url>`. So this tab manages what's
 // present rather than offering a catalog to install from.
-const { useState: useStateExt, useEffect: useEffectExt } = React;
+const { useState: useStateExt, useEffect: useEffectExt, useRef: useRefExt } = React;
 
 function ExtensionsTab() {
   const [exts, setExts] = useStateExt(null); // null = loading
@@ -16,6 +16,7 @@ function ExtensionsTab() {
   const [tab, setTab] = useStateExt('all'); // all | enabled | disabled
   const [confirm, setConfirm] = useStateExt(null); // { ext }
   const [settingsFor, setSettingsFor] = useStateExt(null); // ext name
+  const [authFor, setAuthFor] = useStateExt(null); // ext name being connected
   const [busy, setBusy] = useStateExt(null); // name currently mutating
 
   const load = async () => {
@@ -66,18 +67,31 @@ function ExtensionsTab() {
       return null;
     }
     return (
-      <ExtDetail
-        ext={ext}
-        exts={exts}
-        busy={busy}
-        onBack={() => setDetail(null)}
-        onToggle={(v) => act(ext.name, v ? 'enable' : 'disable')}
-        onUninstall={() => setConfirm({ ext })}
-        onSettings={() => setSettingsFor(ext.name)}
-        confirm={confirm}
-        setConfirm={setConfirm}
-        uninstall={uninstall}
-      />
+      <>
+        <ExtDetail
+          ext={ext}
+          exts={exts}
+          busy={busy}
+          onBack={() => setDetail(null)}
+          onToggle={(v) => act(ext.name, v ? 'enable' : 'disable')}
+          onUninstall={() => setConfirm({ ext })}
+          onSettings={() => setSettingsFor(ext.name)}
+          onConnect={() => setAuthFor(ext.name)}
+          confirm={confirm}
+          setConfirm={setConfirm}
+          uninstall={uninstall}
+        />
+        {authFor === ext.name && (
+          <AuthFlowModal
+            ext={ext}
+            onClose={() => setAuthFor(null)}
+            onDone={() => {
+              setAuthFor(null);
+              load();
+            }}
+          />
+        )}
+      </>
     );
   }
 
@@ -325,7 +339,20 @@ function ExtCard({ ext, busy, onOpen, onToggle }) {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {toggling ? (
+          {ext.self ? (
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 13,
+                color: 'var(--text-3)',
+                fontWeight: 500,
+              }}
+            >
+              <window.StatusDot state="ok" size={7} /> This panel
+            </span>
+          ) : toggling ? (
             <window.Icon
               name="refresh"
               size={15}
@@ -333,11 +360,13 @@ function ExtCard({ ext, busy, onOpen, onToggle }) {
               style={{ color: 'var(--text-3)' }}
             />
           ) : (
-            <window.Toggle checked={ext.enabled} onChange={onToggle} label="Enable" />
+            <>
+              <window.Toggle checked={ext.enabled} onChange={onToggle} label="Enable" />
+              <span style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 500 }}>
+                {ext.enabled ? 'On' : 'Off'}
+              </span>
+            </>
           )}
-          <span style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 500 }}>
-            {ext.enabled ? 'On' : 'Off'}
-          </span>
         </div>
         <window.Button size="sm" variant="ghost" onClick={onOpen}>
           Manage →
@@ -356,6 +385,7 @@ function ExtDetail({
   onToggle,
   onUninstall,
   onSettings,
+  onConnect,
   confirm,
   setConfirm,
   uninstall,
@@ -423,6 +453,11 @@ function ExtDetail({
           </div>
         </div>
         <div style={{ display: 'flex', gap: 9, flexWrap: 'wrap' }}>
+          {ext.needsAuth && (
+            <window.Button variant="primary" icon="link" onClick={onConnect}>
+              Connect
+            </window.Button>
+          )}
           <window.Button
             variant="default"
             icon="gear"
@@ -432,9 +467,11 @@ function ExtDetail({
           >
             Settings
           </window.Button>
-          <window.Button variant="outline_danger" icon="trash" onClick={onUninstall}>
-            Uninstall
-          </window.Button>
+          {ext.removable && (
+            <window.Button variant="outline_danger" icon="trash" onClick={onUninstall}>
+              Uninstall
+            </window.Button>
+          )}
         </div>
       </div>
 
@@ -448,28 +485,59 @@ function ExtDetail({
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
-          {toggling ? (
-            <window.Icon
-              name="refresh"
-              size={20}
-              className="spin"
-              style={{ color: 'var(--text-3)' }}
-            />
+          {ext.self ? (
+            <>
+              <window.StatusDot state="ok" size={11} />
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>This is the control panel</div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>
+                  It's always on while you're using it — it can't be disabled or uninstalled from
+                  here.
+                </div>
+              </div>
+            </>
           ) : (
-            <window.Toggle checked={ext.enabled} onChange={onToggle} label="Enable extension" />
+            <>
+              {toggling ? (
+                <window.Icon
+                  name="refresh"
+                  size={20}
+                  className="spin"
+                  style={{ color: 'var(--text-3)' }}
+                />
+              ) : (
+                <window.Toggle checked={ext.enabled} onChange={onToggle} label="Enable extension" />
+              )}
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>
+                  {ext.enabled ? 'Extension is enabled' : 'Extension is disabled'}
+                </div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>
+                  {ext.enabled
+                    ? 'Its tools and commands are available to Gurney.'
+                    : 'Turn on to make its tools available.'}
+                </div>
+              </div>
+            </>
           )}
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>
-              {ext.enabled ? 'Extension is enabled' : 'Extension is disabled'}
-            </div>
-            <div style={{ fontSize: 12.5, color: 'var(--text-3)' }}>
-              {ext.enabled
-                ? 'Its tools and commands are available to Gurney.'
-                : 'Turn on to make its tools available.'}
-            </div>
-          </div>
         </div>
       </window.Card>
+
+      {!ext.self && !ext.removable && (
+        <p
+          style={{
+            fontSize: 12.5,
+            color: 'var(--text-3)',
+            margin: '-4px 0 16px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          <window.Icon name="shield" size={13} style={{ flex: 'none' }} /> Bundled with Gurney —
+          disable it to turn it off; it can't be uninstalled.
+        </p>
+      )}
 
       {ext.status && ext.status !== 'ready' && ext.reasons && ext.reasons.length > 0 && (
         <window.Card
@@ -803,6 +871,220 @@ function ConfirmUninstall({ confirm, setConfirm, uninstall }) {
         can be re-enabled later; installed ones you'd re-add with{' '}
         <span className="mono">gurney ext install</span>.
       </p>
+    </window.Modal>
+  );
+}
+
+/* ---- interactive auth flow ---- */
+// Renders an extension's `gurney auth` flow in the browser. The server runs the
+// real flow (runAuthForExt); we stream its printed output, surface each prompt
+// as an input, and POST the user's answers back. URLs in the output are made
+// clickable so the OAuth consent link is one tap away.
+function linkify(text) {
+  const parts = String(text).split(/(https?:\/\/[^\s]+)/g);
+  return parts.map((p, i) =>
+    /^https?:\/\//.test(p) ? (
+      <a
+        key={i}
+        href={p}
+        target="_blank"
+        rel="noreferrer noopener"
+        style={{ color: 'var(--accent-strong)', wordBreak: 'break-all' }}
+      >
+        {p}
+      </a>
+    ) : (
+      <span key={i}>{p}</span>
+    ),
+  );
+}
+
+function AuthFlowModal({ ext, onClose, onDone }) {
+  const [lines, setLines] = useStateExt([]);
+  const [prompt, setPrompt] = useStateExt(null); // { question, secret }
+  const [answer, setAnswer] = useStateExt('');
+  const [status, setStatus] = useStateExt('starting'); // starting|running|done|error
+  const [error, setError] = useStateExt(null);
+  const sessionRef = useRefExt(null);
+  const esRef = useRefExt(null);
+  const boxRef = useRefExt(null);
+  const lastSeqRef = useRefExt(-1);
+  const url = (action, qs) =>
+    `/api/extensions/${encodeURIComponent(ext.name)}/auth/${action}${qs ? '?' + qs : ''}`;
+
+  useEffectExt(() => {
+    let cancelled = false;
+    (async () => {
+      const r = await window.api.post(url('start'));
+      if (cancelled) return;
+      if (!r.ok || !r.data || !r.data.session) {
+        setStatus('error');
+        setError((r.data && r.data.error) || r.error || 'Could not start the connection flow.');
+        return;
+      }
+      sessionRef.current = r.data.session;
+      setStatus('running');
+      const es = window.api.streamSSE(
+        url('stream', 'session=' + encodeURIComponent(r.data.session)),
+        {
+          onMessage: (_ev, data) => {
+            let evt;
+            try {
+              evt = JSON.parse(data);
+            } catch (e) {
+              return;
+            }
+            // Skip anything already processed — a reconnecting EventSource gets
+            // the whole buffer replayed.
+            if (typeof evt.seq === 'number') {
+              if (evt.seq <= lastSeqRef.current) return;
+              lastSeqRef.current = evt.seq;
+            }
+            if (evt.type === 'print') setLines((l) => [...l, evt.line || '']);
+            else if (evt.type === 'prompt') {
+              setPrompt({ question: evt.question, secret: !!evt.secret });
+              setAnswer('');
+            } else if (evt.type === 'done') {
+              setPrompt(null);
+              setStatus('done');
+            } else if (evt.type === 'error') {
+              setPrompt(null);
+              setStatus('error');
+              setError(evt.message || 'Connection failed.');
+            }
+          },
+        },
+      );
+      esRef.current = es;
+    })();
+    return () => {
+      cancelled = true;
+      if (esRef.current) esRef.current.close();
+      const s = sessionRef.current;
+      if (s) window.api.post(url('cancel'), { session: s });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffectExt(() => {
+    if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
+  }, [lines, prompt]);
+
+  const submit = async () => {
+    const s = sessionRef.current;
+    if (!s || !prompt) return;
+    const val = answer;
+    setLines((l) => [...l, '> ' + (prompt.secret ? '••••••' : val)]);
+    setPrompt(null);
+    setAnswer('');
+    await window.api.post(url('answer'), { session: s, value: val });
+  };
+
+  return (
+    <window.Modal
+      open
+      onClose={onClose}
+      width={620}
+      title={`Connect ${prettyName(ext)}`}
+      footer={
+        status === 'done' ? (
+          <window.Button variant="primary" icon="check" onClick={onDone}>
+            Done
+          </window.Button>
+        ) : (
+          <window.Button variant="ghost" onClick={onClose}>
+            {status === 'error' ? 'Close' : 'Cancel'}
+          </window.Button>
+        )
+      }
+    >
+      <p style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 12 }}>
+        This runs {prettyName(ext)}'s sign-in right here — the same flow as{' '}
+        <span className="mono">gurney auth {ext.name}</span>. Follow the steps below; open any link
+        it shows, then paste anything it asks for.
+      </p>
+
+      <div
+        ref={boxRef}
+        style={{
+          background: 'var(--code-bg)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-sm)',
+          padding: 14,
+          maxHeight: 280,
+          overflowY: 'auto',
+          fontFamily: 'var(--font-mono)',
+          fontSize: 12.5,
+          lineHeight: 1.6,
+          whiteSpace: 'pre-wrap',
+        }}
+      >
+        {lines.length === 0 && status === 'running' && (
+          <span style={{ color: 'var(--text-3)' }}>Starting…</span>
+        )}
+        {status === 'starting' && <span style={{ color: 'var(--text-3)' }}>Starting…</span>}
+        {lines.map((l, i) => (
+          <div key={i} style={{ color: 'var(--text)' }}>
+            {linkify(l)}
+          </div>
+        ))}
+      </div>
+
+      {prompt && (
+        <div style={{ marginTop: 14 }}>
+          <window.Label>{prompt.question}</window.Label>
+          {prompt.secret ? (
+            <window.SecretInput value={answer} onChange={(e) => setAnswer(e.target.value)} />
+          ) : (
+            <window.Input
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submit();
+              }}
+              placeholder="Type your answer and press Enter"
+            />
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+            <window.Button variant="primary" icon="send" onClick={submit}>
+              Submit
+            </window.Button>
+          </div>
+        </div>
+      )}
+
+      {status === 'running' && !prompt && lines.length > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            marginTop: 12,
+            fontSize: 13,
+            color: 'var(--text-3)',
+          }}
+        >
+          <window.Icon name="refresh" size={15} className="spin" /> Waiting…
+        </div>
+      )}
+
+      {status === 'done' && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            marginTop: 14,
+            fontSize: 14,
+            color: 'var(--ok)',
+            fontWeight: 600,
+          }}
+        >
+          <window.Icon name="check" size={17} /> Connected. Credentials saved on this machine.
+        </div>
+      )}
+
+      {status === 'error' && <div style={{ marginTop: 14 }}>{<ErrorNote text={error} />}</div>}
     </window.Modal>
   );
 }

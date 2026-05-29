@@ -62,20 +62,44 @@ const DEPRECATED_ENV_VARS: Record<string, string> = {
   OPENAI_BASE_URL: 'removed; Gurney core is Ollama-only',
 };
 
+// Run one check so it can never reject: a thrown error becomes a failed
+// CheckResult instead of taking the whole doctor run (and the panel's
+// /api/doctor endpoint) down with it.
+async function guard(name: string, fn: () => CheckResult | Promise<CheckResult>): Promise<CheckResult> {
+  try {
+    return await fn();
+  } catch (e) {
+    return { name, ok: false, msg: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export async function collectDoctorChecks(): Promise<CheckResult[]> {
   const home = homeDir();
-  const cfg = effectiveConfig(home);
+  let cfg: ReturnType<typeof effectiveConfig> | null = null;
+  let cfgError: string | null = null;
+  try {
+    cfg = effectiveConfig(home);
+  } catch (e) {
+    cfgError = e instanceof Error ? e.message : String(e);
+  }
+  if (!cfg) {
+    return [
+      { name: 'config', ok: false, msg: `could not load config: ${cfgError}` },
+      await guard('home', () => checkHome(home)),
+    ];
+  }
+  const c = cfg;
   const checks: Array<Promise<CheckResult>> = [
-    Promise.resolve(checkHome(home)),
-    Promise.resolve(checkConfig(cfg)),
-    Promise.resolve(checkRam()),
-    Promise.resolve(checkDisk(home)),
-    Promise.resolve(checkExtensions(home)),
-    Promise.resolve(checkMigrations(home)),
-    Promise.resolve(checkEnvVars(process.env)),
-    checkPorts(cfg.ollama.url),
-    checkTelegram(cfg.telegram.token),
-    checkOllama(cfg.ollama.url, cfg.models.chat, cfg.models.reason, cfg.models.tools),
+    guard('home', () => checkHome(home)),
+    guard('config', () => checkConfig(c)),
+    guard('ram', () => checkRam()),
+    guard('disk', () => checkDisk(home)),
+    guard('extensions', () => checkExtensions(home)),
+    guard('migrations', () => checkMigrations(home)),
+    guard('env', () => checkEnvVars(process.env)),
+    guard('ports', () => checkPorts(c.ollama.url)),
+    guard('telegram', () => checkTelegram(c.telegram.token)),
+    guard('ollama', () => checkOllama(c.ollama.url, c.models.chat, c.models.reason, c.models.tools)),
   ];
   return Promise.all(checks);
 }
@@ -207,7 +231,9 @@ function isGurneyShaped(key: string): boolean {
 async function checkTelegram(token: string): Promise<CheckResult> {
   if (!token) return { name: 'telegram', ok: false, msg: 'no token configured' };
   try {
-    const res = await fetch(`${TELEGRAM_API}/bot${token}/getMe`);
+    const res = await fetch(`${TELEGRAM_API}/bot${token}/getMe`, {
+      signal: AbortSignal.timeout(5000),
+    });
     if (!res.ok) {
       return { name: 'telegram', ok: false, msg: `getMe HTTP ${res.status}` };
     }

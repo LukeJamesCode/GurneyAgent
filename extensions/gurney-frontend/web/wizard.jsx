@@ -898,7 +898,8 @@ function StepExtensions() {
   const [busy, setBusy] = useStateWiz(null);
   const load = async () => {
     const r = await window.api.get('/api/extensions');
-    if (r.ok) setExts(r.data.extensions);
+    // Hide the panel itself — it's already running and can't be toggled here.
+    if (r.ok) setExts(r.data.extensions.filter((e) => !e.self));
     else setExts([]);
   };
   useEffectWiz(() => {
