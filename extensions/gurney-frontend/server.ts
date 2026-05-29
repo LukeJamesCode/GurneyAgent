@@ -22,6 +22,18 @@ import { fileURLToPath } from 'node:url';
 import { open as openDb, type DB } from '../../src/storage/db.js';
 import { createLogger } from '../../src/util/log.js';
 import { createOllama } from '../../src/core/llm.js';
+import { createOrchestrator, type Orchestrator } from '../../src/core/orchestrator.js';
+import { createToolRegistry } from '../../src/core/tools.js';
+import { createScheduler, type Nudge } from '../../src/core/scheduler.js';
+import { createPrefsStore } from '../../src/core/prefs.js';
+import { setupFollowups } from '../../src/core/followups.js';
+import {
+  createExtensionLoader,
+  type ExtensionLoader,
+  type HostOrchestrator,
+  type VoicePayload,
+} from '../../src/core/extensions.js';
+import { profilesForTier } from '../../src/cli/profiles.js';
 import { probeOllama } from '../../src/cli/ollama-probe.js';
 import { collectDoctorChecks } from '../../src/cli/doctor.js';
 import {
@@ -45,6 +57,7 @@ const WEB_DIR = join(HERE, 'web');
 const REPO_ROOT = resolve(HERE, '..', '..');
 const EXT_NAME = 'gurney-frontend';
 const VERSION = '0.1.0';
+const HOST_VERSION = '0.1.0';
 
 export interface FrontendRunOptions {
   // The CLI entry script to re-exec when spawning `gurney` subcommands. Passed
@@ -419,9 +432,9 @@ function commandReference(): { core: typeof CORE_COMMANDS; extensions: ExtView['
 }
 
 // ---------------------------------------------------------------------------
-// Direct chat (no daemon required): stream a reply straight from Ollama using
-// the configured chat model. This mirrors what you'd say in Telegram but
-// without tools/history — it's the honest "talk to the model" surface.
+// Direct chat: route through the same orchestrator path Telegram uses. That
+// gives the browser chat configured profile routing, extension tools, prompt
+// fragments, conversation history, and the same hallucination guards.
 // ---------------------------------------------------------------------------
 interface ChatMsg {
   role: 'user' | 'assistant';
@@ -430,6 +443,202 @@ interface ChatMsg {
   tool?: string;
 }
 const chatHistory: ChatMsg[] = [];
+
+interface DirectChatRuntime {
+  signature: string;
+  chatId: number;
+  userId: number;
+  db: DB;
+  llm: ReturnType<typeof createOllama>;
+  loader: ExtensionLoader;
+  scheduler: ReturnType<typeof createScheduler>;
+  orchestrator: Orchestrator;
+}
+
+let directChatRuntime: Promise<DirectChatRuntime> | null = null;
+let directChatRuntimeValue: DirectChatRuntime | null = null;
+
+function directChatSignature(cfg: GurneyConfig): string {
+  return JSON.stringify({
+    home: homeDir(),
+    ollama: cfg.ollama.url,
+    models: cfg.models,
+    tier: cfg.tier ?? 'small',
+    logLevel: cfg.logLevel ?? 'warn',
+    allowedIds: cfg.telegram.allowedIds,
+  });
+}
+
+function envInt(key: string): number | undefined {
+  const raw = process.env[key]?.trim();
+  if (!raw) return undefined;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return undefined;
+  return n;
+}
+
+function directChatIds(db: DB, cfg: GurneyConfig): { chatId: number; userId: number } {
+  const fallback = cfg.telegram.allowedIds[0];
+  if (fallback === undefined) throw new Error('No Telegram user IDs are allowlisted.');
+
+  const placeholders = cfg.telegram.allowedIds.map(() => '?').join(', ');
+  const row = db
+    .prepare(
+      `SELECT chat_id AS chatId, user_id AS userId
+       FROM telegram_chats
+       WHERE user_id IN (${placeholders})
+       ORDER BY last_seen_at DESC
+       LIMIT 1`,
+    )
+    .get(...cfg.telegram.allowedIds) as { chatId: number; userId: number } | undefined;
+  return row ?? { chatId: fallback, userId: fallback };
+}
+
+async function closeDirectChatRuntime(): Promise<void> {
+  const rt = directChatRuntimeValue;
+  directChatRuntime = null;
+  directChatRuntimeValue = null;
+  if (!rt) return;
+  try {
+    rt.scheduler.stop();
+  } catch {
+    /* ignore */
+  }
+  try {
+    await rt.loader.shutdown();
+  } catch {
+    /* ignore */
+  }
+  try {
+    rt.llm.stopIdleEviction();
+  } catch {
+    /* ignore */
+  }
+  try {
+    await rt.orchestrator.shutdown();
+  } catch {
+    /* ignore */
+  }
+  try {
+    rt.db.close();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function getDirectChatRuntime(cfg: GurneyConfig): Promise<DirectChatRuntime> {
+  const signature = directChatSignature(cfg);
+  if (directChatRuntimeValue?.signature === signature) return directChatRuntimeValue;
+  if (directChatRuntime) {
+    const rt = await directChatRuntime;
+    if (rt.signature === signature) return rt;
+    await closeDirectChatRuntime();
+  }
+
+  directChatRuntime = (async () => {
+    const home = homeDir();
+    const log = createLogger({ level: cfg.logLevel ?? 'warn' });
+    const db = openDb({ path: join(home, 'gurney.db'), log });
+    const ids = directChatIds(db, cfg);
+    const {
+      profiles,
+      budgetTokens,
+      idleEvictionMs: tierIdleMs,
+      toolResultMaxChars,
+    } = profilesForTier(cfg.tier, cfg.models);
+    const idleEvictionMs = envInt('GURNEY_HEAVY_IDLE_MS') ?? tierIdleMs;
+    const inferenceTimeoutMs = envInt('GURNEY_INFERENCE_TIMEOUT_MS');
+
+    const llm = createOllama({
+      baseUrl: cfg.ollama.url,
+      profiles,
+      log,
+      idleEvictionMs,
+      ...(inferenceTimeoutMs !== undefined ? { inferenceTimeoutMs } : {}),
+    });
+    const tools = createToolRegistry({
+      log,
+      confirm: async (handler) => {
+        log.warn(
+          'direct chat blocked confirm-tier tool because the web UI has no confirm prompt yet',
+          { tool: handler.name },
+        );
+        return false;
+      },
+      isOwner: (ctx) => ctx.chatId === ids.chatId,
+    });
+    const prefs = createPrefsStore(db);
+    const scheduler = createScheduler({
+      log,
+      dispatch: async (_nudge: Nudge) => {
+        void _nudge;
+      },
+      prefs,
+      db,
+    });
+    setupFollowups({ db, scheduler, tools, log });
+
+    const stateRoot = join(home, 'extension_state');
+    let orchestratorImpl: Orchestrator | null = null;
+    const orchestratorBridge: HostOrchestrator = {
+      handleUserMessage: async (msg) => {
+        if (!orchestratorImpl) {
+          await msg.send({ delta: '', done: true });
+          return;
+        }
+        await orchestratorImpl.handleUserMessage(msg);
+      },
+    };
+    const loader = createExtensionLoader({
+      roots: extensionsRoots(),
+      stateRoot,
+      db,
+      llm,
+      log,
+      scheduler,
+      tools,
+      hostVersion: HOST_VERSION,
+      chatId: ids.chatId,
+      allowedUserIds: cfg.telegram.allowedIds,
+      watch: false,
+      orchestrator: orchestratorBridge,
+      sendVoice: async (_chatId: number, _voice: VoicePayload) => {
+        void _chatId;
+        void _voice;
+      },
+    });
+    await loader.loadAll();
+
+    const maxToolRounds = envInt('GURNEY_MAX_TOOL_ROUNDS');
+    const orchestrator = createOrchestrator({
+      db,
+      llm,
+      tools,
+      log,
+      promptFragmentProvider: (filter) => loader.promptFragment(filter),
+      toolIntentFilter: (message) => loader.relevantExtensions(message),
+      budgetTokens,
+      toolResultMaxChars,
+      ...(cfg.models.tools ? { toolProfile: 'tools' as const } : {}),
+      ...(maxToolRounds !== undefined ? { maxToolRounds } : {}),
+    });
+    orchestratorImpl = orchestrator;
+
+    const rt: DirectChatRuntime = {
+      signature,
+      chatId: ids.chatId,
+      userId: ids.userId,
+      db,
+      llm,
+      loader,
+      scheduler,
+      orchestrator,
+    };
+    directChatRuntimeValue = rt;
+    return rt;
+  })();
+  return directChatRuntime;
+}
 
 async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readJson<{ text?: string }>(req);
@@ -456,39 +665,43 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
-  const log = createLogger({ level: 'warn' });
-  const llm = createOllama({ baseUrl: cfg.ollama.url, profiles: {}, log, idleEvictionMs: 0 });
+  const runtime = await getDirectChatRuntime(cfg);
   const controller = new AbortController();
-  req.on('close', () => controller.abort());
+  req.on('close', () => {
+    controller.abort();
+    runtime.orchestrator.stop(runtime.chatId);
+  });
 
   let full = '';
   try {
-    const history = chatHistory.slice(-12).map((m) => ({ role: m.role, content: m.text }));
-    for await (const chunk of llm.chat({
-      profile: { model: cfg.models.chat },
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You are Gurney, a small private assistant running locally on the user’s own machine. Be concise and warm.',
-        },
-        ...history,
-      ],
-      signal: controller.signal,
-      maxTokens: 512,
-    })) {
-      if (chunk.delta) {
-        full += chunk.delta;
-        sse('delta', { delta: chunk.delta });
-      }
-      if (chunk.done) break;
-    }
+    await runtime.orchestrator.handleUserMessage({
+      chatId: runtime.chatId,
+      userId: runtime.userId,
+      text,
+      send: (chunk) => {
+        if (controller.signal.aborted) return;
+        if (chunk.delta) {
+          full += chunk.delta;
+          sse('delta', { delta: chunk.delta });
+        }
+        if (chunk.done && chunk.replace !== undefined) {
+          full = chunk.replace;
+          sse('replace', { text: full });
+        }
+        if (chunk.done && chunk.meta) {
+          sse('meta', {
+            model: chunk.meta.model,
+            elapsedMs: chunk.meta.elapsedMs,
+            tools: chunk.meta.afterTurn?.toolCalls ?? [],
+          });
+        }
+      },
+    });
     chatHistory.push({ role: 'assistant', text: full, time: hhmm() });
     sse('done', { text: full });
   } catch (e) {
     sse('error', { message: e instanceof Error ? e.message : String(e) });
   } finally {
-    llm.stopIdleEviction();
     res.end();
   }
 }
@@ -710,6 +923,7 @@ async function handleApi(
 
     if (path === '/api/chat/clear' && method === 'POST') {
       chatHistory.length = 0;
+      directChatRuntimeValue?.orchestrator.newChat(directChatRuntimeValue.chatId);
       return sendJson(res, 200, { ok: true });
     }
 
@@ -915,7 +1129,9 @@ export async function run(opts: FrontendRunOptions = {}): Promise<Server> {
   );
 
   const shutdown = (): void => {
-    server.close(() => process.exit(0));
+    void closeDirectChatRuntime().finally(() => {
+      server.close(() => process.exit(0));
+    });
     setTimeout(() => process.exit(0), 2000).unref();
   };
   process.once('SIGINT', shutdown);

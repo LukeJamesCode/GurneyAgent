@@ -2,11 +2,8 @@
 // Chat Hub — the home screen. A hero control bar (start/stop/restart/new-chat/
 // proactive) over a live direct-chat column and a right-hand activity strip.
 //
-// The chat talks to POST /api/chat, which streams a reply straight from the
-// configured Ollama chat model (no tools, short history). It's the honest
-// "talk to the model" surface and works whether or not the Telegram daemon is
-// running — but sending is gated on the agent being up so the panel matches the
-// real Telegram conversation.
+// The chat talks to POST /api/chat, which streams through Gurney's orchestrator:
+// same profile routing, tools, history, and guardrails as Telegram.
 const { useState: useStateCH, useRef: useRefCH, useEffect: useEffectCH } = React;
 
 function ChatHub({
@@ -57,6 +54,9 @@ function ChatHub({
         onEvent: (ev, data) => {
           if (ev === 'delta' && data && data.delta) {
             acc += data.delta;
+            setStreamText(acc);
+          } else if (ev === 'replace' && data && typeof data.text === 'string') {
+            acc = data.text;
             setStreamText(acc);
           } else if (ev === 'done') {
             setMessages((m) => [

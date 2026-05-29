@@ -179,7 +179,13 @@ function App() {
               proactive={state.proactive}
               onProactive={setProactive}
               health={{ telegram: !!health.telegram, ollama: !!health.ollama }}
-              activeModel={models.chat}
+              activeModel={[
+                models.chat,
+                models.tools ? `tools ${models.tools}` : null,
+                models.reason ? `reason ${models.reason}` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
               lastError={state.lastError || null}
             />
           )}

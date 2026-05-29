@@ -31,9 +31,10 @@ Then open the printed URL, e.g. `http://127.0.0.1:7777/?token=…`.
   store); mutating actions shell out to the `gurney` CLI.
 - **`web/`** is a no-build single-page app: React + Babel-standalone from a CDN
   transpile the `.jsx` files in the browser. A Raspberry Pi can serve it as-is.
-- **Direct chat** streams straight from the configured Ollama chat model — no
-  tools, short in-memory history. It's the honest "talk to the model" surface
-  and is gated on the agent running so it matches your Telegram conversation.
+- **Direct chat** streams through Gurney's orchestrator: the same model profile
+  routing, extension tools, conversation history, prompt fragments, and
+  guardrails used by Telegram. It is gated on the agent running so it matches
+  your Telegram conversation.
 
 ## Settings
 
