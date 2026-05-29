@@ -1,4 +1,4 @@
-/* global React, window, MediaRecorder, navigator, Blob, Audio */
+/* global React, window, MediaRecorder, navigator, Blob, Audio, AudioContext */
 // Voice Hub — the speech-first counterpart to Chat Hub. Shown in the sidebar
 // only when gurney-voice is enabled. Wires the existing pieces together:
 //   mic → POST /api/chat/voice-in       (whisper.cpp transcription)
@@ -26,6 +26,11 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
   const streamRef = useVR(null);
   const audioRef = useVR(null);
   const continuousRef = useVR(false);
+  // VAD state — kept in refs so the rAF loop sees the latest values without
+  // forcing a re-render every audio frame.
+  const vadCtxRef = useVR(null);
+  const vadRafRef = useVR(0);
+  const [vadLevel, setVadLevel] = useVS(0); // 0..1 indicator for the orb glow
   useVE(() => {
     continuousRef.current = continuous;
   }, [continuous]);
@@ -61,8 +66,34 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
           /* ignore */
         }
       }
+      teardownVad();
     };
   }, []);
+
+  // Auto-stop tunables. Match the feel of phone voice assistants: ~1.4s of
+  // silence after speech ends the turn, with a hard cap so a stuck mic can't
+  // record forever, and a minimum window so a tap-and-immediately-speak still
+  // registers even before the user has uttered the first syllable.
+  const VAD_SPEECH_RMS = 0.02;
+  const VAD_SILENCE_MS = 1400;
+  const VAD_MIN_MS = 600;
+  const VAD_MAX_MS = 30_000;
+
+  const teardownVad = () => {
+    if (vadRafRef.current) {
+      cancelAnimationFrame(vadRafRef.current);
+      vadRafRef.current = 0;
+    }
+    if (vadCtxRef.current) {
+      try {
+        vadCtxRef.current.close();
+      } catch (e) {
+        /* ignore */
+      }
+      vadCtxRef.current = null;
+    }
+    setVadLevel(0);
+  };
 
   // After Gurney finishes speaking, optionally re-arm the mic for a back-and-
   // forth conversation. Guarded so we don't start while the agent is down.
@@ -83,10 +114,12 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
         if (e.data && e.data.size) chunksRef.current.push(e.data);
       };
       rec.onstop = async () => {
+        teardownVad();
         media.getTracks().forEach((t) => t.stop());
         const ms = Date.now() - startedRef.current;
         const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
         if (blob.size === 0) {
+          setError("Didn't catch any audio. Check your mic permission and try again.");
           setPhase('idle');
           return;
         }
@@ -103,10 +136,49 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
         }
         send(r.data.transcript.trim());
       };
+      // MediaRecorder + a parallel AnalyserNode on the same MediaStream gives
+      // us voice-activity detection: we sample audio level continuously and
+      // stop the recorder once the user goes quiet after having spoken. This
+      // means a single tap → speak → done, no second tap required.
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      const audioCtx = new Ctx();
+      vadCtxRef.current = audioCtx;
+      const source = audioCtx.createMediaStreamSource(media);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+      const buf = new Float32Array(analyser.fftSize);
+      let heardSpeech = false;
+      let lastSpeechAt = Date.now();
+      const tick = () => {
+        if (!vadCtxRef.current || rec.state === 'inactive') return;
+        analyser.getFloatTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        const rms = Math.sqrt(sum / buf.length);
+        setVadLevel(Math.min(1, rms * 8));
+        const now = Date.now();
+        if (rms > VAD_SPEECH_RMS) {
+          heardSpeech = true;
+          lastSpeechAt = now;
+        }
+        const elapsed = now - startedRef.current;
+        const silenceFor = now - lastSpeechAt;
+        const shouldStop =
+          elapsed > VAD_MAX_MS ||
+          (heardSpeech && elapsed > VAD_MIN_MS && silenceFor > VAD_SILENCE_MS);
+        if (shouldStop) {
+          stopListening();
+          return;
+        }
+        vadRafRef.current = requestAnimationFrame(tick);
+      };
       rec.start();
       recorderRef.current = rec;
       setPhase('listening');
+      vadRafRef.current = requestAnimationFrame(tick);
     } catch (e) {
+      teardownVad();
       setError('Microphone access was denied or unavailable.');
       setPhase('idle');
     }
@@ -272,7 +344,12 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
             gap: 22,
           }}
         >
-          <MicOrb phase={phase} disabled={!supported || !running} onClick={toggleMic} />
+          <MicOrb
+            phase={phase}
+            disabled={!supported || !running}
+            onClick={toggleMic}
+            level={vadLevel}
+          />
           <StatusLine
             phase={phase}
             running={running}
@@ -294,9 +371,38 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
             </p>
           )}
           {error && (
-            <p style={{ color: 'var(--err)', fontSize: 13, maxWidth: 420, textAlign: 'center' }}>
-              {error}
-            </p>
+            <div
+              role="alert"
+              style={{
+                maxWidth: 460,
+                background: 'color-mix(in oklab, var(--err) 12%, var(--surface-2))',
+                border: '1px solid color-mix(in oklab, var(--err) 45%, var(--border))',
+                color: 'var(--err)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '10px 14px',
+                fontSize: 13.5,
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 9,
+              }}
+            >
+              <window.Icon name="alert" size={16} style={{ flex: 'none', marginTop: 1 }} />
+              <span style={{ flex: 1, lineHeight: 1.45 }}>{error}</span>
+              <button
+                onClick={() => setError(null)}
+                title="Dismiss"
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--err)',
+                  cursor: 'pointer',
+                  padding: 0,
+                  flex: 'none',
+                }}
+              >
+                <window.Icon name="x" size={14} />
+              </button>
+            </div>
           )}
           {(phase === 'thinking' || phase === 'speaking') && (
             <window.Button variant="subtle" icon="stop" size="sm" onClick={cancelTurn}>
@@ -413,7 +519,7 @@ function VoiceHeader({
   );
 }
 
-function MicOrb({ phase, disabled, onClick }) {
+function MicOrb({ phase, disabled, onClick, level = 0 }) {
   const pulsing = phase === 'listening' || phase === 'speaking';
   const colorVar =
     phase === 'listening'
@@ -476,7 +582,8 @@ function MicOrb({ phase, disabled, onClick }) {
           placeItems: 'center',
           color: 'var(--on-accent)',
           boxShadow: '0 10px 40px color-mix(in oklab, ' + colorVar + ' 35%, transparent)',
-          transition: 'background .2s',
+          transition: 'background .2s, transform .08s',
+          transform: phase === 'listening' ? `scale(${1 + level * 0.12})` : 'scale(1)',
         }}
       >
         <window.Icon
@@ -505,7 +612,7 @@ function StatusLine({ phase, running, supported, voiceReady }) {
       : 'This browser does not support audio recording.';
   } else if (!running) msg = 'Start the agent to begin a voice conversation.';
   else if (!voiceReady) msg = 'Setting up voice…';
-  else if (phase === 'listening') msg = 'Listening — tap again to send';
+  else if (phase === 'listening') msg = 'Listening — speak, then pause (or tap to send)';
   else if (phase === 'thinking') msg = 'Thinking…';
   else if (phase === 'speaking') msg = 'Gurney is speaking — tap to interrupt';
   return (
