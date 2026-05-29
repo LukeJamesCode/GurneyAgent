@@ -86,6 +86,53 @@ function discoverBundledExtensions(): DiscoveredExtension[] {
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+export interface ExtensionSelectionPlan {
+  extensions: DiscoveredExtension[];
+  addedDependencies: string[];
+  missingDependencies: Array<{ extension: string; dependency: string }>;
+}
+
+export function resolveExtensionSelection(
+  bundled: DiscoveredExtension[],
+  selectedNames: readonly string[],
+): ExtensionSelectionPlan {
+  const byName = new Map(bundled.map((ext) => [ext.name, ext]));
+  const requested = new Set(selectedNames);
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const ordered: DiscoveredExtension[] = [];
+  const added = new Set<string>();
+  const missingDependencies: Array<{ extension: string; dependency: string }> = [];
+
+  const visit = (name: string, parent?: string): void => {
+    if (visited.has(name)) return;
+    if (visiting.has(name)) return;
+
+    const ext = byName.get(name);
+    if (!ext) {
+      if (parent) missingDependencies.push({ extension: parent, dependency: name });
+      return;
+    }
+
+    visiting.add(name);
+    for (const dep of ext.manifest.deps ?? []) {
+      visit(dep, ext.name);
+      if (!requested.has(dep) && byName.has(dep)) added.add(dep);
+    }
+    visiting.delete(name);
+    visited.add(name);
+    ordered.push(ext);
+  };
+
+  for (const name of selectedNames) visit(name);
+
+  return {
+    extensions: ordered,
+    addedDependencies: [...added].sort((a, b) => a.localeCompare(b)),
+    missingDependencies,
+  };
+}
+
 // Write extension_state rows for every bundled extension BEFORE the loader
 // runs, so unselected ones don't get auto-enabled on first start. Selected
 // extensions get enabled=1; everything else gets enabled=0.
@@ -362,11 +409,26 @@ export async function run(): Promise<void> {
     })),
   });
 
-  const selected = bundled.filter((e) => selectedNames.includes(e.name));
+  const selection = resolveExtensionSelection(bundled, selectedNames);
+  const selected = selection.extensions;
+  if (selection.addedDependencies.length > 0) {
+    process.stdout.write(
+      `\nAlso enabling required extension${selection.addedDependencies.length === 1 ? '' : 's'}: ${selection.addedDependencies.join(', ')}\n`,
+    );
+  }
+  for (const missing of selection.missingDependencies) {
+    process.stdout.write(
+      `\nWarning: ${missing.extension} depends on ${missing.dependency}, but it is not bundled here. Install it before starting Gurney.\n`,
+    );
+  }
 
   // Pre-seed extension_state so unselected bundled extensions are disabled
   // from the first start rather than auto-enabled by the loader.
-  presetExtensionStates(home, bundled, selectedNames);
+  presetExtensionStates(
+    home,
+    bundled,
+    selected.map((ext) => ext.name),
+  );
 
   if (selected.length === 0) {
     process.stdout.write(

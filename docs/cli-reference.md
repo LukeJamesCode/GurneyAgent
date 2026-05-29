@@ -8,7 +8,7 @@ Exit codes: `0` on success, `1` on error, `130` when the user cancels an interac
 
 ## `gurney init`
 
-First-run wizard. Walks through Telegram token, allowlist, Ollama URL, model selection, and hardware tier. Writes `~/.gurney/config.json` with mode `0600`.
+First-run wizard. Walks through Telegram token, allowlist, Ollama URL, model selection, hardware tier, and bundled extension setup. Writes `~/.gurney/config.json` with mode `0600`.
 
 ```sh
 gurney init
@@ -22,6 +22,7 @@ Re-running `init` is safe: your existing values load as defaults and you only ne
 4. Chat model (pick from live model list or enter a tag manually)
 5. Reasoning model (optional heavier model; choose `skip` on small devices)
 6. Hardware tier (auto-suggested from total RAM; override freely)
+7. Bundled extensions to enable. Required bundled dependencies are enabled automatically, then the wizard runs auth, settings, and setup entrypoints for each enabled extension in dependency order.
 
 Config is written only after every step completes. Cancelling mid-wizard leaves the previous config intact.
 
