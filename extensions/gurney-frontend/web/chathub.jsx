@@ -105,6 +105,7 @@ function ChatHub({
     setPhase('streaming');
     setStreamText('');
 
+    const startedAt = Date.now();
     let acc = '';
     let metaAcc = null;
     streamRef.current = window.api.postStream(
@@ -127,7 +128,13 @@ function ChatHub({
             // land it as its own bubble immediately.
             setMessages((m) => [
               ...m,
-              { id: Date.now() + Math.random(), role: 'assistant', text: data.text, time: now() },
+              {
+                id: Date.now() + Math.random(),
+                role: 'assistant',
+                text: data.text,
+                time: now(),
+                elapsedMs: Date.now() - startedAt,
+              },
             ]);
           } else if (ev === 'voice' && data && data.id) {
             attachVoice(data.id);
@@ -142,6 +149,7 @@ function ChatHub({
                   text: finalText,
                   time: now(),
                   meta: metaAcc,
+                  elapsedMs: Date.now() - startedAt,
                 },
               ]);
             }
@@ -193,7 +201,9 @@ function ChatHub({
     if (low === 'stop') return abort();
     setMessages((m) => [...m, { id: Date.now(), role: 'user', text: line, time: now() }]);
     setPhase('command');
+    const startedAt = Date.now();
     const r = await window.api.post('/api/command', { name: head, args });
+    const elapsedMs = Date.now() - startedAt;
     setPhase('idle');
     const replies = r.ok && r.data && Array.isArray(r.data.replies) ? r.data.replies : [];
     if (replies.length > 0) {
@@ -204,13 +214,21 @@ function ChatHub({
           role: 'assistant',
           text: t,
           time: now(),
+          elapsedMs,
         })),
       ]);
     } else {
       const err = (r.data && r.data.error) || r.error || 'Command produced no output.';
       setMessages((m) => [
         ...m,
-        { id: Date.now(), role: 'assistant', text: '⚠️ ' + err, time: now(), error: true },
+        {
+          id: Date.now(),
+          role: 'assistant',
+          text: '⚠️ ' + err,
+          time: now(),
+          error: true,
+          elapsedMs,
+        },
       ]);
     }
   };
@@ -988,10 +1006,33 @@ function Bubble({ m, streaming, devmode }) {
           />
         )}
         {devmode && m.meta && !isUser && <MetaFooter meta={m.meta} />}
-        {m.time && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{m.time}</span>}
+        {(m.time || (!isUser && typeof m.elapsedMs === 'number')) && (
+          <span
+            style={{
+              fontSize: 11,
+              color: 'var(--text-3)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            {m.time}
+            {!isUser && typeof m.elapsedMs === 'number' && (
+              <span title="Response time" style={{ fontFamily: 'var(--font-mono)' }}>
+                · {formatElapsed(m.elapsedMs)}
+              </span>
+            )}
+          </span>
+        )}
       </div>
     </div>
   );
+}
+
+function formatElapsed(ms) {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms / 1000)}s`;
 }
 
 /* ---- devmode diagnostics footer (parity with Telegram /devmode) ---- */
