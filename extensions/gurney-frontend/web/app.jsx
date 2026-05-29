@@ -56,6 +56,7 @@ function App() {
   const [density, setDensity] = useDensity();
   const [state, setState] = useState(null);
   const [offline, setOffline] = useState(false);
+  const [loadError, setLoadError] = useState(null); // reachable but rejected (e.g. 401)
   const [route, setRoute] = useState('chat');
   const [busy, setBusy] = useState(false); // agent action in flight
   const [forcedView, setForcedView] = useState(null); // override configured-based view
@@ -66,7 +67,17 @@ function App() {
     if (r.ok) {
       setState(r.data);
       setOffline(false);
-    } else if (r.offline) setOffline(true);
+      setLoadError(null);
+    } else if (r.offline) {
+      setOffline(true);
+      setLoadError(null);
+    } else {
+      // Reachable, but the server refused the request (401 bad/missing token,
+      // 500, etc). Without this branch the app would spin on the boot screen
+      // forever, since neither `state` nor `offline` ever gets set.
+      setOffline(false);
+      setLoadError({ status: r.status || 0, error: r.error || 'request failed' });
+    }
     return r.ok ? r.data : null;
   }, []);
 
@@ -99,6 +110,47 @@ function App() {
     },
     [refresh],
   );
+
+  // ---- access denied / server error ----
+  if (!state && loadError) {
+    const is401 = loadError.status === 401;
+    const forgetToken = () => {
+      try {
+        sessionStorage.removeItem('gurney_token');
+      } catch (e) {
+        /* ignore */
+      }
+      location.reload();
+    };
+    return (
+      <div className="boot">
+        <span className="boot-mark" style={{ background: 'var(--err)' }}>
+          !
+        </span>
+        <span className="boot-text">
+          {is401
+            ? 'Access token missing or incorrect.'
+            : `Couldn’t load the panel (HTTP ${loadError.status || '?'}).`}
+        </span>
+        {is401 && (
+          <span style={{ fontSize: 13, color: 'var(--text-3)', maxWidth: 360, textAlign: 'center' }}>
+            Open the link printed by <code>gurney frontend</code> on startup — it includes the
+            required <code>?token=…</code>.
+          </span>
+        )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          {is401 && (
+            <window.Button variant="subtle" onClick={forgetToken}>
+              Forget saved token
+            </window.Button>
+          )}
+          <window.Button variant="subtle" icon="refresh" onClick={refresh}>
+            Retry
+          </window.Button>
+        </div>
+      </div>
+    );
+  }
 
   // ---- loading / boot ----
   if (!state && !offline) {
