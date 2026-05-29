@@ -17,6 +17,10 @@ function ChatHub({
   activeModel,
   lastError,
   busy,
+  scheduler,
+  extensions,
+  tier,
+  allowlistCount,
 }) {
   const running = agent === 'running';
   const [messages, setMessages] = useStateCH([]);
@@ -144,8 +148,18 @@ function ChatHub({
         streaming={phase !== 'idle'}
       />
 
+      <OverviewGrid
+        agent={agent}
+        health={health}
+        activeModel={activeModel}
+        scheduler={scheduler}
+        extensions={extensions}
+        tier={tier}
+        allowlistCount={allowlistCount}
+      />
+
       <div
-        style={{ display: 'flex', gap: calc(16), flex: 1, minHeight: 0, marginTop: calc(16) }}
+        style={{ display: 'flex', gap: calc(12), flex: 1, minHeight: 0, marginTop: calc(12) }}
         className="chat-grid"
       >
         <div
@@ -163,7 +177,7 @@ function ChatHub({
         >
           <div
             style={{
-              padding: '12px 18px',
+              padding: '10px 14px',
               borderBottom: '1px solid var(--border)',
               display: 'flex',
               alignItems: 'center',
@@ -178,8 +192,10 @@ function ChatHub({
             </span>
           </div>
 
-          <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: 18, minHeight: 120 }}>
-            {messages.length === 0 && phase === 'idle' && <EmptyChat running={running} />}
+          <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: 14, minHeight: 120 }}>
+            {messages.length === 0 && phase === 'idle' && (
+              <EmptyChat running={running} onPrompt={setDraft} />
+            )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               {messages.map((m) => (
                 <Bubble key={m.id} m={m} />
@@ -291,6 +307,105 @@ function calc(px) {
   return `calc(${px}px * var(--gap))`;
 }
 
+function OverviewGrid({ agent, health, activeModel, scheduler, extensions, tier, allowlistCount }) {
+  const running = agent === 'running';
+  const tiles = [
+    {
+      icon: 'power',
+      label: 'Agent',
+      value: running ? 'Running' : agent === 'starting' ? 'Starting' : 'Stopped',
+      detail: `${allowlistCount ?? 0} allowed user${allowlistCount === 1 ? '' : 's'}`,
+      dot: running ? 'running' : agent === 'starting' ? 'starting' : 'stopped',
+    },
+    {
+      icon: 'terminal',
+      label: 'Model',
+      value: activeModel || 'Not selected',
+      detail: tier ? `${tier} tier` : 'hardware tier pending',
+      mono: true,
+      dot: health.ollama ? 'ok' : 'err',
+    },
+    {
+      icon: 'plug',
+      label: 'Extensions',
+      value: `${extensions?.enabled ?? 0} enabled`,
+      detail: `${extensions?.installed ?? 0} installed`,
+      dot: (extensions?.enabled ?? 0) > 0 ? 'ok' : 'stopped',
+    },
+    {
+      icon: 'pulse',
+      label: 'Scheduler',
+      value: scheduler ? `${scheduler.jobs ?? 0} jobs` : 'Idle',
+      detail: scheduler ? `${scheduler.nudgesSent ?? 0} nudges sent` : 'no metrics yet',
+      dot: scheduler && scheduler.jobs > 0 ? 'ok' : 'stopped',
+    },
+  ];
+  return (
+    <div className="overview-grid">
+      {tiles.map((t) => (
+        <div key={t.label} className="overview-tile">
+          <span
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--surface-2)',
+              border: '1px solid var(--border)',
+              display: 'grid',
+              placeItems: 'center',
+              color: 'var(--text-3)',
+              flex: 'none',
+            }}
+          >
+            <window.Icon name={t.icon} size={16} />
+          </span>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 7,
+                fontSize: 12,
+                color: 'var(--text-3)',
+                fontWeight: 600,
+              }}
+            >
+              <window.StatusDot state={t.dot} size={7} pulse={t.dot === 'running'} />
+              {t.label}
+            </div>
+            <div
+              style={{
+                marginTop: 4,
+                fontWeight: 700,
+                fontSize: 14,
+                fontFamily: t.mono ? 'var(--font-mono)' : 'var(--font-ui)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+              title={t.value}
+            >
+              {t.value}
+            </div>
+            <div
+              style={{
+                marginTop: 2,
+                fontSize: 12,
+                color: 'var(--text-3)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {t.detail}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ---- Agent control bar (hero) ---- */
 function AgentControlBar({
   agent,
@@ -323,11 +438,11 @@ function AgentControlBar({
         background: 'var(--surface)',
         border: '1px solid var(--border)',
         borderRadius: 'var(--radius)',
-        padding: calc(16),
+        padding: calc(13),
         boxShadow: 'var(--shadow-sm)',
         display: 'flex',
         alignItems: 'center',
-        gap: 18,
+        gap: 14,
         flexWrap: 'wrap',
       }}
     >
@@ -366,7 +481,7 @@ function AgentControlBar({
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
             <window.StatusDot state={starting ? 'starting' : agent} size={10} pulse={running} />
-            <span style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-0.01em' }}>
+            <span style={{ fontSize: 18, fontWeight: 700, letterSpacing: 0 }}>
               {starting ? 'Starting…' : label}
             </span>
           </div>
@@ -546,7 +661,13 @@ function Thinking({ label, tool }) {
   );
 }
 
-function EmptyChat({ running }) {
+function EmptyChat({ running, onPrompt }) {
+  const prompts = [
+    'What should I focus on today?',
+    'Check my upcoming reminders.',
+    'Draft a concise status update.',
+    'What extensions are available?',
+  ];
   return (
     <div
       style={{
@@ -557,7 +678,7 @@ function EmptyChat({ running }) {
         justifyContent: 'center',
         textAlign: 'center',
         color: 'var(--text-3)',
-        padding: 40,
+        padding: 24,
         gap: 10,
       }}
     >
@@ -581,6 +702,15 @@ function EmptyChat({ running }) {
           ? 'Say hello below — this talks to the same local model your Telegram bot uses.'
           : 'Start the agent to begin chatting.'}
       </p>
+      {running && (
+        <div className="prompt-grid">
+          {prompts.map((p) => (
+            <button key={p} className="prompt-chip" onClick={() => onPrompt(p)}>
+              {p}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -614,7 +744,7 @@ function ActivityStrip({ agent, health, activeModel, phase, lastError }) {
   return (
     <div
       className="activity-strip"
-      style={{ width: 280, flex: 'none', display: 'flex', flexDirection: 'column', gap: calc(16) }}
+      style={{ width: 264, flex: 'none', display: 'flex', flexDirection: 'column', gap: calc(12) }}
     >
       <div
         style={{

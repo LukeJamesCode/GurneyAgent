@@ -91,7 +91,7 @@ function StatusDashboard({ state }) {
                 style={{
                   fontSize: 26,
                   fontWeight: 700,
-                  letterSpacing: '-0.02em',
+                  letterSpacing: 0,
                   fontFamily: typeof c.value === 'number' ? 'var(--font-mono)' : 'var(--font-ui)',
                 }}
               >

@@ -658,7 +658,7 @@ function SectionTitle({ children, sub, right }) {
       }}
     >
       <div>
-        <h2 style={{ fontSize: 22, letterSpacing: '-0.02em' }}>{children}</h2>
+        <h2 style={{ fontSize: 22, letterSpacing: 0 }}>{children}</h2>
         {sub && <p style={{ color: 'var(--text-3)', fontSize: 14, marginTop: 4 }}>{sub}</p>}
       </div>
       {right}
