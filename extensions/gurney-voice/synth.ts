@@ -9,7 +9,7 @@
 // `runShell` defaults to a real spawn but tests pass a stub.
 
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -128,23 +128,4 @@ export async function synthesize(
       rmSync(dir, { recursive: true, force: true });
     },
   };
-}
-
-// Test helper: produce an in-memory pseudo-OGG file so the smoke test for the
-// after-reply hook can exercise the wiring without piper installed.
-export function writeStubOgg(): SynthResult {
-  const dir = mkdtempSync(join(tmpdir(), 'gurney-voice-stub-'));
-  const oggPath = join(dir, 'stub.ogg');
-  writeFileSync(oggPath, Buffer.from([0x4f, 0x67, 0x67, 0x53])); // "OggS"
-  return {
-    oggPath,
-    cleanup() {
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-}
-
-// Used by tests / debug to peek at the bytes the synth produced.
-export function readSynthBytes(r: SynthResult): Buffer {
-  return readFileSync(r.oggPath);
 }

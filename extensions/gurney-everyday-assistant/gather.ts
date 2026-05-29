@@ -144,5 +144,3 @@ export async function buildNightBrief(host: Host, opts: GatherOptions = {}): Pro
 export function rememberBriefingChat(host: Host, chatId: number): void {
   host.settings.set('briefing_chat_id', chatId);
 }
-
-export { dateRangeToday, dateRangeTomorrow };

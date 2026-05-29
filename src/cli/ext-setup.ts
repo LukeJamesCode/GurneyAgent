@@ -294,21 +294,3 @@ export function printTelegramCommandsGuide(
   );
 }
 
-// Convenience: run setup for a single freshly-installed extension (opens its
-// own DB connection) and then print the BotFather guide.
-export async function setupAndGuide(
-  extName: string,
-  extFolder: string,
-  botUsername?: string,
-): Promise<void> {
-  const manifestPath = join(extFolder, 'manifest.json');
-  if (!existsSync(manifestPath)) return;
-  const manifest = JSON.parse(
-    readFileSync(manifestPath, 'utf8'),
-  ) as import('../core/extensions.js').Manifest;
-  const ext: DiscoveredExtension = { name: extName, folder: extFolder, manifest };
-
-  const home = homeDir();
-  await setupExtensions(home, [ext]);
-  printTelegramCommandsGuide([ext], botUsername);
-}

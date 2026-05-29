@@ -22,15 +22,6 @@ export interface Logger {
   child(bindings: Record<string, unknown>): Logger;
 }
 
-// Normalize an unknown thrown value to a safe, log-ready message string.
-// `String(e)` on an arbitrary object can invoke a custom .toString() that
-// embeds tokens or PII; falling back to a literal keeps log output bounded.
-export function errMessage(e: unknown): string {
-  if (e instanceof Error) return e.message;
-  if (typeof e === 'string') return e;
-  return 'unknown error';
-}
-
 export interface LoggerOptions {
   level?: Level;
   // Override sinks for tests.
