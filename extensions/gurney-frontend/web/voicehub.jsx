@@ -1,0 +1,619 @@
+/* global React, window, MediaRecorder, navigator, Blob, Audio */
+// Voice Hub — the speech-first counterpart to Chat Hub. Shown in the sidebar
+// only when gurney-voice is enabled. Wires the existing pieces together:
+//   mic → POST /api/chat/voice-in       (whisper.cpp transcription)
+//   text → POST /api/chat (SSE stream)  (orchestrator reply + `voice` event)
+//   <audio src=/api/chat/voice/:id>     (Piper TTS clip, autoplay)
+//
+// Entering the hub turns gurney-voice on for this chat (otherwise the chat
+// stream produces no `voice` events). The user can still flip /voice off from
+// Chat Hub or Telegram.
+const { useState: useVS, useEffect: useVE, useRef: useVR, useCallback: useVC } = React;
+
+function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
+  const running = agent === 'running';
+  // idle | listening | thinking | speaking
+  const [phase, setPhase] = useVS('idle');
+  const [turns, setTurns] = useVS([]); // { id, user, assistant, audioUrl }
+  const [partial, setPartial] = useVS(''); // streaming assistant text
+  const [error, setError] = useVS(null);
+  const [continuous, setContinuous] = useVS(false);
+  const [voiceReady, setVoiceReady] = useVS(false);
+
+  const recorderRef = useVR(null);
+  const chunksRef = useVR([]);
+  const startedRef = useVR(0);
+  const streamRef = useVR(null);
+  const audioRef = useVR(null);
+  const continuousRef = useVR(false);
+  useVE(() => {
+    continuousRef.current = continuous;
+  }, [continuous]);
+
+  const supported =
+    typeof MediaRecorder !== 'undefined' &&
+    navigator.mediaDevices &&
+    navigator.mediaDevices.getUserMedia;
+
+  // Turn TTS on for this chat when entering the hub so the chat stream emits
+  // the `voice` event we autoplay below. We do this once per mount; the user
+  // can still /voice off elsewhere.
+  useVE(() => {
+    let cancelled = false;
+    (async () => {
+      const r = await window.api.post('/api/command', { name: 'voice', args: 'on' });
+      if (!cancelled) setVoiceReady(!!(r && r.ok));
+    })();
+    return () => {
+      cancelled = true;
+      if (streamRef.current) streamRef.current.abort();
+      if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+        try {
+          recorderRef.current.stop();
+        } catch (e) {
+          /* ignore */
+        }
+      }
+      if (audioRef.current) {
+        try {
+          audioRef.current.pause();
+        } catch (e) {
+          /* ignore */
+        }
+      }
+    };
+  }, []);
+
+  // After Gurney finishes speaking, optionally re-arm the mic for a back-and-
+  // forth conversation. Guarded so we don't start while the agent is down.
+  const startListening = useVC(async () => {
+    if (!supported || !running || phase !== 'idle') return;
+    setError(null);
+    try {
+      const media = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+          ? 'audio/ogg;codecs=opus'
+          : '';
+      const rec = mime ? new MediaRecorder(media, { mimeType: mime }) : new MediaRecorder(media);
+      chunksRef.current = [];
+      startedRef.current = Date.now();
+      rec.ondataavailable = (e) => {
+        if (e.data && e.data.size) chunksRef.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        media.getTracks().forEach((t) => t.stop());
+        const ms = Date.now() - startedRef.current;
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
+        if (blob.size === 0) {
+          setPhase('idle');
+          return;
+        }
+        setPhase('thinking');
+        const r = await window.api.postBlob(
+          '/api/chat/voice-in?ms=' + ms,
+          blob,
+          rec.mimeType || 'audio/webm',
+        );
+        if (!r.ok || !r.data || !r.data.ok || !r.data.transcript) {
+          setError((r.data && r.data.error) || r.error || 'Could not transcribe.');
+          setPhase('idle');
+          return;
+        }
+        send(r.data.transcript.trim());
+      };
+      rec.start();
+      recorderRef.current = rec;
+      setPhase('listening');
+    } catch (e) {
+      setError('Microphone access was denied or unavailable.');
+      setPhase('idle');
+    }
+    // send is defined below; React closure captures the latest via ref-less call
+    // (we only ever read it inside async event handlers, not during this scope).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running, phase, supported]);
+
+  const stopListening = () => {
+    const rec = recorderRef.current;
+    if (rec && rec.state !== 'inactive') rec.stop();
+  };
+
+  const send = (text) => {
+    if (!text) {
+      setPhase('idle');
+      return;
+    }
+    const id = Date.now() + Math.random();
+    setTurns((t) => [...t, { id, user: text, assistant: '', audioUrl: null }]);
+    setPartial('');
+    setPhase('thinking');
+    let acc = '';
+    let gotVoice = false;
+    streamRef.current = window.api.postStream(
+      '/api/chat',
+      { text },
+      {
+        onEvent: (ev, data) => {
+          if (ev === 'delta' && data && data.delta) {
+            acc += data.delta;
+            setPartial(acc);
+          } else if (ev === 'replace' && data && typeof data.text === 'string') {
+            acc = data.text;
+            setPartial(acc);
+          } else if (ev === 'instant' && data && typeof data.text === 'string') {
+            acc = (acc ? acc + '\n' : '') + data.text;
+            setPartial(acc);
+          } else if (ev === 'voice' && data && data.id) {
+            gotVoice = true;
+            const url = window.api.url('/api/chat/voice/' + data.id);
+            setTurns((tt) =>
+              tt.map((row) => (row.id === id ? { ...row, audioUrl: url } : row)),
+            );
+            playAudio(url);
+          } else if (ev === 'done') {
+            const finalText = (data && data.text) || acc;
+            setTurns((tt) =>
+              tt.map((row) => (row.id === id ? { ...row, assistant: finalText } : row)),
+            );
+            setPartial('');
+            if (!gotVoice) {
+              // No TTS clip is coming (extension off / synth failed) — just
+              // settle and re-arm if continuous is on.
+              settleAfterReply();
+            }
+          } else if (ev === 'error') {
+            setError((data && data.message) || 'The model could not be reached.');
+            setPartial('');
+            setPhase('idle');
+            streamRef.current = null;
+          }
+        },
+      },
+    );
+    streamRef.current.done.catch(() => {}).finally(() => {
+      streamRef.current = null;
+    });
+  };
+
+  const playAudio = (url) => {
+    setPhase('speaking');
+    const a = new Audio(url);
+    audioRef.current = a;
+    a.onended = settleAfterReply;
+    a.onerror = settleAfterReply;
+    a.play().catch(() => settleAfterReply());
+  };
+
+  const settleAfterReply = () => {
+    audioRef.current = null;
+    setPhase('idle');
+    if (continuousRef.current && running) {
+      // Tiny delay so the UI repaints "idle" first and the mic doesn't pick up
+      // the tail of TTS bleeding through the speaker.
+      setTimeout(() => startListening(), 350);
+    }
+  };
+
+  const toggleMic = () => {
+    if (phase === 'listening') stopListening();
+    else if (phase === 'speaking') {
+      if (audioRef.current) {
+        try {
+          audioRef.current.pause();
+        } catch (e) {
+          /* ignore */
+        }
+      }
+      settleAfterReply();
+    } else if (phase === 'idle') startListening();
+  };
+
+  const cancelTurn = () => {
+    if (streamRef.current) streamRef.current.abort();
+    streamRef.current = null;
+    if (audioRef.current) {
+      try {
+        audioRef.current.pause();
+      } catch (e) {
+        /* ignore */
+      }
+      audioRef.current = null;
+    }
+    setPartial('');
+    setPhase('idle');
+  };
+
+  const clearTurns = () => {
+    cancelTurn();
+    setTurns([]);
+    window.api.post('/api/chat/clear');
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      <VoiceHeader
+        agent={agent}
+        onStart={onStart}
+        onStop={onStop}
+        onLeave={onLeave}
+        onClear={clearTurns}
+        continuous={continuous}
+        onContinuous={setContinuous}
+        voiceReady={voiceReady}
+        activeModel={activeModel}
+        health={health}
+      />
+
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          marginTop: 12,
+          display: 'flex',
+          gap: 12,
+          flexWrap: 'wrap',
+        }}
+      >
+        <div
+          style={{
+            flex: 2,
+            minWidth: 320,
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius)',
+            boxShadow: 'var(--shadow-sm)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 32,
+            gap: 22,
+          }}
+        >
+          <MicOrb phase={phase} disabled={!supported || !running} onClick={toggleMic} />
+          <StatusLine
+            phase={phase}
+            running={running}
+            supported={!!supported}
+            voiceReady={voiceReady}
+          />
+          {phase === 'thinking' && partial && (
+            <p
+              style={{
+                maxWidth: 520,
+                fontSize: 14,
+                color: 'var(--text-2)',
+                lineHeight: 1.5,
+                whiteSpace: 'pre-wrap',
+                textAlign: 'center',
+              }}
+            >
+              {partial}
+            </p>
+          )}
+          {error && (
+            <p style={{ color: 'var(--err)', fontSize: 13, maxWidth: 420, textAlign: 'center' }}>
+              {error}
+            </p>
+          )}
+          {(phase === 'thinking' || phase === 'speaking') && (
+            <window.Button variant="subtle" icon="stop" size="sm" onClick={cancelTurn}>
+              Stop
+            </window.Button>
+          )}
+        </div>
+
+        <TurnsPanel turns={turns} partial={partial} phase={phase} />
+      </div>
+    </div>
+  );
+}
+
+function VoiceHeader({
+  agent,
+  onStart,
+  onStop,
+  onLeave,
+  onClear,
+  continuous,
+  onContinuous,
+  voiceReady,
+  activeModel,
+  health,
+}) {
+  const running = agent === 'running';
+  return (
+    <div
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow-sm)',
+        padding: 14,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+        flexWrap: 'wrap',
+      }}
+    >
+      <span
+        style={{
+          width: 42,
+          height: 42,
+          borderRadius: 12,
+          background: 'var(--accent-soft)',
+          color: 'var(--accent-strong)',
+          display: 'grid',
+          placeItems: 'center',
+          border: '1px solid var(--border)',
+          flex: 'none',
+        }}
+      >
+        <window.Icon name="mic" size={20} />
+      </span>
+      <div style={{ flex: 1, minWidth: 220 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+          <window.StatusDot state={running ? 'running' : 'stopped'} size={9} pulse={running} />
+          <span style={{ fontWeight: 700, fontSize: 17 }}>Voice Hub</span>
+          {!voiceReady && (
+            <span style={{ fontSize: 12, color: 'var(--warn)', fontWeight: 600 }}>
+              · waiting on gurney-voice
+            </span>
+          )}
+        </div>
+        <p style={{ color: 'var(--text-3)', fontSize: 13, marginTop: 3 }}>
+          Talk to Gurney and hear the reply. Same model, tools and history as the chat hub
+          {activeModel ? ` · ${activeModel}` : ''}.
+          {!health.ollama && (
+            <span style={{ color: 'var(--err)', marginLeft: 6 }}>· Ollama unreachable</span>
+          )}
+        </p>
+      </div>
+
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '6px 12px 6px 6px',
+          borderRadius: 99,
+          border: '1px solid var(--border)',
+          background: 'var(--surface-2)',
+        }}
+        title="Automatically start listening again after Gurney finishes speaking."
+      >
+        <window.Toggle checked={continuous} onChange={onContinuous} label="Continuous mode" />
+        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)' }}>Continuous</span>
+      </div>
+      <window.Button variant="ghost" size="sm" icon="plus" onClick={onClear}>
+        New chat
+      </window.Button>
+      <window.Button variant="subtle" size="sm" icon="chat" onClick={onLeave}>
+        Chat hub
+      </window.Button>
+      <window.Button
+        variant={running ? 'default' : 'primary'}
+        size="sm"
+        icon={running ? 'stop' : 'power'}
+        onClick={running ? onStop : onStart}
+        style={
+          running
+            ? {
+                color: 'var(--err)',
+                borderColor: 'color-mix(in oklab, var(--err) 40%, transparent)',
+              }
+            : {}
+        }
+      >
+        {running ? 'Stop' : 'Start agent'}
+      </window.Button>
+    </div>
+  );
+}
+
+function MicOrb({ phase, disabled, onClick }) {
+  const pulsing = phase === 'listening' || phase === 'speaking';
+  const colorVar =
+    phase === 'listening'
+      ? 'var(--err)'
+      : phase === 'thinking'
+        ? 'var(--warn)'
+        : phase === 'speaking'
+          ? 'var(--accent)'
+          : 'var(--accent)';
+  const ringSize = 200;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={phase === 'listening' ? 'Stop listening' : 'Tap to speak'}
+      style={{
+        position: 'relative',
+        width: ringSize,
+        height: ringSize,
+        borderRadius: '50%',
+        border: 'none',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        background: 'transparent',
+        padding: 0,
+        opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      {pulsing && (
+        <>
+          <span
+            style={{
+              position: 'absolute',
+              inset: 0,
+              borderRadius: '50%',
+              background: colorVar,
+              opacity: 0.15,
+              animation: 'voice-pulse 1.6s ease-out infinite',
+            }}
+          />
+          <span
+            style={{
+              position: 'absolute',
+              inset: 14,
+              borderRadius: '50%',
+              background: colorVar,
+              opacity: 0.22,
+              animation: 'voice-pulse 1.6s ease-out 0.4s infinite',
+            }}
+          />
+        </>
+      )}
+      <span
+        style={{
+          position: 'absolute',
+          inset: 30,
+          borderRadius: '50%',
+          background: colorVar,
+          display: 'grid',
+          placeItems: 'center',
+          color: 'var(--on-accent)',
+          boxShadow: '0 10px 40px color-mix(in oklab, ' + colorVar + ' 35%, transparent)',
+          transition: 'background .2s',
+        }}
+      >
+        <window.Icon
+          name={phase === 'thinking' ? 'refresh' : phase === 'speaking' ? 'pulse' : 'mic'}
+          size={56}
+          className={phase === 'thinking' ? 'spin' : ''}
+        />
+      </span>
+    </button>
+  );
+}
+
+function StatusLine({ phase, running, supported, voiceReady }) {
+  let msg = 'Tap the mic to speak';
+  if (!supported) msg = 'This browser does not support audio recording.';
+  else if (!running) msg = 'Start the agent to begin a voice conversation.';
+  else if (!voiceReady) msg = 'Setting up voice…';
+  else if (phase === 'listening') msg = 'Listening — tap again to send';
+  else if (phase === 'thinking') msg = 'Thinking…';
+  else if (phase === 'speaking') msg = 'Gurney is speaking — tap to interrupt';
+  return (
+    <p style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-2)', textAlign: 'center' }}>
+      {msg}
+    </p>
+  );
+}
+
+function TurnsPanel({ turns, partial, phase }) {
+  const scrollRef = useVR(null);
+  useVE(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [turns, partial, phase]);
+  return (
+    <div
+      style={{
+        flex: 1,
+        minWidth: 260,
+        maxWidth: 360,
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow-sm)',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          padding: '10px 14px',
+          borderBottom: '1px solid var(--border)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          flex: 'none',
+        }}
+      >
+        <window.Icon name="doc" size={15} style={{ color: 'var(--text-3)' }} />
+        <span style={{ fontWeight: 600, fontSize: 14 }}>Transcript</span>
+      </div>
+      <div
+        ref={scrollRef}
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: 14,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 14,
+        }}
+      >
+        {turns.length === 0 && (
+          <p style={{ color: 'var(--text-3)', fontSize: 13, textAlign: 'center', marginTop: 16 }}>
+            Your conversation will appear here.
+          </p>
+        )}
+        {turns.map((t) => (
+          <TurnRow key={t.id} turn={t} />
+        ))}
+        {phase === 'thinking' && partial && !turns.some((t) => t.assistant === partial) && (
+          <div style={{ fontSize: 13.5, color: 'var(--text-2)', whiteSpace: 'pre-wrap' }}>
+            <span style={{ color: 'var(--text-3)', fontSize: 11.5, fontWeight: 600 }}>
+              GURNEY (typing)
+            </span>
+            <div>{partial}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TurnRow({ turn }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div>
+        <span
+          style={{
+            color: 'var(--text-3)',
+            fontSize: 11.5,
+            fontWeight: 700,
+            letterSpacing: 0.4,
+          }}
+        >
+          YOU
+        </span>
+        <div style={{ fontSize: 13.5, color: 'var(--text)', whiteSpace: 'pre-wrap' }}>
+          {turn.user}
+        </div>
+      </div>
+      {turn.assistant && (
+        <div>
+          <span
+            style={{
+              color: 'var(--text-3)',
+              fontSize: 11.5,
+              fontWeight: 700,
+              letterSpacing: 0.4,
+            }}
+          >
+            GURNEY
+          </span>
+          <div style={{ fontSize: 13.5, color: 'var(--text-2)', whiteSpace: 'pre-wrap' }}>
+            {turn.assistant}
+          </div>
+          {turn.audioUrl && (
+            <audio
+              controls
+              src={turn.audioUrl}
+              style={{ height: 32, marginTop: 4, width: '100%' }}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+Object.assign(window, { VoiceHub });

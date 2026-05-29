@@ -298,7 +298,9 @@ async function buildState(): Promise<unknown> {
   const { running, pid } = agentRunning();
   const probe = cfg ? await probeOllama(cfg.ollama.url) : { ok: false, models: [] };
   const readiness = withDb((db) => collectExtensionReadiness(extensionsRoots(), db)) ?? [];
-  const enabledCount = readiness.filter((e) => e.enabled).length;
+  const enabledList = readiness.filter((e) => e.enabled);
+  const enabledCount = enabledList.length;
+  const enabledNames = enabledList.map((e) => e.name);
   const metrics = readMetrics(metricsFilePath(home));
   const { tier: suggestedTier, ramGb } = suggestTier();
   const fe = frontendSettings();
@@ -325,7 +327,7 @@ async function buildState(): Promise<unknown> {
     ramGb: Math.round(ramGb * 10) / 10,
     freeRamGb: Math.round((freemem() / 1024 ** 3) * 10) / 10,
     logLevel: cfg?.logLevel ?? 'info',
-    extensions: { installed: readiness.length, enabled: enabledCount },
+    extensions: { installed: readiness.length, enabled: enabledCount, enabledNames },
     proactive: fe['proactive'] !== 'false',
     queueDepth: 0,
     scheduler: metrics

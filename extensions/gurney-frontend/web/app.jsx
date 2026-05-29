@@ -8,6 +8,7 @@ const { useState, useEffect, useCallback, useRef } = React;
 
 const NAV = [
   { id: 'chat', label: 'Chat Hub', icon: 'chat' },
+  { id: 'voice', label: 'Voice Hub', icon: 'mic', requiresExt: 'gurney-voice' },
   { id: 'extensions', label: 'Extensions', icon: 'plug' },
   { id: 'settings', label: 'Settings', icon: 'gear' },
   { id: 'system', label: 'System', icon: 'pulse' },
@@ -86,6 +87,13 @@ function App() {
     pollRef.current = setInterval(refresh, 4000);
     return () => clearInterval(pollRef.current);
   }, [refresh]);
+
+  // Bounce off the Voice Hub if its extension was disabled while open.
+  useEffect(() => {
+    if (route !== 'voice') return;
+    const names = state && state.extensions && state.extensions.enabledNames;
+    if (names && names.indexOf('gurney-voice') === -1) setRoute('chat');
+  }, [route, state]);
 
   const agentAction = useCallback(
     async (action) => {
@@ -202,6 +210,8 @@ function App() {
 
   const health = state.health || {};
   const models = state.models || {};
+  const enabledExts = (state.extensions && state.extensions.enabledNames) || [];
+  const voiceEnabled = enabledExts.indexOf('gurney-voice') !== -1;
 
   return (
     <div className="app-shell">
@@ -213,6 +223,7 @@ function App() {
         onStop={() => agentAction('stop')}
         busy={busy}
         extCount={state.extensions ? state.extensions.enabled : 0}
+        enabledExts={enabledExts}
         theme={theme}
         setTheme={setTheme}
         density={density}
@@ -245,6 +256,16 @@ function App() {
               extensions={state.extensions}
               tier={state.tier}
               allowlistCount={state.allowlistCount}
+            />
+          )}
+          {route === 'voice' && voiceEnabled && (
+            <window.VoiceHub
+              agent={agentStatus}
+              onStart={() => agentAction('start')}
+              onStop={() => agentAction('stop')}
+              health={{ telegram: !!health.telegram, ollama: !!health.ollama }}
+              activeModel={models.chat || null}
+              onLeave={() => setRoute('chat')}
             />
           )}
           {route === 'extensions' && <window.ExtensionsTab />}
@@ -392,11 +413,15 @@ function Sidebar({
   onStop,
   busy,
   extCount,
+  enabledExts,
   theme,
   setTheme,
   density,
   setDensity,
 }) {
+  const items = NAV.filter(
+    (n) => !n.requiresExt || (enabledExts || []).indexOf(n.requiresExt) !== -1,
+  );
   return (
     <aside
       style={{
@@ -426,7 +451,7 @@ function Sidebar({
         />
       </div>
       <nav style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-        {NAV.map((n) => {
+        {items.map((n) => {
           const on = route === n.id;
           return (
             <button
