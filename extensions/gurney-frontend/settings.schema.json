@@ -16,6 +16,19 @@
       "secret": true,
       "description": "Optional shared token required to use the panel. Auto-generated on first setup. Required in practice whenever listen_host is not loopback."
     },
+    "https_enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Serve the panel over HTTPS. Required for the microphone (and other secure-context browser APIs) on non-loopback hosts. A self-signed cert is generated under ~/.gurney/ if no cert/key paths are set."
+    },
+    "https_cert_path": {
+      "type": "string",
+      "description": "Path to a PEM-encoded TLS certificate. Leave blank to use the auto-generated self-signed cert at ~/.gurney/frontend-cert.pem."
+    },
+    "https_key_path": {
+      "type": "string",
+      "description": "Path to the PEM-encoded TLS private key for https_cert_path. Leave blank to use ~/.gurney/frontend-key.pem."
+    },
     "proactive": {
       "type": "boolean",
       "default": true,

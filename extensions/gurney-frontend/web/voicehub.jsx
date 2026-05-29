@@ -491,8 +491,19 @@ function MicOrb({ phase, disabled, onClick }) {
 
 function StatusLine({ phase, running, supported, voiceReady }) {
   let msg = 'Tap the mic to speak';
-  if (!supported) msg = 'This browser does not support audio recording.';
-  else if (!running) msg = 'Start the agent to begin a voice conversation.';
+  if (!supported) {
+    // navigator.mediaDevices is only exposed on secure contexts. The most
+    // common reason it's missing here is an http:// LAN URL — point at the
+    // fix instead of just saying "unsupported".
+    const insecureLan =
+      typeof window !== 'undefined' &&
+      !window.isSecureContext &&
+      location.hostname !== 'localhost' &&
+      location.hostname !== '127.0.0.1';
+    msg = insecureLan
+      ? 'The microphone needs HTTPS. Enable https_enabled in the gurney-frontend settings.'
+      : 'This browser does not support audio recording.';
+  } else if (!running) msg = 'Start the agent to begin a voice conversation.';
   else if (!voiceReady) msg = 'Setting up voice…';
   else if (phase === 'listening') msg = 'Listening — tap again to send';
   else if (phase === 'thinking') msg = 'Thinking…';

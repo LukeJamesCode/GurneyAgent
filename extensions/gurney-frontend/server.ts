@@ -12,9 +12,10 @@
 // and shells out to the `gurney` CLI for actions that have to mutate the
 // install (start/stop, ext install/enable/disable/uninstall).
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   copyFileSync,
   createReadStream,
   existsSync,
@@ -24,6 +25,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { freemem, networkInterfaces, tmpdir, totalmem } from 'node:os';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1806,6 +1808,102 @@ function saveExtSettings(res: ServerResponse, name: string, body: Record<string,
 }
 
 // ---------------------------------------------------------------------------
+// HTTPS support. The browser only exposes getUserMedia (microphone) on
+// localhost or a secure origin, so a LAN-facing panel needs TLS for the
+// Voice Hub to record. We accept user-supplied cert/key paths or, when
+// missing, generate a self-signed pair under ~/.gurney/ via openssl.
+// ---------------------------------------------------------------------------
+const DEFAULT_CERT_FILE = 'frontend-cert.pem';
+const DEFAULT_KEY_FILE = 'frontend-key.pem';
+
+function defaultCertPaths(): { cert: string; key: string } {
+  const home = homeDir();
+  return { cert: join(home, DEFAULT_CERT_FILE), key: join(home, DEFAULT_KEY_FILE) };
+}
+
+function hasOpenssl(): boolean {
+  try {
+    const r = spawnSync('openssl', ['version'], { stdio: 'ignore' });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+// Generate a 10-year self-signed RSA cert + key with subjectAltName covering
+// the bind host and the LAN address, so the same cert works for both the
+// `localhost` and the `192.168.x.y` URL the panel prints. Quiet on success.
+function generateSelfSignedCert(certPath: string, keyPath: string, host: string): void {
+  if (!hasOpenssl()) {
+    throw new Error(
+      'openssl is required to generate a TLS certificate for the panel.\n' +
+        '  Install it (apt install openssl / brew install openssl) and retry,\n' +
+        '  or set https_cert_path and https_key_path to an existing PEM pair.',
+    );
+  }
+  const lan = lanAddress();
+  const altNames = new Set<string>(['DNS:localhost', 'IP:127.0.0.1', 'IP:::1']);
+  if (host && host !== '0.0.0.0' && host !== '127.0.0.1' && host !== '::1') {
+    altNames.add(/^[0-9.:]+$/.test(host) ? `IP:${host}` : `DNS:${host}`);
+  }
+  if (lan) altNames.add(`IP:${lan}`);
+  const subj = '/CN=gurney-frontend';
+  const ext = `subjectAltName=${[...altNames].join(',')}`;
+  const r = spawnSync(
+    'openssl',
+    [
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-keyout',
+      keyPath,
+      '-out',
+      certPath,
+      '-days',
+      '3650',
+      '-nodes',
+      '-subj',
+      subj,
+      '-addext',
+      ext,
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  if (r.status !== 0) {
+    throw new Error(
+      `openssl failed to generate a TLS cert: ${r.stderr?.toString() || 'unknown error'}`,
+    );
+  }
+  // The private key should not be world-readable. chmod is a no-op on Windows
+  // but harmless; Pi/mini-PC deployments do enforce it.
+  try {
+    chmodSync(keyPath, 0o600);
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadTlsMaterial(fe: Record<string, string>, host: string): { key: Buffer; cert: Buffer } {
+  const defaults = defaultCertPaths();
+  const certPath = fe['https_cert_path']?.trim() || defaults.cert;
+  const keyPath = fe['https_key_path']?.trim() || defaults.key;
+  const usingDefaults = certPath === defaults.cert && keyPath === defaults.key;
+
+  if (!existsSync(certPath) || !existsSync(keyPath)) {
+    if (!usingDefaults) {
+      throw new Error(
+        `TLS cert or key not found:\n  cert: ${certPath}\n  key:  ${keyPath}\n` +
+          `Check https_cert_path / https_key_path, or clear them to use the auto-generated pair.`,
+      );
+    }
+    process.stdout.write(`gurney-frontend: generating self-signed TLS cert at ${certPath}\n`);
+    generateSelfSignedCert(certPath, keyPath, host);
+  }
+  return { key: readFileSync(keyPath), cert: readFileSync(certPath) };
+}
+
+// ---------------------------------------------------------------------------
 // Server bootstrap
 // ---------------------------------------------------------------------------
 export async function run(opts: FrontendRunOptions = {}): Promise<Server> {
@@ -1813,9 +1911,11 @@ export async function run(opts: FrontendRunOptions = {}): Promise<Server> {
   const host = fe['listen_host'] || '127.0.0.1';
   const port = Number(fe['listen_port']) || 7777;
   const authToken = fe['auth_token'] || '';
+  const httpsEnabled = fe['https_enabled'] === 'true';
 
-  const server = createServer((req, res) => {
-    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+  const handler = (req: IncomingMessage, res: ServerResponse): void => {
+    const proto = httpsEnabled ? 'https' : 'http';
+    const url = new URL(req.url ?? '/', `${proto}://${req.headers.host ?? 'localhost'}`);
 
     if (url.pathname.startsWith('/api/')) {
       // Auth gate: when a token is configured, require it for the API unless
@@ -1827,7 +1927,11 @@ export async function run(opts: FrontendRunOptions = {}): Promise<Server> {
       return;
     }
     serveStatic(req, res, url.pathname);
-  });
+  };
+
+  const server: Server = httpsEnabled
+    ? createHttpsServer(loadTlsMaterial(fe, host), handler)
+    : createServer(handler);
 
   await new Promise<void>((resolveListen, reject) => {
     server.once('error', (err: NodeJS.ErrnoException) => {
@@ -1850,11 +1954,16 @@ export async function run(opts: FrontendRunOptions = {}): Promise<Server> {
     server.listen(port, host, () => resolveListen());
   });
 
+  const scheme = httpsEnabled ? 'https' : 'http';
   const shown = host === '0.0.0.0' ? (lanAddress() ?? 'localhost') : host;
   const tokenQs = authToken ? `?token=${authToken}` : '';
+  const certNote = httpsEnabled
+    ? '  Self-signed cert: your browser will warn the first time — accept to continue.\n'
+    : '';
   process.stdout.write(
-    `gurney-frontend listening on http://${shown}:${port}\n` +
-      `  Open: http://${shown}:${port}/${tokenQs}\n` +
+    `gurney-frontend listening on ${scheme}://${shown}:${port}\n` +
+      `  Open: ${scheme}://${shown}:${port}/${tokenQs}\n` +
+      certNote +
       `  Stop with Ctrl-C.\n`,
   );
 
