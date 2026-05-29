@@ -32,9 +32,11 @@ import { open as openDb } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import {
   setupExtensions,
+  configureNativeDepsForExtension,
   printTelegramCommandsGuide,
   type DiscoveredExtension,
 } from './ext-setup.js';
+import { run as runFrontend } from './frontend.js';
 import type { Manifest } from '../core/extensions.js';
 
 const TELEGRAM_API = 'https://api.telegram.org';
@@ -114,6 +116,49 @@ function presetExtensionStates(
 }
 
 // ---------------------------------------------------------------------------
+// Web UI handoff: enable + launch the panel, then let the browser drive setup.
+// ---------------------------------------------------------------------------
+async function startWebSetup(
+  home: string,
+  bundled: DiscoveredExtension[],
+  frontendExt: DiscoveredExtension,
+): Promise<void> {
+  // Enable only the panel for now; the user picks the rest in the browser.
+  // This also creates the DB and seeds extension_state rows for every bundled
+  // extension (disabled), so the web Extensions tab can list and toggle them.
+  presetExtensionStates(home, bundled, [frontendExt.name]);
+
+  // Run the panel's setup entrypoint (generates the access token and prints the
+  // URL). We deliberately skip the generic settings prompts — the point of this
+  // path is to NOT ask terminal questions.
+  const log = createLogger({ level: 'warn' });
+  const db = openDb({ path: join(home, 'gurney.db'), log });
+  try {
+    await configureNativeDepsForExtension(frontendExt, db, home);
+  } finally {
+    try {
+      db.close();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Start the panel in the background so the user can open it right away.
+  process.stdout.write('\nStarting the web panel…\n');
+  try {
+    await runFrontend({ detach: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    process.stdout.write(
+      `Could not auto-start the panel: ${msg}\n` + 'Start it yourself with:  gurney frontend\n',
+    );
+  }
+  process.stdout.write(
+    '\nOpen the URL above in your browser to finish setup. Nothing else to do here.\n',
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main wizard
 // ---------------------------------------------------------------------------
 
@@ -127,6 +172,26 @@ export async function run(): Promise<void> {
   const ramGb = (ramBytes / 1024 / 1024 / 1024).toFixed(1);
 
   process.stdout.write(`Welcome to Gurney. Config will live in ${home}.\n\n`);
+
+  // -- Web UI handoff ----------------------------------------------------
+  // Before anything else, offer to do the whole setup in the browser. If the
+  // gurney-frontend extension is present and the user says yes, we enable it,
+  // start the local panel, and hand the rest of setup off to the web wizard —
+  // the terminal wizard below is skipped entirely. Saying no continues here.
+  const bundled = discoverBundledExtensions();
+  const frontendExt = bundled.find((e) => e.name === 'gurney-frontend');
+  if (frontendExt && process.stdin.isTTY && process.stdout.isTTY) {
+    const wantWeb = await confirm({
+      message:
+        'Set Gurney up in your browser (web UI)? Everything you can do here, but friendlier.',
+      default: true,
+    });
+    if (wantWeb) {
+      await startWebSetup(home, bundled, frontendExt);
+      return;
+    }
+    process.stdout.write('Continuing setup in the terminal.\n\n');
+  }
 
   // -- Telegram ----------------------------------------------------------
   let token = existing.telegram.token;
@@ -267,7 +332,6 @@ export async function run(): Promise<void> {
   }
 
   // -- Extensions --------------------------------------------------------
-  const bundled = discoverBundledExtensions();
   if (bundled.length === 0) {
     process.stdout.write('\nNo bundled extensions found — run `gurney start` to launch.\n');
     return;
