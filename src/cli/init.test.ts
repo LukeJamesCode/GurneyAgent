@@ -22,11 +22,11 @@ function names(plan: ExtensionSelectionPlan): string[] {
 
 test('resolveExtensionSelection adds bundled dependencies before selected extensions', () => {
   const plan = resolveExtensionSelection(
-    [ext('gurney-speaker', ['gurney-voice']), ext('gurney-voice')],
-    ['gurney-speaker'],
+    [ext('gurney-dependent', ['gurney-voice']), ext('gurney-voice')],
+    ['gurney-dependent'],
   );
 
-  assert.deepEqual(names(plan), ['gurney-voice', 'gurney-speaker']);
+  assert.deepEqual(names(plan), ['gurney-voice', 'gurney-dependent']);
   assert.deepEqual(plan.addedDependencies, ['gurney-voice']);
   assert.deepEqual(plan.missingDependencies, []);
 });

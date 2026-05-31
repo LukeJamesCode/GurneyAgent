@@ -34,11 +34,11 @@ Two-way Telegram voice. Outbound replies via [Piper](https://github.com/rhasspy/
 
 ## Picking models per tier
 
-| Tier      | Default whisper model | Approx size | Notes |
-| --------- | --------------------- | ----------- | ----- |
-| Small (Pi 4)     | `ggml-tiny.en`  | ~75 MB  | English only; ~0.5-1x realtime on a Pi 4. |
-| Standard (mini-PC)  | `ggml-base.en` | ~142 MB | English only; default. |
-| Heavy (5800H+)   | `ggml-base.en`  | ~142 MB | Or bump to `ggml-small.en` (~466 MB) via `gurney config gurney-voice whisper_model_id ggml-small.en`. |
+| Tier               | Default whisper model | Approx size | Notes                                                                                                 |
+| ------------------ | --------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| Small (Pi 4)       | `ggml-tiny.en`        | ~75 MB      | English only; ~0.5-1x realtime on a Pi 4.                                                             |
+| Standard (mini-PC) | `ggml-base.en`        | ~142 MB     | English only; default.                                                                                |
+| Heavy (5800H+)     | `ggml-base.en`        | ~142 MB     | Or bump to `ggml-small.en` (~466 MB) via `gurney config gurney-voice whisper_model_id ggml-small.en`. |
 
 Override with `gurney config gurney-voice whisper_model_id <id>`. The new model auto-downloads on next launch.
 

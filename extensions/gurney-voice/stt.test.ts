@@ -235,7 +235,12 @@ test('transcribePcm cleans up its temp dir on whisper failure', async () => {
   await assert.rejects(
     () =>
       transcribePcm(
-        { pcm: Buffer.alloc(16), sampleRate: 16000, whisperBin: 'whisper-cli', modelPath: '/m.bin' },
+        {
+          pcm: Buffer.alloc(16),
+          sampleRate: 16000,
+          whisperBin: 'whisper-cli',
+          modelPath: '/m.bin',
+        },
         impl,
       ),
     (e: unknown) => e instanceof SttError && e.stage === 'whisper',

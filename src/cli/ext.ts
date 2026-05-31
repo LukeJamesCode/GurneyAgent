@@ -29,11 +29,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
-import {
-  extensionFolders,
-  repoExtensionsRoot,
-  userExtensionsRoot,
-} from './extension-paths.js';
+import { extensionFolders, repoExtensionsRoot, userExtensionsRoot } from './extension-paths.js';
 import { open as openDb } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import { ensurePrivateDir, homeDir } from './config-store.js';

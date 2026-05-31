@@ -7,7 +7,12 @@ import { formatEventLine, getClient as getCalClient, todayRangeIso } from './hel
 import { formatTask, friendlyTaskError, getClient as getTasksClient } from './helpers/tasks.js';
 import { parseReminderTime, splitReminderArgs } from './helpers/time.js';
 import { getWeather } from './api/weather.js';
-import { buildMorningBrief, buildNightBrief, briefingTimeZone, rememberBriefingChat } from './gather.js';
+import {
+  buildMorningBrief,
+  buildNightBrief,
+  briefingTimeZone,
+  rememberBriefingChat,
+} from './gather.js';
 
 interface ReminderRow {
   id: number;

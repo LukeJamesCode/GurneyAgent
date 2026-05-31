@@ -21,8 +21,7 @@ export function setupCallbackServer(
     port,
     expectedState,
     callbackPath: '/callback',
-    completionMessage:
-      'Authorization complete. You can close this tab and return to the terminal.',
+    completionMessage: 'Authorization complete. You can close this tab and return to the terminal.',
     noCodeError: 'no code returned by Google',
   });
   return { actualPort, code };

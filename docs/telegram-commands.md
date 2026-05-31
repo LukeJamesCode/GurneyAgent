@@ -79,10 +79,10 @@ The `/memory`, `/remember`, and `/forget` commands shipped during 0.x and will r
 
 Requires `gurney-voice` installed and Piper + whisper.cpp + ffmpeg available.
 
-| Command              | Arguments                 | What it does                                                                                                      |
-| -------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `/voice`             | `on` \| `off` \| `status` | Toggle voice replies for this chat. When on, every text reply also gets a voice note.                             |
-| `/voice transcribe`  | `on` \| `off` \| `status` | Toggle voice-to-text. When on, voice notes you send are transcribed by whisper.cpp and answered like typed input. |
+| Command             | Arguments                 | What it does                                                                                                      |
+| ------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `/voice`            | `on` \| `off` \| `status` | Toggle voice replies for this chat. When on, every text reply also gets a voice note.                             |
+| `/voice transcribe` | `on` \| `off` \| `status` | Toggle voice-to-text. When on, voice notes you send are transcribed by whisper.cpp and answered like typed input. |
 
 Voice notes you send while transcription is off get a polite "voice notes aren't enabled" reply — turn it on per chat with `/voice transcribe on`.
 

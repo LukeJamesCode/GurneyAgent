@@ -35,7 +35,8 @@ test('splitForTelegram never emits an empty/whitespace-only part', () => {
   // empty text, truncating the rest of a long reply.
   const text = 'a'.repeat(3990) + '\n'.repeat(60) + 'b'.repeat(3990);
   const parts = splitForTelegram(text, 4000);
-  for (const p of parts) assert.ok(p.trim().length > 0, `empty part produced: ${JSON.stringify(p)}`);
+  for (const p of parts)
+    assert.ok(p.trim().length > 0, `empty part produced: ${JSON.stringify(p)}`);
   assert.ok(parts.length >= 2);
 });
 
@@ -88,7 +89,10 @@ function fakeBot(): FakeBot {
   return { bot, handlers, sent, edits };
 }
 
-function makeAdapter(fb: FakeBot): ReturnType<typeof createTelegram> {
+function makeAdapter(
+  fb: FakeBot,
+  overrides: Partial<TelegramOptions> = {},
+): ReturnType<typeof createTelegram> {
   const opts = {
     token: 'test-token',
     allowedUserIds: [1],
@@ -99,6 +103,7 @@ function makeAdapter(fb: FakeBot): ReturnType<typeof createTelegram> {
     db: {} as unknown,
     followups: {} as unknown,
     botFactory: () => fb.bot as never,
+    ...overrides,
   } as unknown as TelegramOptions;
   return createTelegram(opts);
 }
@@ -203,4 +208,109 @@ test('a stale button press (unknown id) is ignored without throwing', async () =
   await pressButton(fb, 'confirm:999:yes'); // wrong id — should be a no-op
   await pressButton(fb, 'confirm:1:yes'); // correct id
   assert.equal(await p, true);
+});
+
+test('intercept replies trigger afterReply hooks for instant responses', async () => {
+  const fb = fakeBot();
+  const afterReplies: string[] = [];
+  let orchestratorCalls = 0;
+  makeAdapter(fb, {
+    orchestrator: {
+      handleUserMessage: async () => {
+        orchestratorCalls += 1;
+      },
+    } as unknown as TelegramOptions['orchestrator'],
+    extensionIntercepts: () => [
+      {
+        extension: 'gurney-instant-responses',
+        handler: async (ctx) => {
+          await ctx.reply('Hey.');
+        },
+      },
+    ],
+    extensionAfterReplies: () => [
+      {
+        extension: 'gurney-voice',
+        handler: async (ctx) => {
+          afterReplies.push(ctx.text);
+        },
+      },
+    ],
+  });
+
+  const textHandler = fb.handlers.get('message:text');
+  assert.ok(textHandler, 'message:text handler should be registered');
+  const replies: string[] = [];
+  await textHandler({
+    chat: { id: 5 },
+    from: { id: 1 },
+    message: { text: 'hi' },
+    reply: async (text: string) => {
+      replies.push(text);
+    },
+  });
+  await tick();
+
+  assert.deepEqual(replies, ['Hey.']);
+  assert.deepEqual(afterReplies, ['Hey.']);
+  assert.equal(orchestratorCalls, 0);
+});
+
+test('voice transcripts use the same instant-response intercept path as text', async () => {
+  const fb = fakeBot();
+  const afterReplies: string[] = [];
+  let orchestratorCalls = 0;
+  makeAdapter(fb, {
+    orchestrator: {
+      handleUserMessage: async () => {
+        orchestratorCalls += 1;
+      },
+    } as unknown as TelegramOptions['orchestrator'],
+    extensionVoiceMessages: () => [
+      {
+        extension: 'gurney-voice',
+        handler: async () => ({ transcript: 'hi' }),
+      },
+    ],
+    extensionIntercepts: () => [
+      {
+        extension: 'gurney-instant-responses',
+        handler: async (ctx) => {
+          assert.equal(ctx.text, 'hi');
+          await ctx.reply('Hey.');
+        },
+      },
+    ],
+    extensionAfterReplies: () => [
+      {
+        extension: 'gurney-voice',
+        handler: async (ctx) => {
+          afterReplies.push(ctx.text);
+        },
+      },
+    ],
+  });
+
+  const voiceHandler = fb.handlers.get('message:voice');
+  assert.ok(voiceHandler, 'message:voice handler should be registered');
+  const replies: string[] = [];
+  await voiceHandler({
+    chat: { id: 5 },
+    from: { id: 1 },
+    message: {
+      voice: {
+        file_id: 'voice-file',
+        duration: 1,
+        mime_type: 'audio/ogg',
+      },
+    },
+    reply: async (text: string) => {
+      replies.push(text);
+    },
+  });
+  await tick();
+
+  assert.deepEqual(replies, ['Hey.']);
+  assert.deepEqual(afterReplies, ['Hey.']);
+  assert.equal(orchestratorCalls, 0);
 });

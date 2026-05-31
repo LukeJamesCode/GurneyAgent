@@ -58,7 +58,7 @@ export function register(host: Host): void {
     intentPattern: TASK_LIST_INTENT,
     description:
       "List Google Tasks (TODOs). Use for 'what are my tasks / what's on my todo list / what do I need to do'. Defaults to incomplete only. " +
-      "Call the tool via the structured protocol — never write `[tasks_list]` as plain-text reply.",
+      'Call the tool via the structured protocol — never write `[tasks_list]` as plain-text reply.',
     tier: 'auto',
     parameters: {
       type: 'object',

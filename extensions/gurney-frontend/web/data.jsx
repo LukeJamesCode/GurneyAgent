@@ -32,8 +32,6 @@ const EXT_BLURBS = {
     'Two-way Telegram voice: spoken replies, and transcription of voice notes you send.',
   'gurney-instant-responses':
     'Fast templated replies for trivial chatter — without waking the model. Great on small hardware.',
-  'gurney-speaker':
-    'Connect a small ESP32 speaker/mic on your network and talk to Gurney out loud.',
   'gurney-codex':
     'Escalate hard coding tasks to a more capable cloud model — local-first, with a cloud fallback.',
   'gurney-frontend':

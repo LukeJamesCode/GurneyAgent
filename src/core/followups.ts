@@ -157,7 +157,7 @@ export function setupFollowups(opts: FollowupsOptions): Followups {
     // week". Restrict to phrasings that genuinely ask the bot to message the
     // user later, so the per-turn manifest hides it on scheduling requests.
     intentPattern:
-      '\\b(check in|check on me|check back|follow ?up|followup|ping me about|remind me to|chase me|nag me|don\'?t let me forget|message me about|text me about)\\b',
+      "\\b(check in|check on me|check back|follow ?up|followup|ping me about|remind me to|chase me|nag me|don'?t let me forget|message me about|text me about)\\b",
     description:
       "Self-issued check-in: send a future chat MESSAGE from yourself to the user, only when they explicitly ask you to follow up or check in later ('check on me about the interview tomorrow'). " +
       "The bare word 'schedule' is NOT a trigger — 'schedule the report' is `smart_schedule_task`, not this. Time = ISO 8601 future, within one year.",
