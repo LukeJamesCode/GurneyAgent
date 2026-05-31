@@ -18,6 +18,7 @@ function ExtensionsTab() {
   const [settingsFor, setSettingsFor] = useStateExt(null); // ext name
   const [authFor, setAuthFor] = useStateExt(null); // ext name being connected
   const [busy, setBusy] = useStateExt(null); // name currently mutating
+  const [setupPromptDismissed, setSetupPromptDismissed] = useStateExt(false);
 
   const load = async () => {
     const r = await window.api.get('/api/extensions');
@@ -98,6 +99,8 @@ function ExtensionsTab() {
   const enabled = exts.filter((e) => e.enabled);
   const disabled = exts.filter((e) => !e.enabled);
   const filtered = tab === 'all' ? exts : tab === 'enabled' ? enabled : disabled;
+  const setupNeeded = exts.filter((e) => e.source === 'user' && !e.self && e.status !== 'ready');
+  const showSetupPrompt = setupNeeded.length > 0 && !setupPromptDismissed;
 
   return (
     <div>
@@ -169,8 +172,100 @@ function ExtensionsTab() {
       </div>
 
       <ConfirmUninstall confirm={confirm} setConfirm={setConfirm} uninstall={uninstall} />
+      <SetupNeededModal
+        open={showSetupPrompt}
+        extensions={setupNeeded}
+        onClose={() => setSetupPromptDismissed(true)}
+        onReview={(name) => {
+          setSetupPromptDismissed(true);
+          setDetail(name);
+        }}
+      />
     </div>
   );
+}
+
+function SetupNeededModal({ open, extensions, onClose, onReview }) {
+  if (!open || extensions.length === 0) return null;
+  const shown = extensions.slice(0, 5);
+  const first = extensions[0];
+  return (
+    <window.Modal
+      open={open}
+      onClose={onClose}
+      title="Finish extension setup"
+      width={560}
+      tone="warn"
+      footer={
+        <>
+          <window.Button variant="ghost" onClick={onClose}>
+            Not now
+          </window.Button>
+          <window.Button icon="gear" onClick={() => onReview(first.name)}>
+            Review setup
+          </window.Button>
+        </>
+      }
+    >
+      <p style={{ marginBottom: 12 }}>
+        Some downloaded extensions are installed but not ready yet. Finish their connection or
+        required settings so Gurney can use their tools and commands.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {shown.map((ext) => (
+          <button
+            key={ext.name}
+            type="button"
+            onClick={() => onReview(ext.name)}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 10,
+              textAlign: 'left',
+              background: 'var(--surface-2)',
+              color: 'var(--text)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '10px 12px',
+              cursor: 'pointer',
+            }}
+          >
+            <window.StatusDot state={ext.enabled ? 'warn' : 'stopped'} size={8} />
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700 }}>
+                {prettyName(ext)}
+              </span>
+              <span
+                style={{
+                  display: 'block',
+                  fontSize: 12.5,
+                  color: 'var(--text-3)',
+                  marginTop: 2,
+                }}
+              >
+                {setupStatusText(ext)}
+              </span>
+            </span>
+            <window.Icon name="fwd" size={15} style={{ color: 'var(--text-3)', marginTop: 2 }} />
+          </button>
+        ))}
+      </div>
+      {extensions.length > shown.length && (
+        <p style={{ marginTop: 10, fontSize: 12.5, color: 'var(--text-3)' }}>
+          Plus {extensions.length - shown.length} more extension
+          {extensions.length - shown.length === 1 ? '' : 's'}.
+        </p>
+      )}
+    </window.Modal>
+  );
+}
+
+function setupStatusText(ext) {
+  if (ext.status === 'disabled') return 'Disabled. Turn it on to run setup.';
+  if (ext.status === 'needs_auth') return 'Needs an account connection.';
+  if (ext.status === 'needs_settings') return 'Missing required settings.';
+  return ext.reasons && ext.reasons[0] ? ext.reasons[0] : 'Review this extension.';
 }
 
 function ErrorNote({ text, onRetry }) {
