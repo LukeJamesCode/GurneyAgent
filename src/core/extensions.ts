@@ -181,10 +181,18 @@ export interface TelegramVoiceMessage {
 // Result returned by a voice-message handler. The adapter walks registered
 // handlers in registration order until one returns a `{ transcript }`. The
 // transcript is then injected into the orchestrator path as if the user had
-// typed it. `{ skip: true }` (or `undefined`) means "I'm not handling this
-// one"; the adapter falls through to the next handler, and if none claim the
-// message it sends a polite "voice notes aren't enabled" reply.
-export type TelegramVoiceHandlerResult = { transcript: string } | { skip: true } | void;
+// typed it. `{ skip: true }` (or `undefined`) means "I'm not opted in for
+// this chat" — the adapter falls through to the next handler and, if none
+// claim the message, sends a generic "turn on /voice" reply. `{ error }`
+// means "I tried but failed for a specific reason" — the adapter stops
+// iterating and surfaces the reason verbatim so the user sees the real
+// cause (missing whisper model, transcription crash, empty audio) instead
+// of a misleading "turn on /voice" prompt.
+export type TelegramVoiceHandlerResult =
+  | { transcript: string }
+  | { skip: true }
+  | { error: string }
+  | void;
 export type TelegramVoiceHandler = (
   msg: TelegramVoiceMessage,
 ) => Promise<TelegramVoiceHandlerResult>;

@@ -1267,12 +1267,16 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
     };
 
     let transcript: string | null = null;
+    let handlerError: string | null = null;
     for (const h of handlers) {
       try {
         const result = await h.handler(msg);
         if (result && 'transcript' in result && result.transcript.trim().length > 0) {
           transcript = result.transcript.trim();
           break;
+        }
+        if (result && 'error' in result && result.error && !handlerError) {
+          handlerError = result.error;
         }
       } catch (e) {
         log.warn('voice handler failed', {
@@ -1284,7 +1288,8 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
 
     if (!transcript) {
       await ctx.reply(
-        "I couldn't transcribe that voice note. Use /voice transcribe status to check the setting, or type your message.",
+        handlerError ??
+          "Voice transcription is off for this chat. Turn it on with /voice on, or type your message.",
       );
       return;
     }

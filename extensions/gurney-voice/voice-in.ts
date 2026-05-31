@@ -29,28 +29,30 @@ export function register(host: Host, options: RegisterOptions = {}): void {
     const fallbackEnabled = Boolean(host.settings.get<boolean>('stt_default_enabled', false));
     if (!getSttPref(host.db, msg.chatId, fallbackEnabled)) {
       // Not opted in for this chat — let the adapter fall through to its
-      // generic "voice notes aren't enabled" reply.
+      // generic "turn on /voice" reply. Only this branch returns skip; the
+      // others below report a specific error so the user can act on it.
       return { skip: true };
     }
 
     const maxDur = Number(host.settings.get<number>('stt_max_duration_sec', 120));
     if (msg.durationSec > maxDur) {
-      msg.log.info('voice note skipped (over max duration)', {
+      msg.log.info('voice note rejected (over max duration)', {
         durationSec: msg.durationSec,
         maxDur,
       });
-      // Bail with skip so the adapter's generic message lands. Could also
-      // surface a tailored reply via a host.telegram.sendMessage call, but
-      // that path would race with the adapter's own reply — leave it for now.
-      return { skip: true };
+      return {
+        error: `Voice note is ${msg.durationSec}s — cap is ${maxDur}s (set stt_max_duration_sec to raise it).`,
+      };
     }
 
     const whisperBin = host.settings.get<string>('whisper_bin', 'whisper-cli')!;
     const ffmpegBin = host.settings.get<string>('ffmpeg_bin', 'ffmpeg')!;
     const modelPath = host.settings.get<string>('whisper_model_path', '');
     if (!modelPath) {
-      msg.log.warn('voice note skipped: whisper_model_path is unset');
-      return { skip: true };
+      msg.log.warn('voice note failed: whisper_model_path is unset');
+      return {
+        error: 'No whisper model is configured. Run: gurney ext install gurney-voice',
+      };
     }
     const language = host.settings.get<string>('stt_language', 'auto') || 'auto';
 
@@ -66,14 +68,13 @@ export function register(host: Host, options: RegisterOptions = {}): void {
         msg.log.info('voice note transcribed to empty string', {
           durationSec: msg.durationSec,
         });
-        return { skip: true };
+        return { error: "Couldn't make out any speech in that recording." };
       }
       return { transcript: result.transcript };
     } catch (e) {
-      msg.log.warn('voice transcription failed', {
-        error: e instanceof Error ? e.message : String(e),
-      });
-      return { skip: true };
+      const message = e instanceof Error ? e.message : String(e);
+      msg.log.warn('voice transcription failed', { error: message });
+      return { error: `Transcription failed: ${message}` };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

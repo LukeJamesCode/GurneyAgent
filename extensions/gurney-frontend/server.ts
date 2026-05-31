@@ -251,6 +251,33 @@ function runGurney(
   });
 }
 
+type SystemCommandName = 'status' | 'doctor' | 'logs' | 'commands';
+
+const SYSTEM_COMMANDS: Record<SystemCommandName, { args: string[]; timeoutMs: number }> = {
+  status: { args: ['status'], timeoutMs: 30_000 },
+  doctor: { args: ['doctor'], timeoutMs: 60_000 },
+  logs: { args: ['logs'], timeoutMs: 30_000 },
+  commands: { args: ['--help'], timeoutMs: 30_000 },
+};
+
+function formatGurneyCommand(args: readonly string[]): string {
+  return ['gurney', ...args].join(' ');
+}
+
+async function runSystemCommand(
+  opts: FrontendRunOptions,
+  name: SystemCommandName,
+): Promise<{ ok: boolean; code: number; command: string; output: string }> {
+  const spec = SYSTEM_COMMANDS[name];
+  const r = await runGurney(opts, spec.args, spec.timeoutMs);
+  return {
+    ok: r.code === 0,
+    code: r.code,
+    command: formatGurneyCommand(spec.args),
+    output: (r.out + r.err).trimEnd(),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Aggregated state for the hub + activity strip.
 // ---------------------------------------------------------------------------
@@ -1095,6 +1122,10 @@ async function voiceIn(req: IncomingMessage, res: ServerResponse, url: URL): Pro
   };
 
   let transcript: string | null = null;
+  // First handler that returned `{ error }` wins the user-facing message —
+  // we keep iterating so a later handler can still produce a transcript, but
+  // if none do, we surface the specific reason instead of a generic prompt.
+  let handlerError: string | null = null;
   try {
     for (const h of handlers) {
       try {
@@ -1102,6 +1133,9 @@ async function voiceIn(req: IncomingMessage, res: ServerResponse, url: URL): Pro
         if (r && 'transcript' in r && r.transcript.trim().length > 0) {
           transcript = r.transcript.trim();
           break;
+        }
+        if (r && 'error' in r && r.error && !handlerError) {
+          handlerError = r.error;
         }
       } catch (e) {
         runtime.log.warn('voice-in handler failed', {
@@ -1122,7 +1156,8 @@ async function voiceIn(req: IncomingMessage, res: ServerResponse, url: URL): Pro
     return sendJson(res, 200, {
       ok: false,
       error:
-        'Couldn’t transcribe that. Make sure voice transcription is on (/voice transcribe on).',
+        handlerError ??
+        'Voice transcription is off for this chat. Turn it on with /voice on.',
     });
   }
   return sendJson(res, 200, { ok: true, transcript });
@@ -1543,6 +1578,12 @@ async function handleApi(
       return sendJson(res, 200, commandReference());
     }
 
+    const systemAction = /^\/api\/system\/(status|doctor|logs|commands)$/i.exec(path);
+    if (systemAction && method === 'POST') {
+      const r = await runSystemCommand(opts, systemAction[1]!.toLowerCase() as SystemCommandName);
+      return sendJson(res, 200, r);
+    }
+
     // Run a core text command or an extension command (the codex buttons, etc.).
     if (path === '/api/command' && method === 'POST') {
       const { name, args } = await readJson<{ name?: string; args?: string }>(req);
@@ -1634,7 +1675,12 @@ async function handleApi(
 
     if (path === '/api/maintenance/update' && method === 'POST') {
       const r = await runGurney(opts, ['update'], 600_000);
-      return sendJson(res, r.code === 0 ? 200 : 500, { ok: r.code === 0, output: r.out + r.err });
+      return sendJson(res, r.code === 0 ? 200 : 500, {
+        ok: r.code === 0,
+        code: r.code,
+        command: 'gurney update',
+        output: r.out + r.err,
+      });
     }
 
     return sendJson(res, 404, { error: `no route for ${method} ${path}` });
