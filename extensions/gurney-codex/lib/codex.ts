@@ -308,4 +308,3 @@ export async function probeAccess(opts: {
     return { ok: false, status: 0, detail: e instanceof Error ? e.message : String(e) };
   }
 }
-

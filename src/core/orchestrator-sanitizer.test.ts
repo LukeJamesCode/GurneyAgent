@@ -119,7 +119,7 @@ test('fake-confirm: delete intent but assistant did not claim completion', () =>
   assert.equal(
     looksLikeFakeActionConfirmation({
       userText: 'cancel my dentist',
-      assistantText: "I need the event id — try `/reminders` first.",
+      assistantText: 'I need the event id — try `/reminders` first.',
       toolCallNames: [],
     }),
     false,

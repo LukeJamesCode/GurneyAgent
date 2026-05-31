@@ -220,9 +220,7 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
           } else if (ev === 'voice' && data && data.id) {
             gotVoice = true;
             const url = window.api.url('/api/chat/voice/' + data.id);
-            setTurns((tt) =>
-              tt.map((row) => (row.id === id ? { ...row, audioUrl: url } : row)),
-            );
+            setTurns((tt) => tt.map((row) => (row.id === id ? { ...row, audioUrl: url } : row)));
             playAudio(url);
           } else if (ev === 'done') {
             const finalText = (data && data.text) || acc;
@@ -244,9 +242,11 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
         },
       },
     );
-    streamRef.current.done.catch(() => {}).finally(() => {
-      streamRef.current = null;
-    });
+    streamRef.current.done
+      .catch(() => {})
+      .finally(() => {
+        streamRef.current = null;
+      });
   };
 
   const playAudio = (url) => {

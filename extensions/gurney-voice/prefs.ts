@@ -23,9 +23,9 @@ export function setPref(db: DB, chatId: number, enabled: boolean): void {
 // read a single row per chat. Defaults to off — users opt in via /voice
 // transcribe on.
 export function getSttPref(db: DB, chatId: number, fallback: boolean): boolean {
-  const row = db
-    .prepare(`SELECT stt_enabled FROM tts_chat_prefs WHERE chat_id = ?`)
-    .get(chatId) as { stt_enabled: number } | undefined;
+  const row = db.prepare(`SELECT stt_enabled FROM tts_chat_prefs WHERE chat_id = ?`).get(chatId) as
+    | { stt_enabled: number }
+    | undefined;
   if (!row) return fallback;
   return row.stt_enabled !== 0;
 }

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en" data-theme="light" data-accent="green" data-density="balanced">
   <head>
     <meta charset="UTF-8" />
@@ -19,9 +19,18 @@
     <!-- React + Babel from CDN. No build step: .jsx files are transpiled in the
          browser. This keeps the panel a single static bundle the extension can
          ship as-is and a Pi can serve without a toolchain. -->
-    <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
-    <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
-    <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+    <script
+      src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"
+      crossorigin="anonymous"
+    ></script>
 
     <script src="api.js"></script>
     <script type="text/babel" src="data.jsx"></script>

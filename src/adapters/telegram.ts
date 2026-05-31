@@ -1145,10 +1145,8 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
     }
   });
 
-  // Free-form text + extension command dispatch + intercept chain.
-  bot.on('message:text', async (ctx) => {
+  const dispatchTextMessage = async (ctx: Context, text: string): Promise<void> => {
     if (!ctx.chat || !ctx.from) return;
-    const text = ctx.message.text;
 
     if (text.startsWith('/')) {
       const space = text.indexOf(' ');
@@ -1214,6 +1212,11 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
       }
     };
     await runNext();
+  };
+
+  // Free-form text + extension command dispatch + intercept chain.
+  bot.on('message:text', async (ctx) => {
+    await dispatchTextMessage(ctx, ctx.message.text);
   });
 
   // Inbound voice notes. Walk registered handlers in registration order; the
@@ -1289,12 +1292,12 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
     if (!transcript) {
       await ctx.reply(
         handlerError ??
-          "Voice transcription is off for this chat. Turn it on with /voice on, or type your message.",
+          'Voice transcription is off for this chat. Turn it on with /voice on, or type your message.',
       );
       return;
     }
 
-    dispatchOrchestratorTurn(ctx, transcript);
+    await dispatchTextMessage(ctx, transcript);
   });
 
   bot.catch((err) => {

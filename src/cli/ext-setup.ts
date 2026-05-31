@@ -309,4 +309,3 @@ export function printTelegramCommandsGuide(
       '\n\n─────────────────────────────────────────────────\n',
   );
 }
-

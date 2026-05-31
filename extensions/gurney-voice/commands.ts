@@ -61,7 +61,9 @@ export function register(host: Host): void {
       if (arg === '' || arg === 'status') {
         const ttsOn = getPref(host.db, ctx.chatId, ttsFallback);
         const sttOn = getSttPref(host.db, ctx.chatId, sttFallback);
-        await ctx.reply(`voice replies: ${ttsOn ? 'on' : 'off'}\nvoice transcription: ${sttOn ? 'on' : 'off'}`);
+        await ctx.reply(
+          `voice replies: ${ttsOn ? 'on' : 'off'}\nvoice transcription: ${sttOn ? 'on' : 'off'}`,
+        );
         return;
       }
       if (arg !== 'on' && arg !== 'off') {

@@ -105,10 +105,7 @@ function instantForZonedWallClock(wall: YmdHms, timeZone: string): Date {
 
 function startOfDayInZone(now: Date, timeZone: string): Date {
   const { year, month, day } = zonedYmd(now, timeZone);
-  return instantForZonedWallClock(
-    { year, month, day, hour: 0, minute: 0, second: 0 },
-    timeZone,
-  );
+  return instantForZonedWallClock({ year, month, day, hour: 0, minute: 0, second: 0 }, timeZone);
 }
 
 // `calendar_quick_add` forwards the user's phrase to Google's natural-language

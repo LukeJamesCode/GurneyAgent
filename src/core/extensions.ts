@@ -280,11 +280,10 @@ export interface HostUserMessage {
 }
 
 // Subset of the core Orchestrator exposed to extensions. Gives non-Telegram
-// surfaces (gurney-speaker, future web UI) a way to inject a user turn into
-// the same conversation history Telegram uses, with tools and the
-// hallucination guard intact. Each extension's chatId can be the
-// user's normal Telegram chat (so they share history) or a synthetic one
-// (isolated history).
+// surfaces a way to inject a user turn into the same conversation history
+// Telegram uses, with tools and the hallucination guard intact. Each
+// extension's chatId can be the user's normal Telegram chat (so they share
+// history) or a synthetic one (isolated history).
 export interface HostOrchestrator {
   handleUserMessage(msg: HostUserMessage): Promise<void>;
 }

@@ -7,8 +7,20 @@
 //   Commands→ /api/commands         (the real core + extension Telegram commands)
 const { useState: useStateSys, useEffect: useEffectSys, useRef: useRefSys } = React;
 
+const SYSTEM_COMMAND_LABELS = {
+  status: 'gurney status',
+  doctor: 'gurney doctor',
+  logs: 'gurney logs',
+  commands: 'gurney --help',
+};
+
 function SystemTab({ state, onReset }) {
   const [sub, setSub] = useStateSys('status');
+  const [cmd, setCmd] = useStateSys({
+    running: true,
+    result: { ok: true, command: SYSTEM_COMMAND_LABELS.status, output: '' },
+  });
+  const commandSeq = useRefSys(0);
   const subs = [
     { id: 'status', label: 'Status' },
     { id: 'doctor', label: 'Doctor' },
@@ -16,29 +28,82 @@ function SystemTab({ state, onReset }) {
     { id: 'maintenance', label: 'Maintenance' },
     { id: 'commands', label: 'Commands' },
   ];
+
+  const runSystemTabCommand = async (name = sub) => {
+    const command = SYSTEM_COMMAND_LABELS[name];
+    if (!command) return;
+    const seq = ++commandSeq.current;
+    setCmd({ running: true, result: { ok: true, command, output: '' } });
+    const result = await runPanelCommand(name);
+    if (seq === commandSeq.current) setCmd({ running: false, result });
+  };
+
+  const showCommandOutput = (name, result = null) => {
+    commandSeq.current += 1;
+    setCmd({
+      running: false,
+      result: result || {
+        ok: true,
+        command: name === 'maintenance' ? 'gurney update' : SYSTEM_COMMAND_LABELS[name] || '',
+        output: '',
+      },
+    });
+  };
+
+  const runMaintenanceUpdate = async () => {
+    const seq = ++commandSeq.current;
+    setCmd({ running: true, result: { ok: true, command: 'gurney update', output: '' } });
+    const r = await window.api.post('/api/maintenance/update');
+    const data = r.data || {};
+    const result = {
+      ok: r.ok && data.ok !== false,
+      code: data.code,
+      command: data.command || 'gurney update',
+      output: data.output || r.error || '',
+    };
+    if (seq === commandSeq.current) setCmd({ running: false, result });
+    return result;
+  };
+
+  const changeSub = (next) => {
+    setSub(next);
+    if (SYSTEM_COMMAND_LABELS[next]) {
+      void runSystemTabCommand(next);
+    } else {
+      showCommandOutput(next);
+    }
+  };
+
+  useEffectSys(() => {
+    void runSystemTabCommand('status');
+  }, []);
+
   return (
     <div>
       <window.SectionTitle sub="The deeper controls — health checks, logs, and maintenance. Everything the terminal can do.">
         System &amp; Diagnostics
       </window.SectionTitle>
       <div style={{ marginBottom: 20 }}>
-        <window.Segmented value={sub} onChange={setSub} options={subs} />
+        <window.Segmented value={sub} onChange={changeSub} options={subs} />
       </div>
       {sub === 'status' && <StatusDashboard state={state} />}
-      {sub === 'doctor' && <Doctor />}
+      {sub === 'doctor' && <Doctor onRunCommand={() => runSystemTabCommand('doctor')} />}
       {sub === 'logs' && <LogViewer />}
-      {sub === 'maintenance' && <Maintenance state={state} onReset={onReset} />}
+      {sub === 'maintenance' && (
+        <Maintenance state={state} onReset={onReset} onUpdate={runMaintenanceUpdate} />
+      )}
       {sub === 'commands' && <Commands />}
+      <div style={{ marginTop: 16 }}>
+        <CommandOutput
+          result={cmd.result}
+          running={cmd.running}
+          onRun={SYSTEM_COMMAND_LABELS[sub] ? () => runSystemTabCommand(sub) : undefined}
+          empty={sub === 'maintenance' ? 'Run a maintenance action to see output here.' : undefined}
+        />
+      </div>
     </div>
   );
 }
-
-const SYSTEM_COMMAND_LABELS = {
-  status: 'gurney status',
-  doctor: 'gurney doctor',
-  logs: 'gurney logs',
-  commands: 'gurney --help',
-};
 
 async function runPanelCommand(name) {
   const fallback = SYSTEM_COMMAND_LABELS[name] || `gurney ${name}`;
@@ -131,7 +196,6 @@ function CommandOutput({ result, running, onRun, empty = 'No output yet.' }) {
 
 /* ---- status dashboard ---- */
 function StatusDashboard({ state }) {
-  const [cmd, setCmd] = useStateSys({ running: true, result: null });
   const s = state || {};
   const agent = s.agent || {};
   const health = s.health || {};
@@ -160,16 +224,6 @@ function StatusDashboard({ state }) {
     },
     { label: 'Queue depth', value: s.queueDepth ?? 0, sub: 'messages waiting', dot: 'ok' },
   ];
-
-  const runStatus = async () => {
-    setCmd({ running: true, result: null });
-    const result = await runPanelCommand('status');
-    setCmd({ running: false, result });
-  };
-
-  useEffectSys(() => {
-    runStatus();
-  }, []);
 
   return (
     <div>
@@ -241,36 +295,30 @@ function StatusDashboard({ state }) {
           · tier {s.tier} · v{s.version}
         </p>
       )}
-      <div style={{ marginTop: 16 }}>
-        <CommandOutput result={cmd.result} running={cmd.running} onRun={runStatus} />
-      </div>
     </div>
   );
 }
 
 /* ---- doctor ---- */
-function Doctor() {
+function Doctor({ onRunCommand }) {
   const [running, setRunning] = useStateSys(false);
   const [checks, setChecks] = useStateSys(null);
   const [error, setError] = useStateSys(null);
-  const [cmd, setCmd] = useStateSys({ running: true, result: null });
 
-  const run = async () => {
+  const run = async (includeCommand = true) => {
     setRunning(true);
     setError(null);
-    setCmd({ running: true, result: null });
-    const [r, commandResult] = await Promise.all([
+    const [r] = await Promise.all([
       window.api.get('/api/doctor'),
-      runPanelCommand('doctor'),
+      includeCommand ? onRunCommand() : Promise.resolve(),
     ]);
     setRunning(false);
-    setCmd({ running: false, result: commandResult });
     if (r.ok) setChecks(r.data.checks);
     else setError(r.error || 'Could not run diagnostics.');
   };
 
   useEffectSys(() => {
-    run();
+    run(false);
   }, []);
 
   const summary = checks
@@ -308,7 +356,7 @@ function Doctor() {
         <window.Button
           variant="primary"
           icon={running ? undefined : 'pulse'}
-          onClick={run}
+          onClick={() => run(true)}
           disabled={running}
         >
           {running ? (
@@ -322,10 +370,6 @@ function Doctor() {
           )}
         </window.Button>
       </window.Card>
-
-      <div style={{ marginBottom: 16 }}>
-        <CommandOutput result={cmd.result} running={cmd.running} onRun={run} />
-      </div>
 
       {error && <ErrorNote text={error} />}
 
@@ -452,19 +496,8 @@ function LogViewer() {
   const [filter, setFilter] = useStateSys('all');
   const [q, setQ] = useStateSys('');
   const [connected, setConnected] = useStateSys(false);
-  const [cmd, setCmd] = useStateSys({ running: true, result: null });
   const boxRef = useRefSys(null);
   const esRef = useRefSys(null);
-
-  const runLogsCommand = async () => {
-    setCmd({ running: true, result: null });
-    const result = await runPanelCommand('logs');
-    setCmd({ running: false, result });
-  };
-
-  useEffectSys(() => {
-    runLogsCommand();
-  }, []);
 
   useEffectSys(() => {
     if (!follow) {
@@ -508,9 +541,6 @@ function LogViewer() {
 
   return (
     <div>
-      <div style={{ marginBottom: 14 }}>
-        <CommandOutput result={cmd.result} running={cmd.running} onRun={runLogsCommand} />
-      </div>
       <div
         style={{
           display: 'flex',
@@ -632,25 +662,19 @@ function LogViewer() {
 }
 
 /* ---- maintenance ---- */
-function Maintenance({ state, onReset }) {
+function Maintenance({ state, onReset, onUpdate }) {
   const [updating, setUpdating] = useStateSys(false);
-  const [result, setResult] = useStateSys(null);
   const [resetOpen, setResetOpen] = useStateSys(false);
   const [confirmText, setConfirmText] = useStateSys('');
   const version = state && state.version ? state.version : '';
 
   const doUpdate = async () => {
     setUpdating(true);
-    setResult(null);
-    const r = await window.api.post('/api/maintenance/update');
-    setUpdating(false);
-    const data = r.data || {};
-    setResult({
-      ok: r.ok && data.ok !== false,
-      code: data.code,
-      command: data.command || 'gurney update',
-      output: data.output || r.error || '',
-    });
+    try {
+      await onUpdate();
+    } finally {
+      setUpdating(false);
+    }
   };
 
   return (
@@ -682,15 +706,6 @@ function Maintenance({ state, onReset }) {
           )}
         </window.Button>
       </window.Card>
-
-      {(result || updating) && (
-        <CommandOutput
-          result={result}
-          running={updating}
-          onRun={doUpdate}
-          empty="Update has not produced output yet."
-        />
-      )}
 
       <div
         style={{
@@ -778,26 +793,17 @@ function Maintenance({ state, onReset }) {
 function Commands() {
   const [data, setData] = useStateSys(null);
   const [error, setError] = useStateSys(null);
-  const [cmd, setCmd] = useStateSys({ running: true, result: null });
-
-  const runCommandsCommand = async () => {
-    setCmd({ running: true, result: null });
-    const result = await runPanelCommand('commands');
-    setCmd({ running: false, result });
-  };
 
   useEffectSys(() => {
     window.api.get('/api/commands').then((r) => {
       if (r.ok) setData(r.data);
       else setError(r.error || 'Could not load commands.');
     });
-    runCommandsCommand();
   }, []);
   if (error)
     return (
       <div style={{ maxWidth: 680 }}>
         <ErrorNote text={error} />
-        <CommandOutput result={cmd.result} running={cmd.running} onRun={runCommandsCommand} />
       </div>
     );
   if (!data)
@@ -808,9 +814,6 @@ function Commands() {
   ].filter((g) => g.items.length);
   return (
     <div style={{ maxWidth: 680 }}>
-      <div style={{ marginBottom: 16 }}>
-        <CommandOutput result={cmd.result} running={cmd.running} onRun={runCommandsCommand} />
-      </div>
       <p style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.55 }}>
         These are the slash-commands you can type to your bot in Telegram. They do the same things
         you’d find here in the panel.

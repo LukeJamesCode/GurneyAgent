@@ -23,7 +23,7 @@ export function register(host: Host): void {
     intentPattern: REMINDER_SET_INTENT,
     description:
       "Schedule a one-shot reminder that pings the user at a moment. Use for 'remind me to X in 30 minutes / at 4pm / tomorrow morning'. " +
-      "Reminder = one notification; task = open TODO; event = calendar time-block.",
+      'Reminder = one notification; task = open TODO; event = calendar time-block.',
     tier: 'auto',
     // `text` and `time` are conceptually required, but we let the tool run with
     // them missing and return a friendly error string. The 0.8b model recovers
@@ -77,8 +77,7 @@ export function register(host: Host): void {
   host.tools.register({
     name: 'reminder_list',
     intentPattern: REMINDER_LIST_INTENT,
-    description:
-      "List the user's upcoming reminders. Use for 'what reminders do I have'.",
+    description: "List the user's upcoming reminders. Use for 'what reminders do I have'.",
     tier: 'auto',
     parameters: { type: 'object', properties: {} },
     invoke: async (_args, ctx) => {
@@ -99,7 +98,7 @@ export function register(host: Host): void {
     name: 'reminder_cancel',
     intentPattern: REMINDER_CANCEL_INTENT,
     description:
-      "Cancel a pending reminder by id. Resolve the id from a prior `reminder_list` — never invent one.",
+      'Cancel a pending reminder by id. Resolve the id from a prior `reminder_list` — never invent one.',
     tier: 'confirm',
     parameters: {
       type: 'object',
@@ -125,7 +124,7 @@ export function register(host: Host): void {
     intentPattern: REMINDER_CLEAR_ALL_INTENT,
     description:
       "Cancel ALL pending reminders for this chat at once. Use for 'clear all reminders', 'cancel every reminder', 'get rid of all my reminders', 'wipe my reminders'. " +
-      "DO NOT chain `reminder_list` + repeated `reminder_cancel` for a bulk clear — call this single tool instead.",
+      'DO NOT chain `reminder_list` + repeated `reminder_cancel` for a bulk clear — call this single tool instead.',
     tier: 'auto',
     selfReplying: true,
     parameters: { type: 'object', properties: {} },

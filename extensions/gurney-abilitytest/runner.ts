@@ -975,4 +975,3 @@ export function makeRecord(test: TestCase, p: PartialRecord): TurnRecord {
   const j = judgeTest(base);
   return { ...base, status: j.status, notes: j.notes };
 }
-

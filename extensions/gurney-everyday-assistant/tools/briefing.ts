@@ -30,7 +30,7 @@ export function register(host: Host): void {
     intentPattern: TOMORROW_BRIEF_INTENT,
     description:
       "Tomorrow's briefing: tomorrow's calendar + outstanding tasks. Use for 'what does tomorrow look like / how does tomorrow look / evening briefing / night brief / what's tomorrow'. " +
-      "Always call — never refuse or compose a hallucinated agenda template.",
+      'Always call — never refuse or compose a hallucinated agenda template.',
     tier: 'auto',
     parameters: { type: 'object', properties: {} },
     invoke: async (_args, ctx) => buildNightBrief(host, { signal: ctx.signal }),

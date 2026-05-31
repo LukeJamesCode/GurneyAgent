@@ -25,7 +25,7 @@ export function register(host: Host): void {
     intentPattern: CALENDAR_LIST_INTENT,
     description:
       "List Google Calendar events for a day or range. ALWAYS call for 'do I have anything tomorrow / am I free at 3pm / what's on my calendar / show my events this week'. " +
-      "Defaults to today. For a specific date the user named, set `time_min` to the start of that local day and `time_max` to the start of the next — do not widen. " +
+      'Defaults to today. For a specific date the user named, set `time_min` to the start of that local day and `time_max` to the start of the next — do not widen. ' +
       "Read-only: list every event in the result, repeat each line's date verbatim, never claim an event is cancelled.",
     tier: 'auto',
     parameters: {
@@ -100,7 +100,7 @@ export function register(host: Host): void {
     description:
       "Create a Google Calendar event with structured start/end. DEFAULT for any event-add request, including dentist/doctor/haircut/DMV/school appointments (you record on the user's calendar, you don't book with the provider). " +
       "Resolve the date yourself from the system prompt's current date; default morning=09:00, afternoon=14:00, evening=18:00 when no clock time. Title = user's noun phrase verbatim. " +
-      "For all-day events: `all_day: true`, YYYY-MM-DD start/end, `end` = final included date.",
+      'For all-day events: `all_day: true`, YYYY-MM-DD start/end, `end` = final included date.',
     tier: 'auto',
     selfReplying: true,
     parameters: {
@@ -221,7 +221,7 @@ export function register(host: Host): void {
     description:
       "FALLBACK only. Google's NL parser mangles anything beyond a single-noun event with an explicit clock time on a SPECIFIC named weekday ('Lunch Friday 1pm', 'Gym Saturday 6pm'). " +
       "Skip — use `calendar_add_event` instead — if the phrase has ANY of: 'for/about/with', a duration ('6:30am to 7:30am'), the words 'appointment/session/meeting', the relative-day words 'tomorrow/today/tonight/next/this', a time-of-day word ('morning/afternoon/evening'), or no clock time at all. " +
-      "When in doubt: use `calendar_add_event`. quick_add is the wrong default.",
+      'When in doubt: use `calendar_add_event`. quick_add is the wrong default.',
     tier: 'auto',
     selfReplying: true,
     parameters: {
@@ -256,8 +256,8 @@ export function register(host: Host): void {
     intentPattern: CALENDAR_DELETE_INTENT,
     description:
       "Cancel/delete a calendar event the user named ('cancel the camping event', 'remove tomorrow's 3pm'). " +
-      "PREFER `title` (a substring of the event the user named) — the tool will list the upcoming window itself and pick the match, so you do not need to call `calendar_list_events` first. " +
-      "Pass `id` only when you already have one verbatim from a previous `event_ids:` line — never invent or guess an id.",
+      'PREFER `title` (a substring of the event the user named) — the tool will list the upcoming window itself and pick the match, so you do not need to call `calendar_list_events` first. ' +
+      'Pass `id` only when you already have one verbatim from a previous `event_ids:` line — never invent or guess an id.',
     tier: 'confirm',
     selfReplying: true,
     parameters: {
@@ -306,9 +306,7 @@ export function register(host: Host): void {
           .slice(0, 10)
           .map((ev) => `  ${formatEventLine(ev)}`)
           .join('\n');
-        return (
-          `"${title}" matches multiple upcoming events — be more specific (e.g. include the date):\n${list}`
-        );
+        return `"${title}" matches multiple upcoming events — be more specific (e.g. include the date):\n${list}`;
       }
       const target = matches[0]!;
       await c.deleteEvent(target.id);

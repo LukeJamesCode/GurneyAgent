@@ -164,13 +164,20 @@ function deterministicReplyFor(message: string, now: Date = new Date()): string 
   }
   // "what's the date next monday" / "what day is next friday" / "when is next tuesday" —
   // 0.8b consistently mis-computes "next <DOW>" by a few days. Answer deterministically.
-  const nextDow = /^(what'?s\s+the\s+date\s+|what\s+day\s+is\s+|when\s+is\s+)(next|this)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/.exec(
-    m,
-  );
-  if (nextDow) {
-    const target = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'].indexOf(
-      nextDow[3]!,
+  const nextDow =
+    /^(what'?s\s+the\s+date\s+|what\s+day\s+is\s+|when\s+is\s+)(next|this)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/.exec(
+      m,
     );
+  if (nextDow) {
+    const target = [
+      'sunday',
+      'monday',
+      'tuesday',
+      'wednesday',
+      'thursday',
+      'friday',
+      'saturday',
+    ].indexOf(nextDow[3]!);
     const today = now.getDay();
     // "next <DOW>": always the upcoming DOW in 1..7 days (never today).
     // "this <DOW>": same week — also use 1..7 days, identical semantics for our purposes.

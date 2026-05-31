@@ -722,9 +722,19 @@ function OverviewGrid({ agent, health, activeModel, scheduler, extensions, tier,
     {
       icon: 'power',
       label: 'Agent',
-      value: running ? 'Running' : agent === 'starting' ? 'Starting' : 'Stopped',
+      value: running
+        ? 'Running'
+        : agent === 'stopping'
+          ? 'Stopping'
+          : agent === 'starting'
+            ? 'Starting'
+            : 'Stopped',
       detail: `${allowlistCount ?? 0} allowed user${allowlistCount === 1 ? '' : 's'}`,
-      dot: running ? 'running' : agent === 'starting' ? 'starting' : 'stopped',
+      dot: running
+        ? 'running'
+        : agent === 'starting' || agent === 'stopping'
+          ? 'starting'
+          : 'stopped',
     },
     {
       icon: 'terminal',
@@ -831,15 +841,23 @@ function AgentControlBar({
   streaming,
 }) {
   const running = agent === 'running';
-  const starting = agent === 'starting' || busy;
+  const stopping = agent === 'stopping';
+  const starting = agent === 'starting' || (!!busy && !stopping);
+  const transitioning = starting || stopping;
   const label =
-    { running: 'Running', stopped: 'Stopped', starting: 'Starting…', error: 'Error' }[agent] ||
-    'Stopped';
+    {
+      running: 'Running',
+      stopped: 'Stopped',
+      starting: 'Starting…',
+      stopping: 'Stopping…',
+      error: 'Error',
+    }[agent] || 'Stopped';
   const sub =
     {
       running: 'Gurney is live and answering messages on Telegram.',
       stopped: 'The agent is not running. Start it to begin answering messages.',
       starting: 'Bringing the agent online…',
+      stopping: 'Taking the agent offline…',
       error: 'Something went wrong starting the agent. Check Diagnostics.',
     }[agent] || 'The agent is not running.';
 
@@ -868,14 +886,14 @@ function AgentControlBar({
             placeItems: 'center',
             background: running
               ? 'var(--accent-soft)'
-              : starting
+              : transitioning
                 ? 'color-mix(in oklab, var(--warn) 16%, transparent)'
                 : agent === 'error'
                   ? 'color-mix(in oklab, var(--err) 13%, transparent)'
                   : 'var(--surface-2)',
             color: running
               ? 'var(--accent-strong)'
-              : starting
+              : transitioning
                 ? 'var(--warn)'
                 : agent === 'error'
                   ? 'var(--err)'
@@ -883,7 +901,7 @@ function AgentControlBar({
             border: '1px solid var(--border)',
           }}
         >
-          {starting ? (
+          {transitioning ? (
             <window.Icon name="refresh" size={22} className="spin" />
           ) : (
             <window.Icon name="power" size={22} />
@@ -891,9 +909,13 @@ function AgentControlBar({
         </span>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-            <window.StatusDot state={starting ? 'starting' : agent} size={10} pulse={running} />
+            <window.StatusDot
+              state={transitioning ? 'starting' : agent}
+              size={10}
+              pulse={running}
+            />
             <span style={{ fontSize: 18, fontWeight: 700, letterSpacing: 0 }}>
-              {starting ? 'Starting…' : label}
+              {stopping ? 'Stopping…' : starting ? 'Starting…' : label}
             </span>
           </div>
           <p style={{ color: 'var(--text-3)', fontSize: 13, marginTop: 3, maxWidth: 380 }}>{sub}</p>
@@ -945,18 +967,18 @@ function AgentControlBar({
           size="sm"
           icon="refresh"
           onClick={onRestart}
-          disabled={!running || starting}
-          style={{ opacity: running && !starting ? 1 : 0.5 }}
+          disabled={!running || transitioning}
+          style={{ opacity: running && !transitioning ? 1 : 0.5 }}
         >
           Restart
         </window.Button>
         <window.Button
-          variant={running ? 'default' : 'primary'}
-          icon={running ? 'stop' : 'power'}
+          variant={running || stopping ? 'default' : 'primary'}
+          icon={running || stopping ? 'stop' : 'power'}
           onClick={running ? onStop : onStart}
-          disabled={starting}
+          disabled={transitioning}
           style={
-            running
+            running || stopping
               ? {
                   borderColor: 'color-mix(in oklab, var(--err) 40%, transparent)',
                   color: 'var(--err)',
@@ -964,7 +986,7 @@ function AgentControlBar({
               : {}
           }
         >
-          {running ? 'Stop' : starting ? 'Starting…' : 'Start agent'}
+          {stopping ? 'Stopping…' : running ? 'Stop' : starting ? 'Starting…' : 'Start agent'}
         </window.Button>
       </div>
     </div>
