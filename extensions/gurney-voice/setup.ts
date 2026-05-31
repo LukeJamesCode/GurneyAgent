@@ -741,39 +741,124 @@ async function streamingRunStep(
   });
 }
 
-// Plan an install step for the system build tools needed to compile whisper.cpp
-// from source. Returns null when no supported package manager is on $PATH —
-// the caller then prints a manual-install hint.
-function planBuildToolsInstall(
-  opts: Pick<NativeDepsOptions, 'commandExists' | 'getuid'>,
-): InstallStep | null {
-  const commandExists = opts.commandExists ?? defaultCommandExists;
-  const getuid = opts.getuid ?? (() => process.getuid?.());
-  const ctx = { commandExists, getuid };
-  if (commandExists('apt-get')) {
-    return withPrivilege('apt-get', ['install', '-y', 'build-essential', 'cmake', 'git'], ctx);
+// Static cmake release. Kitware publishes single-binary Linux/macOS tarballs
+// with no install step — we drop one under extension_state and use it for the
+// whisper build. The point is to keep the wizard's setup path sudo-free: a
+// detached panel has no tty, so 'sudo apt-get install cmake' fails silently.
+const CMAKE_VERSION = '3.30.5';
+const CMAKE_RELEASE_BASE = `https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}`;
+
+interface CmakeAsset {
+  archive: string;
+  // Path INSIDE the extracted tarball where bin/cmake lives. macOS hides it
+  // under CMake.app, Linux at the top level.
+  binSubdir: string;
+}
+
+function cmakeAssetFor(platform: NodeJS.Platform, arch: string): CmakeAsset | null {
+  if (platform === 'linux') {
+    if (arch === 'x64') {
+      return {
+        archive: `cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz`,
+        binSubdir: `cmake-${CMAKE_VERSION}-linux-x86_64`,
+      };
+    }
+    if (arch === 'arm64') {
+      return {
+        archive: `cmake-${CMAKE_VERSION}-linux-aarch64.tar.gz`,
+        binSubdir: `cmake-${CMAKE_VERSION}-linux-aarch64`,
+      };
+    }
   }
-  if (commandExists('dnf')) {
-    return withPrivilege('dnf', ['install', '-y', 'gcc-c++', 'make', 'cmake', 'git'], ctx);
-  }
-  if (commandExists('pacman')) {
-    return withPrivilege('pacman', ['-Sy', '--noconfirm', 'base-devel', 'cmake', 'git'], ctx);
-  }
-  if (commandExists('zypper')) {
-    return withPrivilege(
-      'zypper',
-      ['install', '-y', 'gcc-c++', 'make', 'cmake', 'git'],
-      ctx,
-    );
+  if (platform === 'darwin') {
+    return {
+      archive: `cmake-${CMAKE_VERSION}-macos-universal.tar.gz`,
+      binSubdir: `cmake-${CMAKE_VERSION}-macos-universal/CMake.app/Contents`,
+    };
   }
   return null;
 }
 
-// Build whisper.cpp from source on Linux when no pre-built binary or package
-// is available (Debian/Ubuntu's main repos don't ship one). The result is
-// cached under ~/.gurney/extension_state/gurney-voice/native/whisper-<ver>-src/
-// so a re-enable doesn't re-build. Streaming everything through opts.stdout
-// keeps the wizard modal alive — a Pi-class CPU compiles in a few minutes.
+// Download + extract the static cmake binary into extension_state. Returns the
+// absolute path to the `cmake` executable inside the extracted tree, or null
+// if we don't ship an asset for this platform/arch (caller falls back to a
+// helpful manual-install message).
+async function ensureStaticCmake(
+  home: string,
+  opts: NativeDepsOptions,
+): Promise<string | undefined> {
+  const platform = opts.platform ?? process.platform;
+  const arch = opts.arch ?? process.arch;
+  const stdout = opts.stdout ?? ((text: string) => process.stdout.write(text));
+  const downloadFile = opts.downloadFile ?? defaultDownloadFile;
+  const extractArchive = opts.extractArchive ?? defaultExtractArchive;
+
+  const asset = cmakeAssetFor(platform, arch);
+  if (!asset) {
+    stdout(`  No static cmake available for ${platform}/${arch}; install cmake manually.\n`);
+    return undefined;
+  }
+
+  const installDir = join(
+    home,
+    'extension_state',
+    'gurney-voice',
+    'native',
+    `cmake-${CMAKE_VERSION}`,
+  );
+  const binPath = join(installDir, asset.binSubdir, 'bin', 'cmake');
+  if (existsSync(binPath)) {
+    stdout(`  ✓ cmake ready (${binPath}).\n`);
+    return binPath;
+  }
+
+  try {
+    mkdirSync(installDir, { recursive: true });
+  } catch {
+    /* already exists */
+  }
+  const archivePath = join(installDir, asset.archive);
+  stdout(`  → Downloading cmake ${CMAKE_VERSION} for ${platform}/${arch}…\n`);
+  try {
+    await downloadWithPartFile(`${CMAKE_RELEASE_BASE}/${asset.archive}`, archivePath, downloadFile);
+    const status = await extractArchive(archivePath, installDir);
+    rmSync(archivePath, { force: true });
+    if (status !== 0) {
+      stdout(`  cmake extraction failed (exit ${status ?? 'unknown'}).\n`);
+      return undefined;
+    }
+    if (!existsSync(binPath)) {
+      stdout(`  cmake downloaded but binary not found at ${binPath}.\n`);
+      return undefined;
+    }
+    try {
+      chmodSync(binPath, 0o755);
+    } catch {
+      /* ignore */
+    }
+    stdout(`  ✓ cmake installed (${binPath}).\n`);
+    return binPath;
+  } catch (e) {
+    try {
+      rmSync(archivePath, { force: true });
+    } catch {
+      /* ignore */
+    }
+    stdout(
+      `  cmake download failed: ${e instanceof Error ? e.message : String(e)}\n`,
+    );
+    return undefined;
+  }
+}
+
+// Build whisper.cpp from source on Linux/macOS when no pre-built binary or
+// package is available (Debian/Ubuntu's main repos don't ship whisper-cpp).
+// Sudo-free: when cmake is missing we download Kitware's static binary into
+// extension_state rather than 'sudo apt-get install cmake', because the
+// detached panel has no tty and sudo would silently fail. Result is cached
+// under native/whisper-<ver>-src/ so a re-enable is instant. Streams the
+// compile through opts.stdout so the wizard modal stays alive — a Pi-class
+// CPU compiles in a few minutes.
 async function buildWhisperFromSource(
   home: string,
   opts: NativeDepsOptions,
@@ -795,30 +880,37 @@ async function buildWhisperFromSource(
     return builtPath;
   }
 
-  // Build tools.
-  const needs = ['git', 'cmake', 'make', 'g++'].filter((d) => !commandExists(d));
-  if (needs.length > 0) {
-    stdout(`  Build tools missing (${needs.join(', ')}); installing…\n`);
-    const installStep = planBuildToolsInstall({
-      commandExists,
-      ...(opts.getuid ? { getuid: opts.getuid } : {}),
-    });
-    if (!installStep) {
+  // Compiler + git. We don't try to install these ourselves — they live in
+  // distro packages that require sudo, which the panel can't drive without a
+  // tty. On the vast majority of dev/headless installs they're already
+  // present; if not, surface the one-line command the user should run.
+  const compilerTools = ['git', 'make', 'g++'];
+  const missingCompiler = compilerTools.filter((d) => !commandExists(d));
+  if (missingCompiler.length > 0) {
+    stdout(
+      `  Missing build tools: ${missingCompiler.join(', ')}.\n` +
+        `  These need root to install; the panel can't do that without a terminal.\n` +
+        `  Run in a shell:  sudo apt-get install -y build-essential git\n` +
+        `  Then re-enable Voice from the panel.\n`,
+    );
+    return undefined;
+  }
+
+  // cmake: prefer the system one if present, otherwise drop a static Kitware
+  // binary under native/ so we don't need sudo.
+  let cmakeBin = 'cmake';
+  if (!commandExists('cmake')) {
+    stdout(`  cmake is not on PATH; fetching a static build (no sudo needed)…\n`);
+    const downloaded = await ensureStaticCmake(home, opts);
+    if (!downloaded) {
       stdout(
-        `  No supported package manager — install ${needs.join(', ')} manually and retry.\n`,
+        `  Could not provide cmake automatically. Install it manually with:\n` +
+          `    sudo apt-get install -y cmake\n` +
+          `  and re-enable Voice.\n`,
       );
       return undefined;
     }
-    stdout(`  → ${[installStep.command, ...installStep.args].join(' ')}\n`);
-    const status = await streamingRunStep(installStep, stdout);
-    if (status !== 0) {
-      stdout(
-        `  Build-tools install failed (exit ${status ?? 'unknown'}).\n` +
-          `  If this is a non-interactive shell, sudo may have refused without a tty —\n` +
-          `  run \`sudo apt-get install build-essential cmake git\` manually and retry.\n`,
-      );
-      return undefined;
-    }
+    cmakeBin = downloaded;
   }
 
   // Source clone.
@@ -857,10 +949,10 @@ async function buildWhisperFromSource(
   }
 
   // Configure.
-  stdout(`  → cmake -S ${srcDir} -B ${buildDir}\n`);
+  stdout(`  → ${cmakeBin} -S ${srcDir} -B ${buildDir}\n`);
   const cfgStatus = await streamingRunStep(
     {
-      command: 'cmake',
+      command: cmakeBin,
       args: ['-S', srcDir, '-B', buildDir, '-DCMAKE_BUILD_TYPE=Release'],
     },
     stdout,
@@ -871,10 +963,10 @@ async function buildWhisperFromSource(
   }
 
   // Build whisper-cli.
-  stdout(`  → cmake --build ${buildDir} --target whisper-cli (a few minutes on slow CPUs)…\n`);
+  stdout(`  → ${cmakeBin} --build ${buildDir} --target whisper-cli (a few minutes on slow CPUs)…\n`);
   const buildStatus = await streamingRunStep(
     {
-      command: 'cmake',
+      command: cmakeBin,
       args: ['--build', buildDir, '--target', 'whisper-cli', '--config', 'Release', '-j'],
     },
     stdout,
