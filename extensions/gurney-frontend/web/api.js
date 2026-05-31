@@ -77,46 +77,51 @@
 
   /* POST that streams an SSE response body (used for chat, which is a POST).
    * EventSource only does GET, so we parse the stream manually via fetch. */
-  async function postStream(path, body, { onEvent } = {}) {
+  function postStream(path, body, { onEvent } = {}) {
     const controller = new AbortController();
     const promise = (async () => {
-      const res = await fetch(path, {
-        method: 'POST',
-        headers: headers({ 'content-type': 'application/json' }),
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-      if (!res.ok || !res.body) {
-        onEvent && onEvent('error', { message: 'HTTP ' + res.status });
-        return;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf('\n\n')) !== -1) {
-          const block = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          let ev = 'message';
-          let dataStr = '';
-          for (const line of block.split('\n')) {
-            if (line.startsWith('event:')) ev = line.slice(6).trim();
-            else if (line.startsWith('data:')) dataStr += line.slice(5).trim();
-          }
-          if (dataStr) {
-            let parsed = dataStr;
-            try {
-              parsed = JSON.parse(dataStr);
-            } catch (e) {
-              /* keep string */
+      try {
+        const res = await fetch(path, {
+          method: 'POST',
+          headers: headers({ 'content-type': 'application/json' }),
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        if (!res.ok || !res.body) {
+          onEvent && onEvent('error', { message: 'HTTP ' + res.status });
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf('\n\n')) !== -1) {
+            const block = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            let ev = 'message';
+            let dataStr = '';
+            for (const line of block.split('\n')) {
+              if (line.startsWith('event:')) ev = line.slice(6).trim();
+              else if (line.startsWith('data:')) dataStr += line.slice(5).trim();
             }
-            onEvent && onEvent(ev, parsed);
+            if (dataStr) {
+              let parsed = dataStr;
+              try {
+                parsed = JSON.parse(dataStr);
+              } catch (e) {
+                /* keep string */
+              }
+              onEvent && onEvent(ev, parsed);
+            }
           }
         }
+      } catch (e) {
+        if (controller.signal.aborted) return;
+        onEvent && onEvent('error', { message: String(e && e.message ? e.message : e) });
       }
     })();
     return { abort: () => controller.abort(), done: promise };
