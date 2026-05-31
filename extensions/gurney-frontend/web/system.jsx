@@ -33,8 +33,105 @@ function SystemTab({ state, onReset }) {
   );
 }
 
+const SYSTEM_COMMAND_LABELS = {
+  status: 'gurney status',
+  doctor: 'gurney doctor',
+  logs: 'gurney logs',
+  commands: 'gurney --help',
+};
+
+async function runPanelCommand(name) {
+  const fallback = SYSTEM_COMMAND_LABELS[name] || `gurney ${name}`;
+  const r = await window.api.post(`/api/system/${name}`);
+  const data = r.data || {};
+  return {
+    ok: r.ok && data.ok !== false,
+    code: data.code,
+    command: data.command || fallback,
+    output: data.output || r.error || '',
+  };
+}
+
+function CommandOutput({ result, running, onRun, empty = 'No output yet.' }) {
+  const command = (result && result.command) || '';
+  const output = result && result.output ? result.output : '';
+  const ok = !result || result.ok;
+  return (
+    <div
+      style={{
+        borderRadius: 'var(--radius)',
+        border: `1px solid ${
+          result && !ok ? 'color-mix(in oklab, var(--err) 32%, var(--border))' : 'var(--border)'
+        }`,
+        background: 'var(--code-bg)',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '10px 12px',
+          borderBottom: '1px solid var(--border)',
+          background: 'color-mix(in oklab, var(--surface) 70%, transparent)',
+        }}
+      >
+        <window.Icon
+          name={running ? 'refresh' : ok ? 'terminal' : 'alert'}
+          size={15}
+          className={running ? 'spin' : ''}
+        />
+        <span
+          className="mono"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontSize: 12.5,
+            color: ok ? 'var(--text-2)' : 'var(--err)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {command || (running ? 'running command' : 'command output')}
+          {result && typeof result.code === 'number' ? ` (exit ${result.code})` : ''}
+        </span>
+        {onRun && (
+          <window.Button
+            size="sm"
+            variant="subtle"
+            icon="refresh"
+            onClick={onRun}
+            disabled={running}
+          >
+            {running ? 'Running' : 'Run'}
+          </window.Button>
+        )}
+      </div>
+      <pre
+        style={{
+          margin: 0,
+          minHeight: 86,
+          maxHeight: 300,
+          overflow: 'auto',
+          padding: 14,
+          fontFamily: 'var(--font-mono)',
+          fontSize: 12.5,
+          lineHeight: 1.65,
+          whiteSpace: 'pre-wrap',
+          color: output ? 'var(--text)' : 'var(--text-3)',
+        }}
+      >
+        {running && !output ? 'Running...' : output || empty}
+      </pre>
+    </div>
+  );
+}
+
 /* ---- status dashboard ---- */
 function StatusDashboard({ state }) {
+  const [cmd, setCmd] = useStateSys({ running: true, result: null });
   const s = state || {};
   const agent = s.agent || {};
   const health = s.health || {};
@@ -63,6 +160,17 @@ function StatusDashboard({ state }) {
     },
     { label: 'Queue depth', value: s.queueDepth ?? 0, sub: 'messages waiting', dot: 'ok' },
   ];
+
+  const runStatus = async () => {
+    setCmd({ running: true, result: null });
+    const result = await runPanelCommand('status');
+    setCmd({ running: false, result });
+  };
+
+  useEffectSys(() => {
+    runStatus();
+  }, []);
+
   return (
     <div>
       <div
@@ -133,6 +241,9 @@ function StatusDashboard({ state }) {
           · tier {s.tier} · v{s.version}
         </p>
       )}
+      <div style={{ marginTop: 16 }}>
+        <CommandOutput result={cmd.result} running={cmd.running} onRun={runStatus} />
+      </div>
     </div>
   );
 }
@@ -142,15 +253,25 @@ function Doctor() {
   const [running, setRunning] = useStateSys(false);
   const [checks, setChecks] = useStateSys(null);
   const [error, setError] = useStateSys(null);
+  const [cmd, setCmd] = useStateSys({ running: true, result: null });
 
   const run = async () => {
     setRunning(true);
     setError(null);
-    const r = await window.api.get('/api/doctor');
+    setCmd({ running: true, result: null });
+    const [r, commandResult] = await Promise.all([
+      window.api.get('/api/doctor'),
+      runPanelCommand('doctor'),
+    ]);
     setRunning(false);
+    setCmd({ running: false, result: commandResult });
     if (r.ok) setChecks(r.data.checks);
     else setError(r.error || 'Could not run diagnostics.');
   };
+
+  useEffectSys(() => {
+    run();
+  }, []);
 
   const summary = checks
     ? {
@@ -201,6 +322,10 @@ function Doctor() {
           )}
         </window.Button>
       </window.Card>
+
+      <div style={{ marginBottom: 16 }}>
+        <CommandOutput result={cmd.result} running={cmd.running} onRun={run} />
+      </div>
 
       {error && <ErrorNote text={error} />}
 
@@ -327,8 +452,19 @@ function LogViewer() {
   const [filter, setFilter] = useStateSys('all');
   const [q, setQ] = useStateSys('');
   const [connected, setConnected] = useStateSys(false);
+  const [cmd, setCmd] = useStateSys({ running: true, result: null });
   const boxRef = useRefSys(null);
   const esRef = useRefSys(null);
+
+  const runLogsCommand = async () => {
+    setCmd({ running: true, result: null });
+    const result = await runPanelCommand('logs');
+    setCmd({ running: false, result });
+  };
+
+  useEffectSys(() => {
+    runLogsCommand();
+  }, []);
 
   useEffectSys(() => {
     if (!follow) {
@@ -372,6 +508,9 @@ function LogViewer() {
 
   return (
     <div>
+      <div style={{ marginBottom: 14 }}>
+        <CommandOutput result={cmd.result} running={cmd.running} onRun={runLogsCommand} />
+      </div>
       <div
         style={{
           display: 'flex',
@@ -505,7 +644,13 @@ function Maintenance({ state, onReset }) {
     setResult(null);
     const r = await window.api.post('/api/maintenance/update');
     setUpdating(false);
-    setResult({ ok: r.ok, output: (r.data && r.data.output) || r.error || '' });
+    const data = r.data || {};
+    setResult({
+      ok: r.ok && data.ok !== false,
+      code: data.code,
+      command: data.command || 'gurney update',
+      output: data.output || r.error || '',
+    });
   };
 
   return (
@@ -538,50 +683,13 @@ function Maintenance({ state, onReset }) {
         </window.Button>
       </window.Card>
 
-      {result && (
-        <div
-          style={{
-            borderRadius: 'var(--radius)',
-            border: `1px solid ${result.ok ? 'color-mix(in oklab, var(--ok) 30%, transparent)' : 'color-mix(in oklab, var(--err) 30%, transparent)'}`,
-            background: result.ok
-              ? 'color-mix(in oklab, var(--ok) 6%, var(--surface))'
-              : 'color-mix(in oklab, var(--err) 6%, var(--surface))',
-            padding: 14,
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              marginBottom: result.output ? 8 : 0,
-            }}
-          >
-            <window.Icon
-              name={result.ok ? 'check' : 'alert'}
-              size={16}
-              style={{ color: result.ok ? 'var(--ok)' : 'var(--err)' }}
-            />
-            <span style={{ fontWeight: 600, fontSize: 14 }}>
-              {result.ok ? 'Update finished' : 'Update failed'}
-            </span>
-          </div>
-          {result.output && (
-            <pre
-              style={{
-                margin: 0,
-                fontFamily: 'var(--font-mono)',
-                fontSize: 12,
-                color: 'var(--text-2)',
-                whiteSpace: 'pre-wrap',
-                maxHeight: 220,
-                overflow: 'auto',
-              }}
-            >
-              {result.output}
-            </pre>
-          )}
-        </div>
+      {(result || updating) && (
+        <CommandOutput
+          result={result}
+          running={updating}
+          onRun={doUpdate}
+          empty="Update has not produced output yet."
+        />
       )}
 
       <div
@@ -670,16 +778,26 @@ function Maintenance({ state, onReset }) {
 function Commands() {
   const [data, setData] = useStateSys(null);
   const [error, setError] = useStateSys(null);
+  const [cmd, setCmd] = useStateSys({ running: true, result: null });
+
+  const runCommandsCommand = async () => {
+    setCmd({ running: true, result: null });
+    const result = await runPanelCommand('commands');
+    setCmd({ running: false, result });
+  };
+
   useEffectSys(() => {
     window.api.get('/api/commands').then((r) => {
       if (r.ok) setData(r.data);
       else setError(r.error || 'Could not load commands.');
     });
+    runCommandsCommand();
   }, []);
   if (error)
     return (
       <div style={{ maxWidth: 680 }}>
         <ErrorNote text={error} />
+        <CommandOutput result={cmd.result} running={cmd.running} onRun={runCommandsCommand} />
       </div>
     );
   if (!data)
@@ -690,6 +808,9 @@ function Commands() {
   ].filter((g) => g.items.length);
   return (
     <div style={{ maxWidth: 680 }}>
+      <div style={{ marginBottom: 16 }}>
+        <CommandOutput result={cmd.result} running={cmd.running} onRun={runCommandsCommand} />
+      </div>
       <p style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.55 }}>
         These are the slash-commands you can type to your bot in Telegram. They do the same things
         you’d find here in the panel.
