@@ -896,6 +896,11 @@ function StepHardware({ data, set, suggestedTier, ramGb }) {
 function StepExtensions() {
   const [exts, setExts] = useStateWiz(null);
   const [busy, setBusy] = useStateWiz(null);
+  // Per-extension toggle result so the user can see whether the post-enable
+  // setup (downloads, package-manager installs) actually succeeded — silently
+  // failing here is what burned us with whisper.cpp on Windows.
+  const [results, setResults] = useStateWiz({});
+  const [openDetails, setOpenDetails] = useStateWiz({});
   const load = async () => {
     const r = await window.api.get('/api/extensions');
     // Hide the panel itself — it's already running and can't be toggled here.
@@ -907,9 +912,11 @@ function StepExtensions() {
   }, []);
   const toggle = async (e) => {
     setBusy(e.name);
-    await window.api.post(
-      `/api/extensions/${encodeURIComponent(e.name)}/${e.enabled ? 'disable' : 'enable'}`,
-    );
+    const action = e.enabled ? 'disable' : 'enable';
+    const r = await window.api.post(`/api/extensions/${encodeURIComponent(e.name)}/${action}`);
+    const output = (r.data && r.data.output) || r.error || '';
+    const ok = !!(r.ok && r.data && r.data.ok);
+    setResults((prev) => ({ ...prev, [e.name]: { ok, output, action } }));
     setBusy(null);
     load();
   };
@@ -935,78 +942,176 @@ function StepExtensions() {
         </div>
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {(exts || []).map((e) => (
-          <div
-            key={e.name}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 13,
-              padding: 15,
-              borderRadius: 'var(--radius)',
-              background: 'var(--surface)',
-              border: `1px solid ${e.enabled ? 'color-mix(in oklab, var(--accent) 40%, var(--border))' : 'var(--border)'}`,
-            }}
-          >
-            <span
+        {(exts || []).map((e) => {
+          const result = results[e.name];
+          const detailsOpen = !!openDetails[e.name];
+          return (
+            <div
+              key={e.name}
               style={{
-                width: 38,
-                height: 38,
-                borderRadius: 10,
-                flex: 'none',
-                display: 'grid',
-                placeItems: 'center',
-                background: 'var(--accent-soft)',
-                color: 'var(--accent-strong)',
-                fontWeight: 700,
-                fontFamily: 'var(--font-display)',
-                fontSize: 14,
+                display: 'flex',
+                flexDirection: 'column',
+                padding: 15,
+                borderRadius: 'var(--radius)',
+                background: 'var(--surface)',
+                border: `1px solid ${e.enabled ? 'color-mix(in oklab, var(--accent) 40%, var(--border))' : 'var(--border)'}`,
               }}
             >
-              {pretty(e)
-                .replace(/[^A-Za-z ]/g, '')
-                .split(' ')
-                .slice(0, 2)
-                .map((w) => w[0])
-                .join('')}
-            </span>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontWeight: 600, fontSize: 14.5 }}>{pretty(e)}</span>
-                {e.needsAuth && !e.authConnected && (
-                  <window.Badge tone="warn">
-                    <window.Icon name="link" size={11} />
-                    needs connection
-                  </window.Badge>
-                )}
-                {e.needsAuth && e.authConnected && (
-                  <window.Badge tone="ok">
-                    <window.Icon name="check" size={11} />
-                    connected
-                  </window.Badge>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
+                <span
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: 10,
+                    flex: 'none',
+                    display: 'grid',
+                    placeItems: 'center',
+                    background: 'var(--accent-soft)',
+                    color: 'var(--accent-strong)',
+                    fontWeight: 700,
+                    fontFamily: 'var(--font-display)',
+                    fontSize: 14,
+                  }}
+                >
+                  {pretty(e)
+                    .replace(/[^A-Za-z ]/g, '')
+                    .split(' ')
+                    .slice(0, 2)
+                    .map((w) => w[0])
+                    .join('')}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 600, fontSize: 14.5 }}>{pretty(e)}</span>
+                    {e.needsAuth && !e.authConnected && (
+                      <window.Badge tone="warn">
+                        <window.Icon name="link" size={11} />
+                        needs connection
+                      </window.Badge>
+                    )}
+                    {e.needsAuth && e.authConnected && (
+                      <window.Badge tone="ok">
+                        <window.Icon name="check" size={11} />
+                        connected
+                      </window.Badge>
+                    )}
+                  </div>
+                  <p style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 2, lineHeight: 1.45 }}>
+                    {blurb(e)}
+                  </p>
+                </div>
+                {busy === e.name ? (
+                  <window.Icon
+                    name="refresh"
+                    size={18}
+                    className="spin"
+                    style={{ color: 'var(--text-3)' }}
+                  />
+                ) : (
+                  <window.Toggle
+                    checked={e.enabled}
+                    onChange={() => toggle(e)}
+                    label={`Enable ${pretty(e)}`}
+                  />
                 )}
               </div>
-              <p style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 2, lineHeight: 1.45 }}>
-                {blurb(e)}
-              </p>
+              {busy === e.name && (
+                <p
+                  style={{
+                    marginTop: 10,
+                    fontSize: 12.5,
+                    color: 'var(--text-3)',
+                    fontStyle: 'italic',
+                  }}
+                >
+                  Setting up — this may take a minute if native dependencies need to download.
+                </p>
+              )}
+              {result && busy !== e.name && (
+                <ExtResultPanel
+                  ok={result.ok}
+                  output={result.output}
+                  action={result.action}
+                  open={detailsOpen}
+                  onToggle={() =>
+                    setOpenDetails((prev) => ({ ...prev, [e.name]: !prev[e.name] }))
+                  }
+                />
+              )}
             </div>
-            {busy === e.name ? (
-              <window.Icon
-                name="refresh"
-                size={18}
-                className="spin"
-                style={{ color: 'var(--text-3)' }}
-              />
-            ) : (
-              <window.Toggle
-                checked={e.enabled}
-                onChange={() => toggle(e)}
-                label={`Enable ${pretty(e)}`}
-              />
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
+    </div>
+  );
+}
+
+// Render the post-toggle setup result. Success collapses to a single line;
+// failure shows the install log inline so the user can act on it (most
+// commonly: missing winget/sudo, or a download URL they can hit manually).
+function ExtResultPanel({ ok, output, action, open, onToggle }) {
+  const verb = action === 'enable' ? 'Enabled' : 'Disabled';
+  const hasOutput = !!(output && output.trim().length > 0);
+  const tone = ok ? 'var(--ok)' : 'var(--err)';
+  const bg = ok
+    ? 'color-mix(in oklab, var(--ok) 8%, var(--surface))'
+    : 'color-mix(in oklab, var(--err) 10%, var(--surface))';
+  return (
+    <div
+      className="fade"
+      style={{
+        marginTop: 12,
+        padding: '10px 12px',
+        borderRadius: 'var(--radius-sm)',
+        background: bg,
+        border: `1px solid color-mix(in oklab, ${tone} 35%, var(--border))`,
+        fontSize: 13,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <window.Icon name={ok ? 'check' : 'alert'} size={14} style={{ color: tone }} />
+        <span style={{ color: 'var(--text)', fontWeight: 600 }}>
+          {ok ? `${verb} successfully.` : `${verb}, but setup reported an issue.`}
+        </span>
+        {hasOutput && (
+          <button
+            onClick={onToggle}
+            style={{
+              marginLeft: 'auto',
+              background: 'none',
+              border: 'none',
+              color: 'var(--text-3)',
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: 'pointer',
+              padding: 0,
+            }}
+          >
+            {open ? 'Hide details' : 'Show details'}
+          </button>
+        )}
+      </div>
+      {hasOutput && open && (
+        <pre
+          style={{
+            marginTop: 10,
+            padding: 10,
+            background: 'var(--surface-2)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 11.5,
+            color: 'var(--text-2)',
+            lineHeight: 1.5,
+            maxHeight: 220,
+            overflow: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {output.trim()}
+        </pre>
+      )}
     </div>
   );
 }

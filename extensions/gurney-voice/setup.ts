@@ -527,10 +527,15 @@ function migrateStateDirFromTts(home: string, stdout: (text: string) => void): v
 export async function setup(ctx: ExtensionSetupContext): Promise<void> {
   migrateStateDirFromTts(ctx.home, ctx.stdout);
 
+  // Headless mode (web wizard): the user already consented to installing this
+  // extension when they toggled it on. Default native-dep prompts to "yes" so
+  // ffmpeg/whisper actually land, instead of being silently skipped. If the
+  // package manager itself fails (no sudo, no winget, etc.) the setup output
+  // is surfaced back to the wizard so the user can act on it.
   const ffmpeg = await ensureFfmpegForTts({
     binary: String(ctx.settings.get('ffmpeg_bin', 'ffmpeg')),
     stdout: ctx.stdout,
-    ...(ctx.interactive ? {} : { confirm: async () => false }),
+    ...(ctx.interactive ? {} : { confirm: async () => true }),
   });
   if (ffmpeg) ctx.settings.set('ffmpeg_bin', ffmpeg);
 
@@ -550,8 +555,9 @@ export async function setup(ctx: ExtensionSetupContext): Promise<void> {
 
   const whisperBin = await ensureWhisperForVoice({
     binary: String(ctx.settings.get('whisper_bin', 'whisper-cli')),
+    home: ctx.home,
     stdout: ctx.stdout,
-    ...(ctx.interactive ? {} : { confirm: async () => false }),
+    ...(ctx.interactive ? {} : { confirm: async () => true }),
   });
   if (whisperBin) ctx.settings.set('whisper_bin', whisperBin);
 
@@ -568,8 +574,7 @@ export async function setup(ctx: ExtensionSetupContext): Promise<void> {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_WHISPER_MODEL = 'ggml-base.en';
-const WHISPER_MODEL_BASE =
-  'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';
+const WHISPER_MODEL_BASE = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';
 
 // Whisper.cpp's release assets aren't as platform-uniform as Piper's. Rather
 // than ship a brittle download table for every distro we discover whisper-cli
@@ -618,10 +623,90 @@ export function detectWhisperInstaller(
   return null;
 }
 
+// Windows has no reliable package manager for whisper.cpp, but the project
+// publishes prebuilt binaries on every release. Pin a known-good version and
+// fetch the matching zip — mirrors the Piper auto-download path so toggling
+// gurney-voice from the wizard ends in a working whisper-cli without forcing
+// the user to install C++ tooling.
+const WHISPER_VERSION = 'v1.7.5';
+const WHISPER_RELEASE_BASE = `https://github.com/ggerganov/whisper.cpp/releases/download/${WHISPER_VERSION}`;
+
+interface WhisperAsset {
+  archive: string;
+  executable: string;
+}
+
+function whisperAssetFor(platform: NodeJS.Platform, arch: string): WhisperAsset | null {
+  if (platform === 'win32') {
+    if (arch === 'x64') return { archive: 'whisper-bin-x64.zip', executable: 'whisper-cli.exe' };
+    if (arch === 'ia32') return { archive: 'whisper-bin-Win32.zip', executable: 'whisper-cli.exe' };
+  }
+  return null;
+}
+
+async function downloadWhisperBinary(
+  asset: WhisperAsset,
+  home: string,
+  helpers: Pick<NativeDepsOptions, 'stdout' | 'downloadFile' | 'extractArchive'>,
+): Promise<string | undefined> {
+  const stdout = helpers.stdout ?? ((text: string) => process.stdout.write(text));
+  const downloadFile = helpers.downloadFile ?? defaultDownloadFile;
+  const extractArchive = helpers.extractArchive ?? defaultExtractArchive;
+
+  const installDir = join(
+    home,
+    'extension_state',
+    'gurney-voice',
+    'native',
+    `whisper-${WHISPER_VERSION}`,
+  );
+  const existing = findExecutable(installDir, asset.executable);
+  if (existing) {
+    stdout(`  ✓ whisper.cpp ready (${existing}).\n`);
+    return existing;
+  }
+
+  mkdirSync(installDir, { recursive: true });
+  const archivePath = join(installDir, asset.archive);
+  const url = `${WHISPER_RELEASE_BASE}/${asset.archive}`;
+  stdout(`  → Downloading whisper.cpp ${WHISPER_VERSION} for ${process.platform}/${process.arch}...\n`);
+  try {
+    await downloadWithPartFile(url, archivePath, downloadFile);
+    const status = await extractArchive(archivePath, installDir);
+    rmSync(archivePath, { force: true });
+    if (status !== 0) {
+      stdout(`  whisper.cpp extraction failed (exit ${status ?? 'unknown'}).\n`);
+      return undefined;
+    }
+    const installed = findExecutable(installDir, asset.executable);
+    if (!installed) {
+      stdout('  whisper.cpp downloaded, but Gurney could not find whisper-cli in the archive.\n');
+      return undefined;
+    }
+    try {
+      chmodSync(installed, 0o755);
+    } catch {
+      /* Windows/no-op */
+    }
+    stdout(`  ✓ whisper.cpp installed (${installed}).\n`);
+    return installed;
+  } catch (e) {
+    rmSync(archivePath, { force: true });
+    stdout(
+      `  whisper.cpp download failed: ${e instanceof Error ? e.message : String(e)}\n` +
+        '  Install manually (https://github.com/ggerganov/whisper.cpp/releases) and set `whisper_bin`\n' +
+        '  with `gurney config gurney-voice whisper_bin <path>`.\n',
+    );
+    return undefined;
+  }
+}
+
 export async function ensureWhisperForVoice(
   opts: NativeDepsOptions = {},
 ): Promise<string | undefined> {
   const binary = opts.binary?.trim() || 'whisper-cli';
+  const platform = opts.platform ?? process.platform;
+  const arch = opts.arch ?? process.arch;
   const commandExists = opts.commandExists ?? defaultCommandExists;
   const commandPath = opts.commandPath ?? defaultCommandPath;
   const stdout = opts.stdout ?? ((text: string) => process.stdout.write(text));
@@ -648,6 +733,20 @@ export async function ensureWhisperForVoice(
       stdout(`  ✓ whisper.cpp found (${found}).\n`);
       return found;
     }
+  }
+
+  // Prefer auto-download over package managers where we have a release asset
+  // (currently Windows). Avoids requiring admin/sudo and works in the wizard's
+  // headless setup path.
+  const asset = whisperAssetFor(platform, arch);
+  if (asset && opts.home) {
+    const installed = await downloadWhisperBinary(asset, opts.home, {
+      ...(opts.stdout !== undefined ? { stdout: opts.stdout } : {}),
+      ...(opts.downloadFile !== undefined ? { downloadFile: opts.downloadFile } : {}),
+      ...(opts.extractArchive !== undefined ? { extractArchive: opts.extractArchive } : {}),
+    });
+    if (installed) return installed;
+    // Fall through: maybe a package manager is also available.
   }
 
   const plan = detectWhisperInstaller({
