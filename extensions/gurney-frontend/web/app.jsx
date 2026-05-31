@@ -59,7 +59,7 @@ function App() {
   const [offline, setOffline] = useState(false);
   const [loadError, setLoadError] = useState(null); // reachable but rejected (e.g. 401)
   const [route, setRoute] = useState('chat');
-  const [busy, setBusy] = useState(false); // agent action in flight
+  const [busy, setBusy] = useState(null); // agent action in flight: start|stop|restart|null
   const [forcedView, setForcedView] = useState(null); // override configured-based view
   const pollRef = useRef(null);
 
@@ -97,14 +97,14 @@ function App() {
 
   const agentAction = useCallback(
     async (action) => {
-      setBusy(true);
+      setBusy(action);
       await window.api.post(`/api/agent/${action}`);
       await refresh();
       // Poll a couple more times — the daemon takes a beat to come up/down.
       setTimeout(refresh, 1200);
       setTimeout(() => {
         refresh();
-        setBusy(false);
+        setBusy(null);
       }, 2600);
     },
     [refresh],
@@ -144,8 +144,8 @@ function App() {
           <span
             style={{ fontSize: 13, color: 'var(--text-3)', maxWidth: 360, textAlign: 'center' }}
           >
-            Open the link printed by <code>gurney start</code> on startup — it includes the
-            required <code>?token=…</code>.
+            Open the link printed by <code>gurney start</code> on startup — it includes the required{' '}
+            <code>?token=…</code>.
           </span>
         )}
         <div style={{ display: 'flex', gap: 8 }}>
@@ -188,11 +188,14 @@ function App() {
 
   const configured = !!state.configured;
   const view = forcedView || (configured ? 'hub' : 'wizard');
-  const agentStatus = busy
-    ? 'starting'
-    : state.agent && state.agent.running
-      ? 'running'
-      : 'stopped';
+  const agentStatus =
+    busy === 'stop'
+      ? 'stopping'
+      : busy
+        ? 'starting'
+        : state.agent && state.agent.running
+          ? 'running'
+          : 'stopped';
 
   if (view === 'wizard') {
     return (
@@ -329,8 +332,16 @@ function ConfigErrorBar({ message }) {
 /* ---------------- global status pill + start/stop ---------------- */
 function GlobalStatus({ agentStatus, onStart, onStop, busy }) {
   const running = agentStatus === 'running';
-  const starting = agentStatus === 'starting' || busy;
-  const labels = { running: 'Running', stopped: 'Stopped', starting: 'Starting', error: 'Error' };
+  const stopping = agentStatus === 'stopping';
+  const starting = agentStatus === 'starting' || (!!busy && !stopping);
+  const transitioning = starting || stopping;
+  const labels = {
+    running: 'Running',
+    stopped: 'Stopped',
+    starting: 'Starting',
+    stopping: 'Stopping',
+    error: 'Error',
+  };
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <div
@@ -346,19 +357,23 @@ function GlobalStatus({ agentStatus, onStart, onStop, busy }) {
           minWidth: 0,
         }}
       >
-        <window.StatusDot state={starting ? 'starting' : agentStatus} size={9} pulse={running} />
+        <window.StatusDot
+          state={transitioning ? 'starting' : agentStatus}
+          size={9}
+          pulse={running}
+        />
         <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
-          {starting ? 'Starting' : labels[agentStatus]}
+          {stopping ? 'Stopping' : starting ? 'Starting' : labels[agentStatus]}
         </span>
       </div>
       <window.Button
         size="sm"
-        variant={running ? 'default' : 'primary'}
-        icon={running ? 'stop' : 'power'}
+        variant={running || stopping ? 'default' : 'primary'}
+        icon={running || stopping ? 'stop' : 'power'}
         onClick={running ? onStop : onStart}
-        disabled={starting}
+        disabled={transitioning}
         style={
-          running
+          running || stopping
             ? {
                 color: 'var(--err)',
                 borderColor: 'color-mix(in oklab, var(--err) 38%, transparent)',
@@ -366,7 +381,7 @@ function GlobalStatus({ agentStatus, onStart, onStop, busy }) {
             : {}
         }
       >
-        {running ? 'Stop' : starting ? '…' : 'Start'}
+        {stopping ? 'Stopping' : running ? 'Stop' : starting ? '…' : 'Start'}
       </window.Button>
     </div>
   );
