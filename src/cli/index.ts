@@ -127,17 +127,15 @@ program
     await call('doctor', run);
   });
 
+// Internal: the panel runner. Hidden because the user-facing surface is
+// `gurney start` (which spawns it) and `gurney stop` (which kills it) —
+// see panel.ts.
 program
-  .command('frontend')
-  .argument('[action]', "'stop' to stop a running panel; omit to start it")
-  .option('--detach', 'Run the web panel as a background process')
-  .description('Run the local web control panel (gurney-frontend extension)')
-  .action(async (action: string | undefined, opts: { detach?: boolean }) => {
+  .command('__panel', { hidden: true })
+  .description('(internal) Run the gurney-frontend panel server in this process')
+  .action(async () => {
     const { run } = await import('./frontend.js');
-    if (action && action !== 'stop') {
-      throw new Error(`Unknown frontend action '${action}'. Use 'gurney frontend [stop] [--detach]'.`);
-    }
-    await call('frontend', run, { detach: !!opts.detach, stop: action === 'stop' });
+    await call('__panel', run);
   });
 
 program
@@ -164,7 +162,7 @@ program
   .option('--out <path>', 'where to write the markdown report')
   .option(
     '--fails',
-    "re-run only the tests that failed or errored in the most recent ~/.gurney/ability-test-*.md report (forces --tier full so filter spans every tier)",
+    're-run only the tests that failed or errored in the most recent ~/.gurney/ability-test-*.md report (forces --tier full so filter spans every tier)',
   )
   .action(async (opts: { tier?: string; filter?: string; out?: string; fails?: boolean }) => {
     // The runner lives in the gurney-abilitytest extension (so it can ship,

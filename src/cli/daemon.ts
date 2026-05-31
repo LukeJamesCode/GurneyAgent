@@ -18,8 +18,8 @@ export function logFilePath(home: string = homeDir()): string {
 
 // PID file for the gurney-frontend web server. It runs as its own process
 // (separate from the agent daemon) so the panel's Start/Stop controls can
-// drive the daemon without taking the UI down with it. `gurney frontend stop`
-// reads this to find the server.
+// drive the daemon without taking the UI down with it. `gurney stop` reads
+// this to find and kill the server — see src/cli/panel.ts.
 export function frontendPidFilePath(home: string = homeDir()): string {
   return join(home, 'frontend.pid');
 }

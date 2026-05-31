@@ -2,9 +2,9 @@
 //
 // Runs during `gurney ext install gurney-frontend` (or `gurney ext setup`).
 // It makes sure an auth token exists and prints the URL the user can open in
-// a browser, plus how to launch the server. The server itself runs as its own
-// process (`gurney frontend`) so it can start/stop the agent daemon without
-// taking itself down — see server.ts.
+// a browser. The panel is launched by `gurney start` as a sibling process
+// (see src/cli/panel.ts) so its Start/Stop buttons can drive the agent
+// daemon without taking themselves down — see server.ts.
 
 import { randomBytes } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
@@ -23,6 +23,9 @@ function firstLanAddress(): string | null {
 export async function setup(ctx: ExtensionSetupContext): Promise<void> {
   const host = ctx.settings.get<string>('listen_host', '127.0.0.1') || '127.0.0.1';
   const port = Number(ctx.settings.get<number>('listen_port', 7777)) || 7777;
+  // Mirror server.ts: HTTPS is on unless explicitly set to false. Keeps the
+  // printed URL in lockstep with what the server actually listens on.
+  const httpsEnabled = ctx.settings.get<boolean>('https_enabled', true) !== false;
 
   let token = ctx.settings.get<string>('auth_token', '') || '';
   if (token.length < 24) {
@@ -32,11 +35,12 @@ export async function setup(ctx: ExtensionSetupContext): Promise<void> {
   }
 
   const shownHost = host === '0.0.0.0' ? (firstLanAddress() ?? 'localhost') : host;
-  const base = `http://${shownHost}:${port}`;
+  const scheme = httpsEnabled ? 'https' : 'http';
+  const base = `${scheme}://${shownHost}:${port}`;
 
   ctx.stdout(
     `\ngurney-frontend is configured.\n` +
-      `  Start the panel:   gurney frontend\n` +
+      `  Start everything:  gurney start    (the panel comes up with the agent)\n` +
       `  Then open:         ${base}/?token=${token}\n`,
   );
   if (host === '0.0.0.0') {
@@ -46,6 +50,11 @@ export async function setup(ctx: ExtensionSetupContext): Promise<void> {
   } else {
     ctx.stdout(
       `  (Bound to ${host} — this machine only. Set listen_host to 0.0.0.0 via 'gurney config' to reach it from your phone.)\n`,
+    );
+  }
+  if (httpsEnabled) {
+    ctx.stdout(
+      `  (Self-signed cert: your browser will warn the first time — accept to continue.)\n`,
     );
   }
 }

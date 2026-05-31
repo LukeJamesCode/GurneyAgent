@@ -141,8 +141,10 @@ function App() {
             : `Couldn’t load the panel (HTTP ${loadError.status || '?'}).`}
         </span>
         {is401 && (
-          <span style={{ fontSize: 13, color: 'var(--text-3)', maxWidth: 360, textAlign: 'center' }}>
-            Open the link printed by <code>gurney frontend</code> on startup — it includes the
+          <span
+            style={{ fontSize: 13, color: 'var(--text-3)', maxWidth: 360, textAlign: 'center' }}
+          >
+            Open the link printed by <code>gurney start</code> on startup — it includes the
             required <code>?token=…</code>.
           </span>
         )}

@@ -1,10 +1,11 @@
 // gurney-frontend HTTP server.
 //
-// Runs as its OWN process (launched by `gurney frontend`), not inside the
-// agent daemon. That separation is deliberate: the panel's Start/Stop buttons
-// control the daemon (`gurney start --detach` / `gurney stop`), and if the
-// server lived inside the daemon then "Stop" would also kill the UI you were
-// clicking it from.
+// Runs as its OWN process (launched by `gurney start`, which spawns the
+// internal `gurney __panel` entry as a sibling — see src/cli/panel.ts), not
+// inside the agent daemon. That separation is deliberate: the panel's
+// Start/Stop buttons control the daemon (`gurney start --detach` / `gurney
+// stop --agent-only`), and if the server lived inside the daemon then "Stop"
+// would also kill the UI you were clicking it from.
 //
 // It serves the static browser UI from ./web and a small JSON API under /api
 // that reuses the same core helpers the CLI does (effectiveConfig, probeOllama,
@@ -1959,7 +1960,10 @@ export async function run(opts: FrontendRunOptions = {}): Promise<Server> {
   const host = fe['listen_host'] || '127.0.0.1';
   const port = Number(fe['listen_port']) || 7777;
   const authToken = fe['auth_token'] || '';
-  const httpsEnabled = fe['https_enabled'] === 'true';
+  // Default-on: only an explicit 'false' falls back to plain HTTP. Matches the
+  // settings.schema.json default so a fresh install (no row in extension_settings)
+  // gets HTTPS without the user having to flip a toggle.
+  const httpsEnabled = fe['https_enabled'] !== 'false';
 
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
     const proto = httpsEnabled ? 'https' : 'http';
@@ -1984,15 +1988,14 @@ export async function run(opts: FrontendRunOptions = {}): Promise<Server> {
   await new Promise<void>((resolveListen, reject) => {
     server.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        // A stale/orphaned panel often holds the port without being tracked in
-        // frontend.pid, so `gurney frontend stop` can't see it. Tell the user
-        // how to find and free it rather than surfacing the raw errno.
+        // A stale/orphaned panel sometimes holds the port. `gurney stop` now
+        // kills both the tracked pid and any orphan still on this port (see
+        // src/cli/panel.ts), so the standard recovery is just stop+start.
         reject(
           new Error(
             `port ${port} on ${host} is already in use — another gurney-frontend may be running.\n` +
-              `  Find it:  lsof -i :${port}\n` +
-              `  Free it:  fuser -k ${port}/tcp   (or kill the PID it shows)\n` +
-              `  Then retry: gurney frontend`,
+              `  Recover with:  gurney stop && gurney start\n` +
+              `  Or find it:    lsof -i :${port}`,
           ),
         );
       } else {

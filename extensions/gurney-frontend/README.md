@@ -11,12 +11,11 @@ The CLI stays fully usable on its own; this extension is strictly opt-in.
 
 ```sh
 gurney ext install gurney-frontend   # generates an access token, prints the URL
-gurney frontend                      # start the panel (Ctrl-C to stop)
-gurney frontend --detach             # run it in the background
-gurney frontend stop                 # stop a backgrounded panel
+gurney start                         # boots the agent AND the panel; prints the URL
+gurney stop                          # stops both (and kills any orphan on the port)
 ```
 
-Then open the printed URL, e.g. `http://127.0.0.1:7777/?token=…`.
+Then open the printed URL, e.g. `https://127.0.0.1:7777/?token=…`.
 
 ## How it works
 

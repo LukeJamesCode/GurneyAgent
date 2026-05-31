@@ -36,7 +36,7 @@ import {
   printTelegramCommandsGuide,
   type DiscoveredExtension,
 } from './ext-setup.js';
-import { run as runFrontend } from './frontend.js';
+import { panelUrl, spawnPanel } from './panel.js';
 import type { Manifest } from '../core/extensions.js';
 
 const TELEGRAM_API = 'https://api.telegram.org';
@@ -208,14 +208,9 @@ async function startWebSetup(
 
   // Start the panel in the background so the user can open it right away.
   process.stdout.write('\nStarting the web panel…\n');
-  try {
-    await runFrontend({ detach: true });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    process.stdout.write(
-      `Could not auto-start the panel: ${msg}\n` + 'Start it yourself with:  gurney frontend\n',
-    );
-  }
+  spawnPanel(home);
+  const url = panelUrl(home);
+  if (url) process.stdout.write(`Panel: ${url}\n`);
   process.stdout.write(
     '\nOpen the URL above in your browser to finish setup. Nothing else to do here.\n',
   );
