@@ -29,6 +29,31 @@ function useDevmode() {
   return [devmode, setDevmode];
 }
 
+// Persist rendered chat bubbles across reloads. Server-side `chatHistory` (the
+// LLM context) already survives the reload because the panel and the agent
+// share a process — what gets lost is the rendered view. Cap the saved log so
+// a long session can't blow out localStorage quota.
+const CHAT_LOG_KEY = 'gurney_chat_messages';
+const CHAT_LOG_MAX = 200;
+function loadStoredMessages() {
+  try {
+    const raw = localStorage.getItem(CHAT_LOG_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+function saveStoredMessages(messages) {
+  try {
+    const trimmed = messages.length > CHAT_LOG_MAX ? messages.slice(-CHAT_LOG_MAX) : messages;
+    localStorage.setItem(CHAT_LOG_KEY, JSON.stringify(trimmed));
+  } catch (e) {
+    /* quota or serialization — silently drop persistence */
+  }
+}
+
 function ChatHub({
   agent,
   onStart,
@@ -46,7 +71,7 @@ function ChatHub({
   allowlistCount,
 }) {
   const running = agent === 'running';
-  const [messages, setMessages] = useStateCH([]);
+  const [messages, setMessages] = useStateCH(loadStoredMessages);
   const [draft, setDraft] = useStateCH('');
   const [phase, setPhase] = useStateCH('idle'); // idle | streaming | command
   const [streamText, setStreamText] = useStateCH('');
@@ -68,6 +93,10 @@ function ChatHub({
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, streamText, phase, confirmReq]);
+
+  useEffectCH(() => {
+    saveStoredMessages(messages);
+  }, [messages]);
 
   // Pull the live command reference (core + enabled extension commands) so the
   // command bar can surface buttons. Refreshes whenever the agent comes up or
