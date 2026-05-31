@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   createWriteStream,
@@ -9,7 +9,7 @@ import {
   rmSync,
   statSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ExtensionSetupContext } from '../../src/core/extensions.js';
@@ -706,6 +706,197 @@ async function downloadWhisperBinary(
   }
 }
 
+// Stream a child process's stdout+stderr through `onChunk` as bytes arrive.
+// Used by the Linux source-build fallback below: a multi-minute cmake compile
+// going dark in the wizard's progress modal reads as a hang. Falls back to a
+// resolved -1 status on spawn errors so the caller can surface a real message.
+async function streamingRunStep(
+  step: InstallStep,
+  onChunk: (text: string) => void,
+  cwd?: string,
+): Promise<number | null> {
+  return new Promise((resolveRun) => {
+    const child = spawn(step.command, step.args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...(cwd ? { cwd } : {}),
+    });
+    const safe = (d: Buffer): void => {
+      try {
+        onChunk(d.toString('utf8'));
+      } catch {
+        /* SSE peer disconnected; keep the build going */
+      }
+    };
+    child.stdout?.on('data', safe);
+    child.stderr?.on('data', safe);
+    child.on('close', (code) => resolveRun(code));
+    child.on('error', (e) => {
+      try {
+        onChunk(`spawn failed: ${e instanceof Error ? e.message : String(e)}\n`);
+      } catch {
+        /* ignore */
+      }
+      resolveRun(-1);
+    });
+  });
+}
+
+// Plan an install step for the system build tools needed to compile whisper.cpp
+// from source. Returns null when no supported package manager is on $PATH —
+// the caller then prints a manual-install hint.
+function planBuildToolsInstall(
+  opts: Pick<NativeDepsOptions, 'commandExists' | 'getuid'>,
+): InstallStep | null {
+  const commandExists = opts.commandExists ?? defaultCommandExists;
+  const getuid = opts.getuid ?? (() => process.getuid?.());
+  const ctx = { commandExists, getuid };
+  if (commandExists('apt-get')) {
+    return withPrivilege('apt-get', ['install', '-y', 'build-essential', 'cmake', 'git'], ctx);
+  }
+  if (commandExists('dnf')) {
+    return withPrivilege('dnf', ['install', '-y', 'gcc-c++', 'make', 'cmake', 'git'], ctx);
+  }
+  if (commandExists('pacman')) {
+    return withPrivilege('pacman', ['-Sy', '--noconfirm', 'base-devel', 'cmake', 'git'], ctx);
+  }
+  if (commandExists('zypper')) {
+    return withPrivilege(
+      'zypper',
+      ['install', '-y', 'gcc-c++', 'make', 'cmake', 'git'],
+      ctx,
+    );
+  }
+  return null;
+}
+
+// Build whisper.cpp from source on Linux when no pre-built binary or package
+// is available (Debian/Ubuntu's main repos don't ship one). The result is
+// cached under ~/.gurney/extension_state/gurney-voice/native/whisper-<ver>-src/
+// so a re-enable doesn't re-build. Streaming everything through opts.stdout
+// keeps the wizard modal alive — a Pi-class CPU compiles in a few minutes.
+async function buildWhisperFromSource(
+  home: string,
+  opts: NativeDepsOptions,
+): Promise<string | undefined> {
+  const stdout = opts.stdout ?? ((text: string) => process.stdout.write(text));
+  const commandExists = opts.commandExists ?? defaultCommandExists;
+
+  const srcDir = join(
+    home,
+    'extension_state',
+    'gurney-voice',
+    'native',
+    `whisper-${WHISPER_VERSION}-src`,
+  );
+  const buildDir = join(srcDir, 'build');
+  const builtPath = join(buildDir, 'bin', 'whisper-cli');
+  if (existsSync(builtPath)) {
+    stdout(`  ✓ whisper.cpp already built (${builtPath}).\n`);
+    return builtPath;
+  }
+
+  // Build tools.
+  const needs = ['git', 'cmake', 'make', 'g++'].filter((d) => !commandExists(d));
+  if (needs.length > 0) {
+    stdout(`  Build tools missing (${needs.join(', ')}); installing…\n`);
+    const installStep = planBuildToolsInstall({
+      commandExists,
+      ...(opts.getuid ? { getuid: opts.getuid } : {}),
+    });
+    if (!installStep) {
+      stdout(
+        `  No supported package manager — install ${needs.join(', ')} manually and retry.\n`,
+      );
+      return undefined;
+    }
+    stdout(`  → ${[installStep.command, ...installStep.args].join(' ')}\n`);
+    const status = await streamingRunStep(installStep, stdout);
+    if (status !== 0) {
+      stdout(
+        `  Build-tools install failed (exit ${status ?? 'unknown'}).\n` +
+          `  If this is a non-interactive shell, sudo may have refused without a tty —\n` +
+          `  run \`sudo apt-get install build-essential cmake git\` manually and retry.\n`,
+      );
+      return undefined;
+    }
+  }
+
+  // Source clone.
+  if (!existsSync(srcDir)) {
+    stdout(`  → git clone whisper.cpp ${WHISPER_VERSION} (shallow)…\n`);
+    try {
+      mkdirSync(dirname(srcDir), { recursive: true });
+    } catch {
+      /* already exists */
+    }
+    const status = await streamingRunStep(
+      {
+        command: 'git',
+        args: [
+          'clone',
+          '--depth',
+          '1',
+          '--branch',
+          WHISPER_VERSION,
+          'https://github.com/ggerganov/whisper.cpp.git',
+          srcDir,
+        ],
+      },
+      stdout,
+    );
+    if (status !== 0) {
+      // Leave no half-clone behind — a retry should start fresh.
+      try {
+        rmSync(srcDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+      stdout(`  git clone failed (exit ${status ?? 'unknown'}).\n`);
+      return undefined;
+    }
+  }
+
+  // Configure.
+  stdout(`  → cmake -S ${srcDir} -B ${buildDir}\n`);
+  const cfgStatus = await streamingRunStep(
+    {
+      command: 'cmake',
+      args: ['-S', srcDir, '-B', buildDir, '-DCMAKE_BUILD_TYPE=Release'],
+    },
+    stdout,
+  );
+  if (cfgStatus !== 0) {
+    stdout(`  cmake configure failed (exit ${cfgStatus ?? 'unknown'}).\n`);
+    return undefined;
+  }
+
+  // Build whisper-cli.
+  stdout(`  → cmake --build ${buildDir} --target whisper-cli (a few minutes on slow CPUs)…\n`);
+  const buildStatus = await streamingRunStep(
+    {
+      command: 'cmake',
+      args: ['--build', buildDir, '--target', 'whisper-cli', '--config', 'Release', '-j'],
+    },
+    stdout,
+  );
+  if (buildStatus !== 0) {
+    stdout(`  cmake build failed (exit ${buildStatus ?? 'unknown'}).\n`);
+    return undefined;
+  }
+
+  if (!existsSync(builtPath)) {
+    stdout(`  Build finished but ${builtPath} is missing — whisper.cpp layout may have changed.\n`);
+    return undefined;
+  }
+  try {
+    chmodSync(builtPath, 0o755);
+  } catch {
+    /* Windows / no-op */
+  }
+  stdout(`  ✓ whisper.cpp built (${builtPath}).\n`);
+  return builtPath;
+}
+
 export async function ensureWhisperForVoice(
   opts: NativeDepsOptions = {},
 ): Promise<string | undefined> {
@@ -761,8 +952,19 @@ export async function ensureWhisperForVoice(
   });
 
   if (!plan) {
+    // Last resort on Linux/BSDs: clone whisper.cpp and build it. Debian and
+    // Ubuntu don't ship a whisper-cpp package, so this is the only path that
+    // works there without forcing the user to follow a README. Skipped when
+    // we have no home dir (no place to cache the source/build).
+    if (platform !== 'win32' && opts.home) {
+      stdout(
+        '  No whisper.cpp package available for this system — building from source.\n',
+      );
+      const built = await buildWhisperFromSource(opts.home, opts);
+      if (built) return built;
+    }
     stdout(
-      '  whisper.cpp was not found, and Gurney could not detect a supported package manager.\n' +
+      '  whisper.cpp was not found, and Gurney could not install it automatically.\n' +
         '  Install it manually (https://github.com/ggerganov/whisper.cpp) and set `whisper_bin`\n' +
         '  with `gurney config gurney-voice whisper_bin <path>`.\n',
     );
