@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { homeDir } from './config-store.js';
 import { isAlive, readPid } from './daemon.js';
+import { killPanel } from './panel.js';
 import { run as runUpdate } from './update.js';
 import { run as runInit } from './init.js';
 
@@ -16,7 +17,9 @@ export async function run(): Promise<void> {
 
   process.stdout.write(
     'Fresh install will erase all Gurney config, the database, logs, installed extensions,\n' +
-      'and extension state, including Gurney-managed Piper binaries, ffmpeg paths, and voice models.\n' +
+      'and extension state, including Gurney-managed Piper binaries, ffmpeg paths, and voice\n' +
+      'models, and will stop the web panel (killing any orphan still on its port).\n' +
+      'Ollama models in ~/.ollama are NOT touched — re-pull only if you want to.\n' +
       `Data directory: ${home}\n\n`,
   );
 
@@ -32,7 +35,8 @@ export async function run(): Promise<void> {
   // Stop a running daemon before wiping its home dir. Poll until it actually
   // exits rather than sleeping a flat interval — the daemon's shutdown budget
   // is several seconds, and wiping the DB/WAL/logs out from under a still-live
-  // process can corrupt state or crash it mid-shutdown.
+  // process can corrupt state or crash it mid-shutdown. SIGKILL after the
+  // budget so a hung daemon doesn't leave us touching files it's still writing.
   const pid = readPid(home);
   if (pid && isAlive(pid)) {
     process.stdout.write(`Stopping running daemon (pid ${pid})...\n`);
@@ -47,10 +51,21 @@ export async function run(): Promise<void> {
     }
     if (isAlive(pid)) {
       process.stdout.write(
-        `Daemon (pid ${pid}) did not exit within 10s; continuing with wipe anyway.\n`,
+        `Daemon (pid ${pid}) did not exit within 10s; sending SIGKILL.\n`,
       );
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
     }
   }
+
+  // Kill the panel too — it's a separate process from the daemon, so the
+  // SIGTERM above doesn't reach it. killPanel also reaps orphans still holding
+  // the panel's port, which a previous crash can leave behind (the same
+  // ERR_EMPTY_RESPONSE situation users hit when 'gurney stop' missed them).
+  killPanel(home);
 
   process.stdout.write(`Wiping ${home}...\n`);
   rmSync(home, { recursive: true, force: true });
