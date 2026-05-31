@@ -5,7 +5,7 @@
 //   ollama → POST /api/ollama/test (then GET model tags)
 //   finish → POST /api/config, then enable/disable chosen extensions
 // The last step hands off to the hub with the agent starting.
-const { useState: useStateWiz, useEffect: useEffectWiz } = React;
+const { useState: useStateWiz, useEffect: useEffectWiz, useRef: useRefWiz } = React;
 
 const STEPS = [
   { id: 'welcome', label: 'Welcome' },
@@ -901,6 +901,15 @@ function StepExtensions() {
   // failing here is what burned us with whisper.cpp on Windows.
   const [results, setResults] = useStateWiz({});
   const [openDetails, setOpenDetails] = useStateWiz({});
+  // Two-phase modal for gurney-voice: 'warn' lists what'll be downloaded;
+  // 'streaming' tails live setup output via SSE; 'done' shows the result.
+  // Null = no modal. Voice gets the special treatment because its setup
+  // pulls ~300 MB (Piper + voice model + whisper binary + whisper model) and
+  // a frozen "Setting up…" spinner reads as broken on slow links.
+  const [voiceModal, setVoiceModal] = useStateWiz(null);
+  const [voiceLines, setVoiceLines] = useStateWiz([]);
+  const [voiceOk, setVoiceOk] = useStateWiz(true);
+  const voiceStreamRef = useRefWiz(null);
   const load = async () => {
     const r = await window.api.get('/api/extensions');
     // Hide the panel itself — it's already running and can't be toggled here.
@@ -911,6 +920,15 @@ function StepExtensions() {
     load();
   }, []);
   const toggle = async (e) => {
+    // Special-case enabling Voice: detour through the heads-up modal so the
+    // user knows the downloads are coming, then through the streaming modal
+    // so they see progress. Disabling skips both — just a flag flip.
+    if (e.name === 'gurney-voice' && !e.enabled) {
+      setVoiceLines([]);
+      setVoiceOk(true);
+      setVoiceModal('warn');
+      return;
+    }
     setBusy(e.name);
     const action = e.enabled ? 'disable' : 'enable';
     const r = await window.api.post(`/api/extensions/${encodeURIComponent(e.name)}/${action}`);
@@ -919,6 +937,64 @@ function StepExtensions() {
     setResults((prev) => ({ ...prev, [e.name]: { ok, output, action } }));
     setBusy(null);
     load();
+  };
+  // Open the SSE stream and tail lines into the modal. Closing the modal mid-
+  // stream cancels the EventSource (the server already started the work — we
+  // don't try to roll it back; the result reflects whatever finished). The
+  // 'done' event resolves the modal into either success or failure state.
+  const beginVoiceDownload = () => {
+    setVoiceModal('streaming');
+    setBusy('gurney-voice');
+    const es = window.api.streamSSE('/api/extensions/gurney-voice/enable-stream', {
+      onMessage: (_evt, raw) => {
+        let msg;
+        try {
+          msg = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        } catch {
+          return;
+        }
+        if (msg && msg.type === 'line') {
+          setVoiceLines((prev) => [...prev, msg.line]);
+        } else if (msg && msg.type === 'done') {
+          const ok = !!msg.ok;
+          setVoiceOk(ok);
+          if (!ok && msg.error) setVoiceLines((prev) => [...prev, `\nerror: ${msg.error}`]);
+          es.close();
+          voiceStreamRef.current = null;
+          setVoiceModal('done');
+          setResults((prev) => ({
+            ...prev,
+            'gurney-voice': { ok, output: '', action: 'enable' },
+          }));
+          setBusy(null);
+          load();
+        }
+      },
+      onError: () => {
+        // EventSource auto-reconnects; that's harmful here (work would re-run).
+        // Treat any error as a terminal failure and bail.
+        if (!voiceStreamRef.current) return;
+        es.close();
+        voiceStreamRef.current = null;
+        setVoiceOk(false);
+        setVoiceLines((prev) => [...prev, '\n(stream disconnected — check the agent log)']);
+        setVoiceModal('done');
+        setBusy(null);
+      },
+    });
+    voiceStreamRef.current = es;
+  };
+  const closeVoiceModal = () => {
+    if (voiceStreamRef.current) {
+      try {
+        voiceStreamRef.current.close();
+      } catch {
+        /* ignore */
+      }
+      voiceStreamRef.current = null;
+    }
+    setVoiceModal(null);
+    setBusy(null);
   };
   const pretty = (e) =>
     e.name
@@ -1042,8 +1118,110 @@ function StepExtensions() {
           );
         })}
       </div>
+      <VoiceSetupModal
+        stage={voiceModal}
+        lines={voiceLines}
+        ok={voiceOk}
+        onConfirm={beginVoiceDownload}
+        onClose={closeVoiceModal}
+      />
     </div>
   );
+}
+
+// Two-stage modal for the gurney-voice setup. 'warn' previews the downloads
+// so a user on a metered connection can back out; 'streaming' tails live setup
+// output (clicks-outside disabled — closing mid-download would leave half-
+// installed binaries); 'done' shows success/failure and frees the user.
+function VoiceSetupModal({ stage, lines, ok, onConfirm, onClose }) {
+  // No-op while streaming so backdrop clicks / Escape don't kill the SSE.
+  const safeClose = stage === 'streaming' ? () => {} : onClose;
+  if (stage === 'warn') {
+    return (
+      <window.Modal
+        open
+        onClose={safeClose}
+        title="Voice needs a few downloads"
+        width={520}
+        tone="warn"
+        footer={
+          <>
+            <window.Button variant="ghost" onClick={onClose}>
+              Cancel
+            </window.Button>
+            <window.Button onClick={onConfirm}>Download &amp; set up</window.Button>
+          </>
+        }
+      >
+        <p style={{ marginBottom: 10 }}>
+          Turning on Voice will install (about <b>300&nbsp;MB</b> total):
+        </p>
+        <ul style={{ paddingLeft: 20, margin: 0, lineHeight: 1.7 }}>
+          <li>
+            <b>ffmpeg</b> — converts audio between OGG and WAV (system package).
+          </li>
+          <li>
+            <b>Piper TTS</b> binary and a voice model — for spoken replies.
+          </li>
+          <li>
+            <b>whisper.cpp</b> binary and a transcription model — for voice notes.
+          </li>
+        </ul>
+        <p style={{ marginTop: 12, color: 'var(--text-3)', fontSize: 13 }}>
+          Stay on this page until the modal closes — some pieces take a minute on a slow link.
+        </p>
+      </window.Modal>
+    );
+  }
+  if (stage === 'streaming' || stage === 'done') {
+    const title = stage === 'streaming' ? 'Setting up Voice…' : ok ? 'Voice is ready' : 'Voice setup hit a problem';
+    return (
+      <window.Modal
+        open
+        onClose={safeClose}
+        title={title}
+        width={680}
+        tone={stage === 'done' && !ok ? 'err' : null}
+        footer={
+          stage === 'done' ? (
+            <window.Button onClick={onClose}>Close</window.Button>
+          ) : null
+        }
+      >
+        {stage === 'streaming' && (
+          <p style={{ marginBottom: 10 }}>
+            Downloading and installing. Don&rsquo;t close this tab.
+          </p>
+        )}
+        {stage === 'done' && !ok && (
+          <p style={{ marginBottom: 10 }}>
+            Something didn&rsquo;t finish. The log below shows where it stopped — usually a
+            missing system package or a network blip; re-enable to retry.
+          </p>
+        )}
+        <pre
+          style={{
+            margin: 0,
+            padding: 12,
+            background: 'var(--surface-2)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 12,
+            lineHeight: 1.55,
+            color: 'var(--text-2)',
+            maxHeight: 340,
+            overflow: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {lines.length === 0 ? 'starting…' : lines.join('\n')}
+        </pre>
+      </window.Modal>
+    );
+  }
+  return null;
 }
 
 // Render the post-toggle setup result. Success collapses to a single line;

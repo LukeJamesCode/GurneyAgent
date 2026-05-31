@@ -252,6 +252,55 @@ function runGurney(
   });
 }
 
+// Streaming variant: pipes the child's stdout/stderr to `onChunk` as it arrives
+// instead of buffering the whole thing. Used by the wizard's voice-setup modal,
+// where the downloads take long enough that the user needs to see progress (a
+// 150 MB whisper model on a Pi otherwise looks like a hang).
+function runGurneyStreaming(
+  opts: FrontendRunOptions,
+  args: string[],
+  onChunk: (text: string) => void,
+  timeoutMs = 600_000,
+): Promise<{ code: number }> {
+  return new Promise((resolveRun) => {
+    const entry = cliEntryPath(opts);
+    const child = spawn(process.execPath, [...(opts.execArgv ?? []), entry, ...args], {
+      cwd: REPO_ROOT,
+      env: process.env,
+    });
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* ignore */
+      }
+    }, timeoutMs);
+    timer.unref();
+    const safeChunk = (d: Buffer): void => {
+      try {
+        onChunk(d.toString('utf8'));
+      } catch {
+        /* a dead SSE client must not kill the child */
+      }
+    };
+    child.stdout.on('data', safeChunk);
+    child.stderr.on('data', safeChunk);
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolveRun({ code: code ?? -1 });
+    });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      try {
+        onChunk(String(e));
+      } catch {
+        /* ignore */
+      }
+      resolveRun({ code: -1 });
+    });
+  });
+}
+
 type SystemCommandName = 'status' | 'doctor' | 'logs' | 'commands';
 
 const SYSTEM_COMMANDS: Record<SystemCommandName, { args: string[]; timeoutMs: number }> = {
@@ -1505,6 +1554,54 @@ async function handleApi(
       return sendJson(res, 200, { extensions: listExtensions() });
     }
 
+    // SSE stream of `ext enable` + native-dep setup output. The wizard's
+    // voice-setup modal uses this so a user staring at a 150 MB whisper model
+    // download sees lines arriving instead of a frozen "Setting up…" spinner.
+    const extStream =
+      /^\/api\/extensions\/([a-z0-9._-]+)\/enable-stream$/i.exec(path);
+    if (extStream && method === 'GET') {
+      const name = extStream[1]!;
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-store',
+        connection: 'keep-alive',
+      });
+      // Single unnamed `data:` event with a `type` field. Cheaper than custom
+      // SSE event names — the panel's streamSSE helper only listens for the
+      // default 'message' event, so this avoids extending it just for here.
+      const send = (data: unknown): void => {
+        try {
+          res.write(`data: ${JSON.stringify(data)}\n\n`);
+        } catch {
+          /* client disconnected */
+        }
+      };
+      const sendChunk = (text: string): void => {
+        for (const line of String(text).split(/\r?\n/)) {
+          if (line.length > 0) send({ type: 'line', line });
+        }
+      };
+      const keepAlive = setInterval(() => res.write(': ping\n\n'), 20_000);
+      req.on('close', () => clearInterval(keepAlive));
+      try {
+        const r = await runGurneyStreaming(opts, ['ext', 'enable', name], sendChunk);
+        if (r.code !== 0) {
+          send({ type: 'done', ok: false, error: `ext enable exited ${r.code}` });
+          clearInterval(keepAlive);
+          res.end();
+          return;
+        }
+        const s = await runExtSetup(name, sendChunk);
+        send({ type: 'done', ok: s.ok });
+      } catch (e) {
+        send({ type: 'done', ok: false, error: e instanceof Error ? e.message : String(e) });
+      } finally {
+        clearInterval(keepAlive);
+        res.end();
+      }
+      return;
+    }
+
     const extAction =
       /^\/api\/extensions\/([a-z0-9._-]+)\/(enable|disable|install|uninstall|settings|setup)$/i.exec(
         path,
@@ -1762,7 +1859,10 @@ async function validateTelegram(res: ServerResponse, token: string): Promise<voi
 // way `gurney init` does after the user picks extensions, but non-interactively
 // so it can never block on a terminal prompt. No-ops for extensions without a
 // setup entrypoint. Used when an extension is enabled from the panel/wizard.
-async function runExtSetup(name: string): Promise<{ ok: boolean; output: string }> {
+async function runExtSetup(
+  name: string,
+  onChunk?: (text: string) => void,
+): Promise<{ ok: boolean; output: string }> {
   let folder: string | null = null;
   for (const root of extensionsRoots()) {
     const candidate = join(root, name);
@@ -1788,6 +1888,13 @@ async function runExtSetup(name: string): Promise<{ ok: boolean; output: string 
       interactive: false,
       stdout: (text) => {
         captured += text;
+        if (onChunk) {
+          try {
+            onChunk(text);
+          } catch {
+            /* SSE peer disconnected; keep capturing */
+          }
+        }
       },
     });
     return { ok: true, output: captured };
