@@ -4,15 +4,22 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { open } from '../../src/storage/db.js';
-import { getPref, setPref, prepForSpeech } from './prefs.js';
+import { getPref, getSttPref, setBothPrefs, setPref, setSttPref, prepForSpeech } from './prefs.js';
 
 function withDb<T>(fn: (db: ReturnType<typeof open>) => T): T {
   const tmp = mkdtempSync(join(tmpdir(), 'tts-prefs-'));
   const db = open({ path: join(tmp, 'g.db') });
   // Mirror the per-extension migration; the smoke test exercises the real
   // migration path via the loader.
+  // Mirror migrations 0001 + 0003: the row carries both TTS and STT flags so
+  // `/voice on` (which writes both) can be exercised here.
   db.exec(
-    `CREATE TABLE tts_chat_prefs (chat_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL, updated_at INTEGER NOT NULL);`,
+    `CREATE TABLE tts_chat_prefs (
+       chat_id INTEGER PRIMARY KEY,
+       enabled INTEGER NOT NULL,
+       stt_enabled INTEGER NOT NULL DEFAULT 0,
+       updated_at INTEGER NOT NULL
+     );`,
   );
   try {
     return fn(db);
@@ -35,6 +42,29 @@ test('setPref upserts and getPref reads it back', () => {
     assert.equal(getPref(db, 42, false), true);
     setPref(db, 42, false);
     assert.equal(getPref(db, 42, true), false);
+  });
+});
+
+test('setBothPrefs flips TTS and STT together so /voice on enables a full two-way flow', () => {
+  withDb((db) => {
+    setBothPrefs(db, 7, true);
+    assert.equal(getPref(db, 7, false), true, 'tts pref should be on');
+    assert.equal(getSttPref(db, 7, false), true, 'stt pref should be on');
+    setBothPrefs(db, 7, false);
+    assert.equal(getPref(db, 7, true), false, 'tts pref should flip off');
+    assert.equal(getSttPref(db, 7, true), false, 'stt pref should flip off');
+  });
+});
+
+test('setBothPrefs does not stomp a prior setSttPref-only row when called fresh', () => {
+  // Order independence: a user who ran /voice transcribe on first and then
+  // /voice on should still have both flags on after the second command.
+  withDb((db) => {
+    setSttPref(db, 9, true);
+    setPref(db, 9, true);
+    setBothPrefs(db, 9, true);
+    assert.equal(getPref(db, 9, false), true);
+    assert.equal(getSttPref(db, 9, false), true);
   });
 });
 

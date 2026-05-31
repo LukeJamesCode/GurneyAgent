@@ -41,6 +41,21 @@ export function setSttPref(db: DB, chatId: number, enabled: boolean): void {
   ).run(chatId, enabled ? 1 : 0, Date.now());
 }
 
+// Set both directions in one shot. `/voice on|off` uses this so the user gets
+// a complete two-way voice flow (TTS replies + STT on voice notes) without
+// having to also remember `/voice transcribe on`.
+export function setBothPrefs(db: DB, chatId: number, enabled: boolean): void {
+  const v = enabled ? 1 : 0;
+  db.prepare(
+    `INSERT INTO tts_chat_prefs (chat_id, enabled, stt_enabled, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(chat_id) DO UPDATE SET
+       enabled = excluded.enabled,
+       stt_enabled = excluded.stt_enabled,
+       updated_at = excluded.updated_at`,
+  ).run(chatId, v, v, Date.now());
+}
+
 // Telegram voice notes break down on huge replies (long encoding, awkward
 // listening UX). We strip Markdown-y noise the LLM might emit and cap length.
 export function prepForSpeech(text: string, maxChars: number): string | null {
