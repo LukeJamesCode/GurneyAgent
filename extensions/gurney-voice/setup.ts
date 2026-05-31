@@ -624,11 +624,16 @@ export function detectWhisperInstaller(
 }
 
 // Windows has no reliable package manager for whisper.cpp, but the project
-// publishes prebuilt binaries on every release. Pin a known-good version and
-// fetch the matching zip — mirrors the Piper auto-download path so toggling
-// gurney-voice from the wizard ends in a working whisper-cli without forcing
-// the user to install C++ tooling.
-const WHISPER_VERSION = 'v1.7.5';
+// publishes prebuilt binaries on most releases. Pin a known-good version that
+// actually ships Windows zips and fetch the matching archive — mirrors the
+// Piper auto-download path so toggling gurney-voice from the wizard ends in
+// a working whisper-cli without forcing the user to install C++ tooling.
+//
+// IMPORTANT: not every whisper.cpp release ships Windows binaries — v1.7.5
+// only published an iOS xcframework, so the original pin pointed at a 404.
+// Verify with `curl -I https://github.com/ggerganov/whisper.cpp/releases/
+// download/<version>/whisper-bin-x64.zip` before bumping.
+const WHISPER_VERSION = 'v1.8.5';
 const WHISPER_RELEASE_BASE = `https://github.com/ggerganov/whisper.cpp/releases/download/${WHISPER_VERSION}`;
 
 interface WhisperAsset {
