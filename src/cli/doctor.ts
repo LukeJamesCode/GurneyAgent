@@ -8,6 +8,7 @@
 // environment-variable drift check that catches the "I exported the old
 // var name and now nothing works" support case.
 
+import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { existsSync, statfsSync } from 'node:fs';
 import { freemem, totalmem } from 'node:os';
@@ -66,7 +67,10 @@ const DEPRECATED_ENV_VARS: Record<string, string> = {
 // Run one check so it can never reject: a thrown error becomes a failed
 // CheckResult instead of taking the whole doctor run (and the panel's
 // /api/doctor endpoint) down with it.
-async function guard(name: string, fn: () => CheckResult | Promise<CheckResult>): Promise<CheckResult> {
+async function guard(
+  name: string,
+  fn: () => CheckResult | Promise<CheckResult>,
+): Promise<CheckResult> {
   try {
     return await fn();
   } catch (e) {
@@ -100,7 +104,10 @@ export async function collectDoctorChecks(): Promise<CheckResult[]> {
     guard('env', () => checkEnvVars(process.env)),
     guard('ports', () => checkPorts(c.ollama.url)),
     guard('telegram', () => checkTelegram(c.telegram.token)),
-    guard('ollama', () => checkOllama(c.ollama.url, c.models.chat, c.models.reason, c.models.tools)),
+    guard('ollama', () =>
+      checkOllama(c.ollama.url, c.models.chat, c.models.reason, c.models.tools),
+    ),
+    guard('voice', () => checkVoice(home)),
   ];
   return Promise.all(checks);
 }
@@ -388,6 +395,113 @@ function probePortFree(host: string, port: number): Promise<boolean> {
     srv.listen(port, host, () => finish(true));
     setTimeout(() => finish(false), 1500);
   });
+}
+
+// Resolve a configured binary/model path. Order:
+//   1. Empty → use the fallback (the auto-download location for models, or
+//      the bare command name for binaries).
+//   2. Looks like a path (contains `/`, `\`, or starts with `.`/`~`) → check
+//      it exists on disk.
+//   3. Otherwise it's a bare command name → look it up on $PATH.
+// Returns the resolved location (or null) and a short status word.
+function resolveVoicePath(
+  value: string,
+  fallback: string,
+): { found: boolean; where: string; kind: 'set' | 'default' | 'path' } {
+  const raw = value.trim();
+  const looksLikePath = (s: string): boolean =>
+    s.includes('/') || s.includes('\\') || s.startsWith('.') || s.startsWith('~');
+  if (raw) {
+    if (looksLikePath(raw)) {
+      return { found: existsSync(raw), where: raw, kind: 'path' };
+    }
+    // Bare command name → which/where lookup.
+    const which =
+      process.platform === 'win32'
+        ? spawnSync('where', [raw], { encoding: 'utf8', shell: true })
+        : spawnSync('sh', ['-c', `command -v ${shQuote(raw)}`], { encoding: 'utf8' });
+    const out = String(which.stdout ?? '').trim().split(/\r?\n/)[0]?.trim() ?? '';
+    return { found: which.status === 0 && out.length > 0, where: out || raw, kind: 'set' };
+  }
+  // Setting unset — fall back. Same shape: path means check disk; bare name
+  // means $PATH lookup.
+  if (looksLikePath(fallback)) {
+    return { found: existsSync(fallback), where: fallback, kind: 'default' };
+  }
+  const which =
+    process.platform === 'win32'
+      ? spawnSync('where', [fallback], { encoding: 'utf8', shell: true })
+      : spawnSync('sh', ['-c', `command -v ${shQuote(fallback)}`], { encoding: 'utf8' });
+  const out = String(which.stdout ?? '').trim().split(/\r?\n/)[0]?.trim() ?? '';
+  return { found: which.status === 0 && out.length > 0, where: out || fallback, kind: 'default' };
+}
+
+function shQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+// Whether the gurney-voice extension's binaries and models are installed. Only
+// runs if the extension is enabled — a fresh Gurney without voice should not
+// fail doctor. Resolves each path: explicit setting, then bare-name $PATH
+// lookup, then the auto-download default location.
+function checkVoice(home: string): CheckResult {
+  const dbPath = join(home, 'gurney.db');
+  if (!existsSync(dbPath)) {
+    return { name: 'voice', ok: true, msg: 'no DB yet (skipped)' };
+  }
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    let enabledRow: { enabled: number } | undefined;
+    try {
+      enabledRow = db
+        .prepare(`SELECT enabled FROM extension_state WHERE name = ?`)
+        .get('gurney-voice') as { enabled: number } | undefined;
+    } catch {
+      return { name: 'voice', ok: true, msg: 'extension_state missing (skipped)' };
+    }
+    if (!enabledRow) return { name: 'voice', ok: true, msg: 'gurney-voice not installed' };
+    if (enabledRow.enabled === 0) {
+      return { name: 'voice', ok: true, msg: 'gurney-voice disabled' };
+    }
+
+    const rows = db
+      .prepare(`SELECT key, value FROM extension_settings WHERE extension = ?`)
+      .all('gurney-voice') as Array<{ key: string; value: string }>;
+    const s = new Map(rows.map((r) => [r.key, r.value]));
+    const voiceId = s.get('voice_id') ?? 'en_GB-northern_english_male-medium';
+    const whisperModelId = s.get('whisper_model_id') ?? 'ggml-base.en';
+    const stateDir = join(home, 'extension_state', 'gurney-voice');
+
+    const items: Array<{ label: string; r: ReturnType<typeof resolveVoicePath> }> = [
+      { label: 'ffmpeg', r: resolveVoicePath(s.get('ffmpeg_bin') ?? '', 'ffmpeg') },
+      { label: 'piper', r: resolveVoicePath(s.get('piper_bin') ?? '', 'piper') },
+      { label: 'whisper', r: resolveVoicePath(s.get('whisper_bin') ?? '', 'whisper-cli') },
+      {
+        label: 'voice-model',
+        r: resolveVoicePath(s.get('voice_model_path') ?? '', join(stateDir, 'voices', `${voiceId}.onnx`)),
+      },
+      {
+        label: 'whisper-model',
+        r: resolveVoicePath(
+          s.get('whisper_model_path') ?? '',
+          join(stateDir, 'whisper-models', `${whisperModelId}.bin`),
+        ),
+      },
+    ];
+
+    const lines = items.map((i) => `${i.r.found ? '✓' : '✗'} ${i.label}: ${i.r.where}`);
+    const missing = items.filter((i) => !i.r.found).map((i) => i.label);
+    return {
+      name: 'voice',
+      ok: missing.length === 0,
+      msg:
+        missing.length === 0
+          ? lines.join(' | ')
+          : `missing: ${missing.join(', ')} — ${lines.join(' | ')}`,
+    };
+  } finally {
+    db.close();
+  }
 }
 
 function modelPresent(available: string[], wanted: string): boolean {
