@@ -13,3 +13,4 @@ When it ships, move the user-facing parts into `docs/` and the version-history n
 ## Index
 
 - [`agentic-safety-and-browser-automation.md`](./agentic-safety-and-browser-automation.md) — `gurney-browser` extension, sandboxed extension execution, prompt-injection and confused-deputy defenses. Borrows what's worth borrowing from OpenClaw without breaking Gurney's North Stars.
+- [`gurney-tudor-guided-learning.md`](./gurney-tudor-guided-learning.md) — `gurney-tudor` extension: a NotebookLM-style guided-learning panel that compiles a topic into a full interactive course up front (hiding local-inference latency), then plays it back instantly. qwen-primary, codex-optional, voice-over in phase 2.
