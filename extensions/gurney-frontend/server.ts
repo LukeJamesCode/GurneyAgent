@@ -37,7 +37,8 @@ import { createOllama } from '../../src/core/llm.js';
 import { createOrchestrator, type Orchestrator } from '../../src/core/orchestrator.js';
 import { createToolRegistry, type ToolContext, type ToolHandler } from '../../src/core/tools.js';
 import { createScheduler, type Nudge } from '../../src/core/scheduler.js';
-import { createPrefsStore } from '../../src/core/prefs.js';
+import { createPrefsStore, formatWindow } from '../../src/core/prefs.js';
+import { parseCron, nextFireAfter } from '../../src/core/cron.js';
 import { setupFollowups } from '../../src/core/followups.js';
 import {
   createExtensionLoader,
@@ -391,6 +392,26 @@ async function buildState(): Promise<unknown> {
   const { tier: suggestedTier, ramGb } = suggestTier();
   const fe = frontendSettings();
 
+  // Real daemon activity, sourced from the metrics snapshot the daemon writes
+  // under ~/.gurney/ every ~60s (see src/core/metrics.ts). The panel runs in a
+  // separate process and can't read the daemon's live counters, so this file is
+  // the only honest window into what the background loop is doing. `metricsAt`
+  // lets the UI mark the data stale when the daemon stops writing.
+  const sched = metrics?.scheduler;
+  const activity = metrics
+    ? {
+        startedAt: metrics.startedAt,
+        metricsAt: metrics.updatedAt,
+        uptimeMs: metrics.uptimeMs,
+        lastTickAt: sched?.lastTickAt ?? null,
+        ticks: sched?.ticks ?? 0,
+        nudgesSent: sched?.nudgesSent ?? 0,
+        nudgesDropped: sched ? Object.values(sched.nudgesDropped).reduce((a, b) => a + b, 0) : 0,
+        cacheHits: sched?.cache?.hits ?? 0,
+        cacheMisses: sched?.cache?.misses ?? 0,
+      }
+    : null;
+
   return {
     configured: !!cfg && !!cfg.telegram.token && cfg.telegram.allowedIds.length > 0,
     cfgError,
@@ -424,6 +445,7 @@ async function buildState(): Promise<unknown> {
     scheduler: metrics
       ? { jobs: metrics.scheduler.jobsRegistered, nudgesSent: metrics.scheduler.nudgesSent }
       : null,
+    activity,
     version: VERSION,
     lan: lanAddress(),
   };
@@ -1061,6 +1083,196 @@ function hhmm(): string {
 }
 
 // ---------------------------------------------------------------------------
+// Scheduler timeline: the registered cron jobs and the next time each fires,
+// plus the owner chat's proactive state (quiet window / snooze).
+//
+// Jobs are only discoverable once extensions have registered them, so this
+// reuses the direct-chat runtime (which has already run loader.loadAll()). The
+// panel's own scheduler is never started — the daemon is what actually fires
+// these — so this is a read-only projection. Next-fire is computed with the
+// same parseCron/nextFireAfter the scheduler uses, in the process-local TZ
+// (the default for jobs that don't override timeZone).
+// ---------------------------------------------------------------------------
+interface SchedulerView {
+  configured: boolean;
+  proactive?: boolean;
+  nowMs?: number;
+  jobs?: Array<{ extension: string; name: string; cron: string; nextFireMs: number | null }>;
+  quietWindow?: string | null;
+  pausedUntilMs?: number | null;
+  quiet?: { quiet: boolean; reason: string | null; until: number | null };
+}
+
+async function schedulerView(): Promise<SchedulerView> {
+  let cfg: GurneyConfig;
+  try {
+    cfg = effectiveConfig(homeDir());
+  } catch {
+    return { configured: false };
+  }
+  if (cfg.telegram.allowedIds.length === 0) return { configured: false };
+
+  const runtime = await getDirectChatRuntime(cfg);
+  const now = new Date();
+  const jobs = runtime.scheduler
+    .list()
+    .map((j) => {
+      let nextFireMs: number | null = null;
+      try {
+        nextFireMs = nextFireAfter(parseCron(j.cron), now).getTime();
+      } catch {
+        nextFireMs = null; // unparseable cron — surface the job without a time
+      }
+      return { extension: j.extension, name: j.name, cron: j.cron, nextFireMs };
+    })
+    .sort((a, b) => (a.nextFireMs ?? Infinity) - (b.nextFireMs ?? Infinity));
+
+  const prefs = createPrefsStore(runtime.db);
+  const p = prefs.get(runtime.chatId);
+  const q = prefs.isQuiet(runtime.chatId, now);
+  const fe = frontendSettings();
+  return {
+    configured: true,
+    proactive: fe['proactive'] !== 'false',
+    nowMs: now.getTime(),
+    jobs,
+    quietWindow: formatWindow(p.quietStartMinute, p.quietEndMinute),
+    pausedUntilMs: p.pausedUntilMs,
+    quiet: { quiet: q.quiet, reason: q.reason ?? null, until: q.until ?? null },
+  };
+}
+
+// Snooze (or clear) proactive nudges for the owner chat. `ms` is a duration
+// from now; 0/absent clears the snooze. The daemon reads chat_prefs on every
+// dispatch, so this takes effect immediately without restarting the agent.
+async function snoozeProactive(ms: number): Promise<{ ok: boolean; pausedUntilMs: number | null }> {
+  const cfg = effectiveConfig(homeDir());
+  const runtime = await getDirectChatRuntime(cfg);
+  const prefs = createPrefsStore(runtime.db);
+  const until = ms && ms > 0 ? Date.now() + ms : null;
+  prefs.setPausedUntil(runtime.chatId, until);
+  return { ok: true, pausedUntilMs: until };
+}
+
+// ---------------------------------------------------------------------------
+// Metrics dashboard payload. Reads the daemon's metrics snapshot (cumulative
+// counters only — there is no per-turn token/latency series in core, so the
+// dashboard derives its trends by sampling this endpoint over time in the
+// browser). RAM is read live from the OS here, not from the snapshot.
+// ---------------------------------------------------------------------------
+function metricsView(): unknown {
+  const metrics = readMetrics(metricsFilePath(homeDir()));
+  const { running } = agentRunning();
+  const totalGb = Math.round((totalmem() / 1024 ** 3) * 10) / 10;
+  const freeGb = Math.round((freemem() / 1024 ** 3) * 10) / 10;
+  if (!metrics) {
+    return { hasMetrics: false, agentRunning: running, ram: { totalGb, freeGb } };
+  }
+  const s = metrics.scheduler;
+  const hits = s.cache?.hits ?? 0;
+  const misses = s.cache?.misses ?? 0;
+  const total = hits + misses;
+  return {
+    hasMetrics: true,
+    agentRunning: running,
+    startedAt: metrics.startedAt,
+    metricsAt: metrics.updatedAt,
+    uptimeMs: metrics.uptimeMs,
+    scheduler: {
+      jobsRegistered: s.jobsRegistered,
+      ticks: s.ticks,
+      lastTickAt: s.lastTickAt,
+      nudgesSent: s.nudgesSent,
+      nudgesDropped: s.nudgesDropped,
+    },
+    cache: {
+      hits,
+      misses,
+      size: s.cache?.size ?? 0,
+      hitRate: total > 0 ? Math.round((hits / total) * 100) : null,
+    },
+    ram: { totalGb, freeGb },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Conversation history. Read-only views over the same conversations/messages
+// tables the orchestrator writes — so a transcript here spans both Telegram and
+// the panel's direct chat (they share the owner chatId). No runtime needed;
+// these are plain SQLite reads.
+// ---------------------------------------------------------------------------
+interface ConversationRow {
+  id: number;
+  chatId: number;
+  startedAt: number;
+  endedAt: number | null;
+  messageCount: number;
+  lastAt: number | null;
+  preview: string | null;
+}
+
+function listConversations(): { conversations: Array<ConversationRow & { current: boolean }> } {
+  const rows = withDb((db) => {
+    const convs = db
+      .prepare(
+        `SELECT c.id AS id, c.telegram_chat_id AS chatId, c.started_at AS startedAt,
+                c.ended_at AS endedAt, COUNT(m.id) AS messageCount, MAX(m.created_at) AS lastAt,
+                (SELECT content FROM messages
+                   WHERE conversation_id = c.id AND role = 'user'
+                   ORDER BY id LIMIT 1) AS preview
+           FROM conversations c
+           LEFT JOIN messages m ON m.conversation_id = c.id
+          GROUP BY c.id
+          ORDER BY COALESCE(MAX(m.created_at), c.started_at) DESC
+          LIMIT 50`,
+      )
+      .all() as ConversationRow[];
+    const current = db
+      .prepare(
+        `SELECT current_conversation_id AS id FROM telegram_chats
+          WHERE current_conversation_id IS NOT NULL`,
+      )
+      .all() as Array<{ id: number }>;
+    const currentSet = new Set(current.map((r) => r.id));
+    return convs.map((c) => ({ ...c, current: currentSet.has(c.id) }));
+  });
+  return { conversations: rows ?? [] };
+}
+
+function conversationMessages(id: number): unknown {
+  const out = withDb((db) => {
+    const conv = db
+      .prepare(
+        `SELECT id, telegram_chat_id AS chatId, started_at AS startedAt, ended_at AS endedAt
+           FROM conversations WHERE id = ?`,
+      )
+      .get(id) as
+      | { id: number; chatId: number; startedAt: number; endedAt: number | null }
+      | undefined;
+    if (!conv) return null;
+    // Cap at the last 500 messages so a very long conversation can't blow up the
+    // response; tool rows are kept so the transcript matches what the model saw.
+    const messages = db
+      .prepare(
+        `SELECT role, content, tool_name AS toolName, tokens, created_at AS createdAt
+           FROM messages WHERE conversation_id = ? ORDER BY id LIMIT 500`,
+      )
+      .all(id) as Array<{
+      role: string;
+      content: string;
+      toolName: string | null;
+      tokens: number | null;
+      createdAt: number;
+    }>;
+    const summaryRow = db
+      .prepare(`SELECT summary FROM session_memory WHERE conversation_id = ?`)
+      .get(id) as { summary: string } | undefined;
+    return { conversation: conv, messages, summary: summaryRow?.summary ?? null };
+  });
+  return out ?? { error: 'conversation not found' };
+}
+
+// ---------------------------------------------------------------------------
 // Command execution: the web parity of the Telegram adapter's slash-command
 // dispatch. Core text commands are answered from local state; everything else
 // is routed to an extension command handler (loader.commands()).
@@ -1224,9 +1436,7 @@ async function voiceIn(req: IncomingMessage, res: ServerResponse, url: URL): Pro
   if (!transcript) {
     return sendJson(res, 200, {
       ok: false,
-      error:
-        handlerError ??
-        'Voice transcription is off for this chat. Turn it on with /voice on.',
+      error: handlerError ?? 'Voice transcription is off for this chat. Turn it on with /voice on.',
     });
   }
   return sendJson(res, 200, { ok: true, transcript });
@@ -1576,8 +1786,7 @@ async function handleApi(
     // SSE stream of `ext enable` + native-dep setup output. The wizard's
     // voice-setup modal uses this so a user staring at a 150 MB whisper model
     // download sees lines arriving instead of a frozen "Setting up…" spinner.
-    const extStream =
-      /^\/api\/extensions\/([a-z0-9._-]+)\/enable-stream$/i.exec(path);
+    const extStream = /^\/api\/extensions\/([a-z0-9._-]+)\/enable-stream$/i.exec(path);
     if (extStream && method === 'GET') {
       const name = extStream[1]!;
       res.writeHead(200, {
@@ -1693,6 +1902,28 @@ async function handleApi(
 
     if (path === '/api/commands' && method === 'GET') {
       return sendJson(res, 200, commandReference());
+    }
+
+    if (path === '/api/scheduler' && method === 'GET') {
+      return sendJson(res, 200, await schedulerView());
+    }
+
+    if (path === '/api/scheduler/snooze' && method === 'POST') {
+      const { ms } = await readJson<{ ms?: number }>(req);
+      return sendJson(res, 200, await snoozeProactive(typeof ms === 'number' ? ms : 0));
+    }
+
+    if (path === '/api/metrics' && method === 'GET') {
+      return sendJson(res, 200, metricsView());
+    }
+
+    if (path === '/api/conversations' && method === 'GET') {
+      return sendJson(res, 200, listConversations());
+    }
+
+    const convMessages = /^\/api\/conversations\/(\d+)\/messages$/.exec(path);
+    if (convMessages && method === 'GET') {
+      return sendJson(res, 200, conversationMessages(Number(convMessages[1])));
     }
 
     const systemAction = /^\/api\/system\/(status|doctor|logs|commands)$/i.exec(path);

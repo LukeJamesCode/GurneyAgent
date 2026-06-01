@@ -66,6 +66,7 @@ function ChatHub({
   lastError,
   busy,
   scheduler,
+  activity,
   extensions,
   tier,
   allowlistCount,
@@ -520,6 +521,7 @@ function ChatHub({
           activeModel={activeModel}
           phase={phase}
           lastError={lastError}
+          activity={activity}
         />
       </div>
     </div>
@@ -1222,8 +1224,49 @@ function EmptyChat({ running, onPrompt }) {
 }
 
 /* ---- activity strip ---- */
-function ActivityStrip({ agent, health, activeModel, phase, lastError }) {
+// Human "Xd Xh" / "Xm" from a millisecond span.
+function formatUptime(ms) {
+  if (!ms || ms < 0) return '—';
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
+}
+// Human "Xs ago" / "Xm ago" from an epoch-ms timestamp.
+function formatAgo(ts) {
+  if (!ts) return 'never';
+  const ms = Date.now() - ts;
+  if (ms < 5000) return 'just now';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return `${h}h ago`;
+}
+
+function ActivityStrip({ agent, health, activeModel, phase, lastError, activity }) {
   const running = agent === 'running';
+  // Everything below comes from the daemon's metrics snapshot (state.activity).
+  // It persists after the daemon stops, so gate "live" numbers on `running` and
+  // on how recently the file was written (the daemon rewrites it every ~60s).
+  const act = activity || {};
+  const hasMetrics = !!activity;
+  const metricsAt = act.metricsAt || 0;
+  const stale = !metricsAt || Date.now() - metricsAt > 150_000;
+  const live = running && hasMetrics && !stale;
+
+  const uptimeMs = act.startedAt ? Date.now() - act.startedAt : 0;
+  const tickAgoMs = act.lastTickAt ? Date.now() - act.lastTickAt : Infinity;
+  const heartbeatDot = running ? (tickAgoMs < 150_000 ? 'ok' : 'warn') : 'stopped';
+
+  const cacheTotal = (act.cacheHits || 0) + (act.cacheMisses || 0);
+  const hitRate = cacheTotal > 0 ? Math.round((act.cacheHits / cacheTotal) * 100) : null;
+
   const rows = [
     {
       label: 'Model in use',
@@ -1235,6 +1278,31 @@ function ActivityStrip({ agent, health, activeModel, phase, lastError }) {
       label: 'Queue depth',
       value: phase !== 'idle' ? '1 message' : '0',
       dot: phase !== 'idle' ? 'warn' : 'ok',
+    },
+    {
+      label: 'Uptime',
+      value: running && act.startedAt ? formatUptime(uptimeMs) : '—',
+      mono: true,
+      dot: running ? 'ok' : 'stopped',
+    },
+    {
+      label: 'Background loop',
+      value: running && act.lastTickAt ? formatAgo(act.lastTickAt) : '—',
+      dot: heartbeatDot,
+      title: running ? `${act.ticks || 0} scheduler ticks` : 'agent stopped',
+    },
+    {
+      label: 'Nudges sent',
+      value: hasMetrics ? String(act.nudgesSent || 0) : '—',
+      dot: hasMetrics ? 'ok' : 'stopped',
+      title: act.nudgesDropped ? `${act.nudgesDropped} dropped (quiet hours / rate limit)` : '',
+    },
+    {
+      label: 'Cache hit-rate',
+      value: hitRate == null ? '—' : `${hitRate}%`,
+      mono: true,
+      dot: hitRate == null ? 'stopped' : hitRate >= 50 ? 'ok' : 'warn',
+      title: `${cacheTotal} fast-cache lookups since start`,
     },
     {
       label: 'Telegram',
@@ -1271,7 +1339,25 @@ function ActivityStrip({ agent, health, activeModel, phase, lastError }) {
           }}
         >
           <window.Icon name="pulse" size={16} style={{ color: 'var(--text-3)' }} />
-          <span style={{ fontWeight: 600, fontSize: 14 }}>Live activity</span>
+          <span style={{ fontWeight: 600, fontSize: 14, flex: 1 }}>Live activity</span>
+          <span
+            title={
+              metricsAt
+                ? `metrics updated ${formatAgo(metricsAt)}`
+                : 'no metrics from the daemon yet'
+            }
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              fontSize: 11.5,
+              fontWeight: 600,
+              color: live ? 'var(--ok)' : 'var(--text-3)',
+            }}
+          >
+            <window.StatusDot state={live ? 'ok' : 'stopped'} size={6} pulse={live} />
+            {live ? 'live' : running ? 'stale' : 'paused'}
+          </span>
         </div>
         <div>
           {rows.map((r, i) => (
@@ -1288,6 +1374,7 @@ function ActivityStrip({ agent, health, activeModel, phase, lastError }) {
             >
               <span style={{ fontSize: 13, color: 'var(--text-2)', flex: 'none' }}>{r.label}</span>
               <span
+                title={r.title || undefined}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',

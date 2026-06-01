@@ -9,6 +9,7 @@ const { useState, useEffect, useCallback, useRef } = React;
 const NAV = [
   { id: 'chat', label: 'Chat Hub', icon: 'chat' },
   { id: 'voice', label: 'Voice Hub', icon: 'mic', requiresExt: 'gurney-voice' },
+  { id: 'history', label: 'History', icon: 'doc' },
   { id: 'extensions', label: 'Extensions', icon: 'plug' },
   { id: 'settings', label: 'Settings', icon: 'gear' },
   { id: 'system', label: 'System', icon: 'pulse' },
@@ -261,6 +262,7 @@ function App() {
                 .join(' · ')}
               lastError={state.lastError || null}
               scheduler={state.scheduler}
+              activity={state.activity}
               extensions={state.extensions}
               tier={state.tier}
               allowlistCount={state.allowlistCount}
@@ -276,6 +278,7 @@ function App() {
               onLeave={() => setRoute('chat')}
             />
           )}
+          {route === 'history' && <window.HistoryTab />}
           {route === 'extensions' && <window.ExtensionsTab />}
           {route === 'settings' && (
             <window.SettingsTab onReRunWizard={() => setForcedView('wizard')} onSaved={refresh} />

@@ -355,6 +355,13 @@ a {
   .chat-grid {
     flex-direction: column !important;
   }
+  .history-grid {
+    flex-direction: column !important;
+  }
+  .history-list {
+    width: 100% !important;
+    max-height: 320px !important;
+  }
   .activity-strip {
     width: 100% !important;
   }

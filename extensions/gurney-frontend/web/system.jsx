@@ -23,6 +23,7 @@ function SystemTab({ state, onReset }) {
   const commandSeq = useRefSys(0);
   const subs = [
     { value: 'status', label: 'Status' },
+    { value: 'metrics', label: 'Metrics' },
     { value: 'schedule', label: 'Schedule' },
     { value: 'doctor', label: 'Doctor' },
     { value: 'logs', label: 'Logs' },
@@ -88,6 +89,7 @@ function SystemTab({ state, onReset }) {
         <window.Segmented value={sub} onChange={changeSub} options={subs} />
       </div>
       {sub === 'status' && <StatusDashboard state={state} />}
+      {sub === 'metrics' && <MetricsView />}
       {sub === 'schedule' && <ScheduleView />}
       {sub === 'doctor' && <Doctor onRunCommand={() => runSystemTabCommand('doctor')} />}
       {sub === 'logs' && <LogViewer />}
@@ -95,8 +97,8 @@ function SystemTab({ state, onReset }) {
         <Maintenance state={state} onReset={onReset} onUpdate={runMaintenanceUpdate} />
       )}
       {sub === 'commands' && <Commands />}
-      {/* The Schedule view has no terminal output, so it skips the command footer. */}
-      {sub !== 'schedule' && (
+      {/* The Schedule and Metrics views have no terminal output, so they skip the footer. */}
+      {sub !== 'schedule' && sub !== 'metrics' && (
         <div style={{ marginTop: 16 }}>
           <CommandOutput
             result={cmd.result}
@@ -869,6 +871,379 @@ function Commands() {
           </window.Card>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ---- metrics dashboard ---- */
+// "3d 4h" / "12m" from a millisecond span.
+function fmtUptime(ms) {
+  if (!ms || ms < 0) return '—';
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
+}
+function fmtAgoShort(ts) {
+  if (!ts) return 'never';
+  const ms = Date.now() - ts;
+  if (ms < 5000) return 'just now';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ago`;
+}
+
+// Dependency-free inline-SVG sparkline. `values` is an array of numbers (nulls
+// are skipped). `domain` pins the y-axis [min,max]; without it the line
+// auto-scales to its own range. Renders fine on a Pi — it's one <path>.
+function Sparkline({ values, height = 46, stroke = 'var(--accent)', fill = true, domain }) {
+  const width = 240;
+  const nums = (values || []).filter((v) => typeof v === 'number');
+  if (nums.length < 2)
+    return (
+      <div
+        style={{
+          height,
+          display: 'grid',
+          placeItems: 'center',
+          color: 'var(--text-3)',
+          fontSize: 12,
+        }}
+      >
+        collecting…
+      </div>
+    );
+  let lo = domain ? domain[0] : Math.min(...nums);
+  let hi = domain ? domain[1] : Math.max(...nums);
+  if (hi <= lo) {
+    hi = lo + 1;
+    lo = lo - 1;
+  }
+  const pad = 3;
+  const n = values.length;
+  const xstep = (width - pad * 2) / Math.max(1, n - 1);
+  const y = (v) => pad + (1 - (v - lo) / (hi - lo)) * (height - pad * 2);
+  const pts = [];
+  values.forEach((v, i) => {
+    if (typeof v === 'number') pts.push([pad + i * xstep, y(v)]);
+  });
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ');
+  const area = pts.length
+    ? `${line} L${pts[pts.length - 1][0].toFixed(1)} ${height - pad} L${pts[0][0].toFixed(1)} ${
+        height - pad
+      } Z`
+    : '';
+  return (
+    <svg
+      width="100%"
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      style={{ display: 'block' }}
+    >
+      {fill && <path d={area} fill={stroke} opacity={0.12} />}
+      <path
+        d={line}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={1.6}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function StatCard({ label, value, sub, dot, mono }) {
+  return (
+    <window.Card style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <span
+        style={{
+          fontSize: 12.5,
+          color: 'var(--text-3)',
+          fontWeight: 600,
+          textTransform: 'uppercase',
+          letterSpacing: '.04em',
+        }}
+      >
+        {label}
+      </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+        {dot && <window.StatusDot state={dot} size={9} pulse={dot === 'running'} />}
+        <span
+          style={{
+            fontSize: 24,
+            fontWeight: 700,
+            fontFamily: mono ? 'var(--font-mono)' : 'var(--font-ui)',
+          }}
+        >
+          {value}
+        </span>
+      </div>
+      {sub && (
+        <span
+          style={{
+            fontSize: 12.5,
+            color: 'var(--text-3)',
+            fontFamily: 'var(--font-mono)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {sub}
+        </span>
+      )}
+    </window.Card>
+  );
+}
+
+const DROP_LABELS = {
+  dedup: 'Deduplicated',
+  rate_limit: 'Rate limited',
+  paused: 'Snoozed',
+  window: 'Quiet hours',
+  no_dispatch: 'No active chat',
+};
+const HISTORY_MAX = 60; // ~5 min of trend at the 5s sample cadence
+
+function MetricsView() {
+  const [data, setData] = useStateSys(null);
+  const [error, setError] = useStateSys(null);
+  const [history, setHistory] = useStateSys([]);
+
+  const poll = async () => {
+    const r = await window.api.get('/api/metrics');
+    if (!r.ok) {
+      setError(r.error || 'Could not load metrics.');
+      return;
+    }
+    setError(null);
+    const m = r.data || {};
+    setData(m);
+    setHistory((h) => {
+      const next = [
+        ...h,
+        {
+          t: Date.now(),
+          freeGb: m.ram ? m.ram.freeGb : null,
+          hitRate: m.hasMetrics && m.cache ? m.cache.hitRate : null,
+          nudgesSent: m.hasMetrics && m.scheduler ? m.scheduler.nudgesSent : null,
+        },
+      ];
+      return next.length > HISTORY_MAX ? next.slice(-HISTORY_MAX) : next;
+    });
+  };
+
+  useEffectSys(() => {
+    void poll();
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (error && !data)
+    return (
+      <div style={{ maxWidth: 820 }}>
+        <ErrorNote text={error} onRetry={poll} />
+      </div>
+    );
+  if (!data)
+    return <div style={{ maxWidth: 820, color: 'var(--text-3)', fontSize: 13.5 }}>Loading…</div>;
+
+  const d = data;
+  const ram = d.ram || {};
+  const cache = d.cache || {};
+  const sched = d.scheduler || {};
+  const running = !!d.agentRunning;
+  const uptimeMs = d.startedAt && running ? Date.now() - d.startedAt : 0;
+  const dropped = sched.nudgesDropped || {};
+  const droppedTotal = Object.values(dropped).reduce((a, b) => a + (b || 0), 0);
+  const ramUsedPct = ram.totalGb
+    ? Math.round(((ram.totalGb - ram.freeGb) / ram.totalGb) * 100)
+    : null;
+
+  const freeSeries = history.map((h) => h.freeGb);
+  const hitSeries = history.map((h) => h.hitRate);
+
+  return (
+    <div
+      style={{
+        maxWidth: 820,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'calc(16px * var(--gap))',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <p style={{ fontSize: 13.5, color: 'var(--text-2)', flex: 1, lineHeight: 1.5 }}>
+          Live performance for this device. Counters come from the daemon’s metrics snapshot; trends
+          are sampled every 5s while this tab is open.
+        </p>
+        <span style={{ fontSize: 12, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
+          {d.hasMetrics ? `updated ${fmtAgoShort(d.metricsAt)}` : 'agent not running'}
+        </span>
+        <window.Button size="sm" variant="ghost" icon="refresh" onClick={poll}>
+          Refresh
+        </window.Button>
+      </div>
+
+      {!d.hasMetrics && (
+        <div
+          style={{
+            border: '1px dashed var(--border-2)',
+            borderRadius: 'var(--radius)',
+            padding: '18px 20px',
+            color: 'var(--text-3)',
+            fontSize: 13.5,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+          }}
+        >
+          <window.Icon name="pulse" size={18} />
+          The agent hasn’t written metrics yet. Start it to see cache, scheduler, and nudge
+          counters. RAM is shown below regardless.
+        </div>
+      )}
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+          gap: 'calc(14px * var(--gap))',
+        }}
+      >
+        <StatCard
+          label="Uptime"
+          value={running && d.startedAt ? fmtUptime(uptimeMs) : '—'}
+          sub={running ? 'agent running' : 'agent stopped'}
+          dot={running ? 'running' : 'stopped'}
+          mono
+        />
+        <StatCard
+          label="Cache hit-rate"
+          value={cache.hitRate == null ? '—' : `${cache.hitRate}%`}
+          sub={`${cache.hits ?? 0} hits · ${cache.misses ?? 0} miss`}
+          dot={cache.hitRate == null ? 'stopped' : cache.hitRate >= 50 ? 'ok' : 'warn'}
+          mono
+        />
+        <StatCard label="Cache entries" value={cache.size ?? 0} sub="fast-cache size" mono />
+        <StatCard
+          label="Scheduler ticks"
+          value={sched.ticks ?? 0}
+          sub={sched.lastTickAt ? `last ${fmtAgoShort(sched.lastTickAt)}` : 'no ticks yet'}
+          mono
+        />
+        <StatCard
+          label="Nudges sent"
+          value={sched.nudgesSent ?? 0}
+          sub={droppedTotal ? `${droppedTotal} dropped` : 'none dropped'}
+          mono
+        />
+        <StatCard
+          label="Free RAM"
+          value={ram.freeGb != null ? `${ram.freeGb} GB` : '—'}
+          sub={
+            ram.totalGb
+              ? `of ${ram.totalGb} GB${ramUsedPct != null ? ` · ${ramUsedPct}% used` : ''}`
+              : ''
+          }
+          dot={ramUsedPct != null ? (ramUsedPct < 85 ? 'ok' : 'warn') : undefined}
+          mono
+        />
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+          gap: 'calc(14px * var(--gap))',
+        }}
+      >
+        <window.Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 13.5, fontWeight: 600 }}>Free RAM (GB)</span>
+            <span className="mono" style={{ fontSize: 12.5, color: 'var(--text-3)' }}>
+              {ram.freeGb != null ? `${ram.freeGb} / ${ram.totalGb}` : '—'}
+            </span>
+          </div>
+          <Sparkline
+            values={freeSeries}
+            domain={ram.totalGb ? [0, ram.totalGb] : undefined}
+            stroke="var(--info)"
+          />
+        </window.Card>
+        <window.Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 13.5, fontWeight: 600 }}>Cache hit-rate (%)</span>
+            <span className="mono" style={{ fontSize: 12.5, color: 'var(--text-3)' }}>
+              {cache.hitRate == null ? '—' : `${cache.hitRate}%`}
+            </span>
+          </div>
+          <Sparkline values={hitSeries} domain={[0, 100]} stroke="var(--accent)" />
+        </window.Card>
+      </div>
+
+      {droppedTotal > 0 && (
+        <window.Card style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600 }}>Nudges dropped by reason</span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {Object.entries(dropped)
+              .filter(([, v]) => v > 0)
+              .sort((a, b) => b[1] - a[1])
+              .map(([reason, count]) => {
+                const pct = Math.round((count / droppedTotal) * 100);
+                return (
+                  <div key={reason} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span
+                      style={{ fontSize: 13, color: 'var(--text-2)', width: 130, flex: 'none' }}
+                    >
+                      {DROP_LABELS[reason] || reason}
+                    </span>
+                    <div
+                      style={{
+                        flex: 1,
+                        height: 8,
+                        borderRadius: 99,
+                        background: 'var(--surface-2)',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${pct}%`,
+                          height: '100%',
+                          background: 'var(--warn)',
+                          borderRadius: 99,
+                        }}
+                      />
+                    </div>
+                    <span
+                      className="mono"
+                      style={{
+                        fontSize: 12.5,
+                        color: 'var(--text-3)',
+                        width: 36,
+                        textAlign: 'right',
+                      }}
+                    >
+                      {count}
+                    </span>
+                  </div>
+                );
+              })}
+          </div>
+          <p style={{ fontSize: 12, color: 'var(--text-3)' }}>
+            Dropped nudges are suppressed on purpose — dedup, rate limits, snooze, or quiet hours.
+          </p>
+        </window.Card>
+      )}
     </div>
   );
 }
