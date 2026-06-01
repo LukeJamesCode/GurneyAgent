@@ -1033,7 +1033,7 @@ function StepExtensions() {
     <div>
       <StepHead kicker="Step 6" title="Pick your extensions">
         Turn on the capabilities you want now, or skip and add them later from the Extensions tab.
-        Anything that needs an account will ask you to connect after setup.
+        Codex and Everyday Assistant will walk you through connection on the next step.
       </StepHead>
       {exts === null && (
         <div style={{ fontSize: 13.5, color: 'var(--text-3)' }}>Loading extensions…</div>
@@ -1099,7 +1099,9 @@ function StepExtensions() {
                       </window.Badge>
                     )}
                   </div>
-                  <p style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 2, lineHeight: 1.45 }}>
+                  <p
+                    style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 2, lineHeight: 1.45 }}
+                  >
                     {blurb(e)}
                   </p>
                 </div>
@@ -1136,9 +1138,7 @@ function StepExtensions() {
                   output={result.output}
                   action={result.action}
                   open={detailsOpen}
-                  onToggle={() =>
-                    setOpenDetails((prev) => ({ ...prev, [e.name]: !prev[e.name] }))
-                  }
+                  onToggle={() => setOpenDetails((prev) => ({ ...prev, [e.name]: !prev[e.name] }))}
                 />
               )}
             </div>
@@ -1201,7 +1201,12 @@ function VoiceSetupModal({ stage, lines, ok, onConfirm, onClose }) {
     );
   }
   if (stage === 'streaming' || stage === 'done') {
-    const title = stage === 'streaming' ? 'Setting up Voice…' : ok ? 'Voice is ready' : 'Voice setup hit a problem';
+    const title =
+      stage === 'streaming'
+        ? 'Setting up Voice…'
+        : ok
+          ? 'Voice is ready'
+          : 'Voice setup hit a problem';
     return (
       <window.Modal
         open
@@ -1209,11 +1214,7 @@ function VoiceSetupModal({ stage, lines, ok, onConfirm, onClose }) {
         title={title}
         width={680}
         tone={stage === 'done' && !ok ? 'err' : null}
-        footer={
-          stage === 'done' ? (
-            <window.Button onClick={onClose}>Close</window.Button>
-          ) : null
-        }
+        footer={stage === 'done' ? <window.Button onClick={onClose}>Close</window.Button> : null}
       >
         {stage === 'streaming' && (
           <p style={{ marginBottom: 10 }}>
@@ -1222,8 +1223,8 @@ function VoiceSetupModal({ stage, lines, ok, onConfirm, onClose }) {
         )}
         {stage === 'done' && !ok && (
           <p style={{ marginBottom: 10 }}>
-            Something didn&rsquo;t finish. The log below shows where it stopped — usually a
-            missing system package or a network blip; re-enable to retry.
+            Something didn&rsquo;t finish. The log below shows where it stopped — usually a missing
+            system package or a network blip; re-enable to retry.
           </p>
         )}
         <pre
@@ -1324,49 +1325,27 @@ function ExtResultPanel({ ok, output, action, open, onToggle }) {
 function StepExtConfig({ saveRef }) {
   const [exts, setExts] = useStateWiz(null);
   const [vals, setVals] = useStateWiz({});
+  const [taskIndex, setTaskIndex] = useStateWiz(0);
+  const [authFor, setAuthFor] = useStateWiz(null);
+  const [authDone, setAuthDone] = useStateWiz({});
+  const [authSkipped, setAuthSkipped] = useStateWiz({});
   const [err, setErr] = useStateWiz(null);
 
-  useEffectWiz(() => {
-    (async () => {
-      const r = await window.api.get('/api/extensions');
-      if (!r.ok) { setExts([]); return; }
-      const configurable = (r.data.extensions || []).filter(
-        (e) => e.enabled && !e.self && e.schema && e.schema.length > 0,
-      );
-      setExts(configurable);
-      const init = {};
-      for (const e of configurable) {
-        init[e.name] = Object.fromEntries((e.schema || []).map((f) => [f.key, f.value ?? '']));
-      }
-      setVals(init);
-    })();
-  }, []);
-
-  useEffectWiz(() => {
-    saveRef.current = async () => {
-      if (!exts || exts.length === 0) return true;
-      setErr(null);
-      const results = await Promise.all(
-        exts.map((e) =>
-          window.api.post(
-            `/api/extensions/${encodeURIComponent(e.name)}/settings`,
-            vals[e.name] || {},
-          ),
-        ),
-      );
-      const failed = exts.filter((_, i) => !results[i].ok);
-      if (failed.length > 0) {
-        setErr(
-          `Couldn't save settings for: ${failed.map((e) => prettyExtName(e.name)).join(', ')}`,
-        );
-        return false;
-      }
-      return true;
-    };
-  });
-
-  const setField = (name, key, v) =>
-    setVals((s) => ({ ...s, [name]: { ...s[name], [key]: v } }));
+  const authGuided = new Set(['gurney-codex', 'gurney-everyday-assistant']);
+  const authManagedKeys = {
+    'gurney-codex': new Set([
+      'codex_access_token',
+      'codex_refresh_token',
+      'codex_id_token',
+      'codex_expires_at',
+      'codex_account_id',
+    ]),
+    'gurney-everyday-assistant': new Set([
+      'google_client_id',
+      'google_client_secret',
+      'google_refresh_token',
+    ]),
+  };
 
   const prettyExtName = (name) =>
     name
@@ -1382,32 +1361,177 @@ function StepExtConfig({ saveRef }) {
       .map((w) => w[0])
       .join('');
 
+  const shouldGuideAuth = (e) => authGuided.has(e.name) && e.needsAuth && !e.authConnected;
+  const isAuthManagedField = (e, f) => !!authManagedKeys[e.name]?.has(f.key);
+  const configurableFrom = (items) =>
+    (items || []).filter(
+      (e) => e.enabled && !e.self && ((e.schema && e.schema.length > 0) || shouldGuideAuth(e)),
+    );
+  const buildTasks = (items) =>
+    (items || []).flatMap((e) => {
+      const tasks = [];
+      if (shouldGuideAuth(e)) tasks.push({ type: 'auth', ext: e, key: `${e.name}:auth` });
+      for (const f of e.schema || []) {
+        if (!isAuthManagedField(e, f)) {
+          tasks.push({ type: 'setting', ext: e, field: f, key: `${e.name}:${f.key}` });
+        }
+      }
+      return tasks;
+    });
+
+  const loadConfigurable = async () => {
+    const r = await window.api.get('/api/extensions');
+    if (!r.ok) {
+      setExts([]);
+      return;
+    }
+    const configurable = configurableFrom(r.data.extensions || []);
+    setExts(configurable);
+    const init = {};
+    for (const e of configurable) {
+      init[e.name] = Object.fromEntries((e.schema || []).map((f) => [f.key, f.value ?? '']));
+    }
+    setVals(init);
+  };
+
+  useEffectWiz(() => {
+    loadConfigurable();
+  }, []);
+
+  const tasks = buildTasks(exts);
+  const currentTask = tasks[Math.min(taskIndex, Math.max(tasks.length - 1, 0))];
+  const atLastTask = taskIndex >= tasks.length - 1;
+
+  const saveCurrentSetting = async () => {
+    if (!currentTask || currentTask.type !== 'setting') return true;
+    const ext = currentTask.ext;
+    const field = currentTask.field;
+    const r = await window.api.post(`/api/extensions/${encodeURIComponent(ext.name)}/settings`, {
+      [field.key]: (vals[ext.name] || {})[field.key] ?? '',
+    });
+    if (!r.ok) {
+      setErr(r.error || `Could not save ${field.label}.`);
+      return false;
+    }
+    setErr(null);
+    return true;
+  };
+
+  const proceed = async () => {
+    if (!currentTask) return true;
+    if (currentTask.type === 'auth') {
+      const name = currentTask.ext.name;
+      if (!currentTask.ext.authConnected && !authDone[name] && !authSkipped[name]) {
+        setErr(`Connect ${prettyExtName(name)} or skip this connection before continuing.`);
+        return false;
+      }
+      setErr(null);
+    } else {
+      const ok = await saveCurrentSetting();
+      if (!ok) return false;
+    }
+    if (atLastTask) return true;
+    setTaskIndex((i) => Math.min(i + 1, tasks.length - 1));
+    return false;
+  };
+
+  useEffectWiz(() => {
+    saveRef.current = proceed;
+  });
+
+  const setField = (name, key, v) => setVals((s) => ({ ...s, [name]: { ...s[name], [key]: v } }));
+
+  const renderSettingInput = (task) => {
+    const e = task.ext;
+    const f = task.field;
+    const extVals = vals[e.name] || {};
+    if (f.type === 'boolean') {
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <window.Toggle
+            checked={!!extVals[f.key]}
+            onChange={(v) => setField(e.name, f.key, v)}
+            label={f.label}
+          />
+          <span style={{ fontSize: 13.5, color: 'var(--text-2)' }}>
+            {extVals[f.key] ? 'On' : 'Off'}
+          </span>
+        </div>
+      );
+    }
+    if (f.options) {
+      return (
+        <window.Select
+          value={extVals[f.key] || ''}
+          onChange={(ev) => setField(e.name, f.key, ev.target.value)}
+        >
+          {f.options.map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </window.Select>
+      );
+    }
+    if (f.type === 'secret') {
+      return (
+        <window.SecretInput
+          value={extVals[f.key] || ''}
+          onChange={(ev) => setField(e.name, f.key, ev.target.value)}
+          placeholder="Not set"
+        />
+      );
+    }
+    if (f.type === 'number') {
+      return (
+        <window.Input
+          type="number"
+          mono
+          value={extVals[f.key] || ''}
+          onChange={(ev) => setField(e.name, f.key, ev.target.value)}
+          style={{ maxWidth: 180 }}
+        />
+      );
+    }
+    return (
+      <window.Input
+        value={extVals[f.key] || ''}
+        onChange={(ev) => setField(e.name, f.key, ev.target.value)}
+        placeholder="Not set"
+      />
+    );
+  };
+
   if (exts === null) {
     return (
       <div>
         <StepHead kicker="Step 7" title="Configure your extensions">
-          Loading extension settings…
+          Loading extension settings...
         </StepHead>
       </div>
     );
   }
 
-  if (exts.length === 0) {
+  if (exts.length === 0 || tasks.length === 0) {
     return (
       <div>
         <StepHead kicker="Step 7" title="Configure your extensions">
-          The extensions you enabled don't have any settings to configure — click{' '}
-          <b>Save &amp; continue</b> to move on.
+          Everything you enabled is ready with its defaults - click <b>Save &amp; continue</b> to
+          move on.
         </StepHead>
       </div>
     );
   }
+
+  const task = currentTask;
+  const ext = task.ext;
+  const connected = task.type === 'auth' && (ext.authConnected || authDone[ext.name]);
 
   return (
     <div>
       <StepHead kicker="Step 7" title="Configure your extensions">
-        Fill in settings for the extensions you just enabled. Skip anything now and change it later
-        in the Extensions tab.
+        We'll walk through one extension setting at a time. Account connections come first for Codex
+        and Everyday Assistant.
       </StepHead>
       {err && (
         <div
@@ -1423,124 +1547,145 @@ function StepExtConfig({ saveRef }) {
           <window.Icon name="alert" size={14} /> {err}
         </div>
       )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-        {exts.map((e) => {
-          const extVals = vals[e.name] || {};
-          return (
-            <div
-              key={e.name}
-              style={{
-                background: 'var(--surface)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius)',
-                overflow: 'hidden',
-              }}
-            >
-              <div
+      <window.Card pad={0} style={{ overflow: 'hidden' }}>
+        <div
+          style={{
+            padding: '14px 18px',
+            borderBottom: '1px solid var(--border)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            background: 'var(--surface-2)',
+          }}
+        >
+          <span
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 8,
+              flex: 'none',
+              display: 'grid',
+              placeItems: 'center',
+              background: 'var(--accent-soft)',
+              color: 'var(--accent-strong)',
+              fontWeight: 700,
+              fontFamily: 'var(--font-display)',
+              fontSize: 13,
+            }}
+          >
+            {initials(ext.name)}
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 15 }}>{prettyExtName(ext.name)}</div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginTop: 1 }}>
+              {task.type === 'auth' ? 'Account connection' : task.field.key}
+            </div>
+          </div>
+          <span className="mono" style={{ fontSize: 12.5, color: 'var(--text-3)' }}>
+            {taskIndex + 1} / {tasks.length}
+          </span>
+        </div>
+
+        <div style={{ padding: 20 }}>
+          {task.type === 'auth' ? (
+            <div>
+              <window.Label hint="This opens the same guided flow as the terminal auth command.">
+                Connect {prettyExtName(ext.name)}
+              </window.Label>
+              <p
                 style={{
-                  padding: '13px 18px',
-                  borderBottom: '1px solid var(--border)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  background: 'var(--surface-2)',
+                  fontSize: 14,
+                  color: 'var(--text-2)',
+                  lineHeight: 1.55,
+                  marginBottom: 14,
                 }}
               >
-                <span
-                  style={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 8,
-                    flex: 'none',
-                    display: 'grid',
-                    placeItems: 'center',
-                    background: 'var(--accent-soft)',
-                    color: 'var(--accent-strong)',
-                    fontWeight: 700,
-                    fontFamily: 'var(--font-display)',
-                    fontSize: 13,
-                  }}
+                {ext.name === 'gurney-codex'
+                  ? 'Sign in with your ChatGPT subscription so Gurney can hand hard tasks to Codex.'
+                  : 'Connect Google once so Calendar, Tasks, reminders, and briefings can work.'}
+              </p>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <window.Button
+                  variant={connected ? 'ok' : 'primary'}
+                  icon={connected ? 'check' : 'link'}
+                  onClick={() => setAuthFor(ext.name)}
                 >
-                  {initials(e.name)}
-                </span>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 15 }}>{prettyExtName(e.name)}</div>
-                  {e.description && (
-                    <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginTop: 1 }}>
-                      {e.description}
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 18 }}>
-                {(e.schema || []).map((f) => (
-                  <div key={f.key}>
-                    <window.Label hint={f.help}>
-                      {f.label}
-                      {f.required && <span style={{ color: 'var(--err)' }}> *</span>}
-                      {f.type === 'secret' && (
-                        <window.Icon
-                          name="lock"
-                          size={12}
-                          style={{
-                            display: 'inline',
-                            verticalAlign: 'middle',
-                            color: 'var(--text-3)',
-                            marginLeft: 4,
-                          }}
-                        />
-                      )}
-                    </window.Label>
-                    {f.type === 'boolean' ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <window.Toggle
-                          checked={!!extVals[f.key]}
-                          onChange={(v) => setField(e.name, f.key, v)}
-                          label={f.label}
-                        />
-                        <span style={{ fontSize: 13.5, color: 'var(--text-2)' }}>
-                          {extVals[f.key] ? 'On' : 'Off'}
-                        </span>
-                      </div>
-                    ) : f.options ? (
-                      <window.Select
-                        value={extVals[f.key] || ''}
-                        onChange={(ev) => setField(e.name, f.key, ev.target.value)}
-                      >
-                        {f.options.map((o) => (
-                          <option key={o} value={o}>
-                            {o}
-                          </option>
-                        ))}
-                      </window.Select>
-                    ) : f.type === 'secret' ? (
-                      <window.SecretInput
-                        value={extVals[f.key] || ''}
-                        onChange={(ev) => setField(e.name, f.key, ev.target.value)}
-                        placeholder="Not set"
-                      />
-                    ) : f.type === 'number' ? (
-                      <window.Input
-                        type="number"
-                        mono
-                        value={extVals[f.key] || ''}
-                        onChange={(ev) => setField(e.name, f.key, ev.target.value)}
-                        style={{ maxWidth: 180 }}
-                      />
-                    ) : (
-                      <window.Input
-                        value={extVals[f.key] || ''}
-                        onChange={(ev) => setField(e.name, f.key, ev.target.value)}
-                        placeholder="Not set"
-                      />
-                    )}
-                  </div>
-                ))}
+                  {connected ? 'Connected' : `Connect ${prettyExtName(ext.name)}`}
+                </window.Button>
+                {!connected && (
+                  <window.Button
+                    variant="ghost"
+                    onClick={() => {
+                      setErr(null);
+                      setAuthSkipped((s) => ({ ...s, [ext.name]: true }));
+                      if (!atLastTask) setTaskIndex((i) => i + 1);
+                    }}
+                  >
+                    Skip this connection
+                  </window.Button>
+                )}
+                {connected && (
+                  <window.Badge tone="ok">
+                    <window.Icon name="check" size={11} />
+                    credentials saved
+                  </window.Badge>
+                )}
               </div>
             </div>
-          );
-        })}
+          ) : (
+            <div>
+              <window.Label hint={task.field.help}>
+                {task.field.label}
+                {task.field.required && <span style={{ color: 'var(--err)' }}> *</span>}
+                {task.field.type === 'secret' && (
+                  <window.Icon
+                    name="lock"
+                    size={12}
+                    style={{
+                      display: 'inline',
+                      verticalAlign: 'middle',
+                      color: 'var(--text-3)',
+                      marginLeft: 4,
+                    }}
+                  />
+                )}
+              </window.Label>
+              {renderSettingInput(task)}
+            </div>
+          )}
+        </div>
+      </window.Card>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14 }}>
+        <window.Button
+          variant="ghost"
+          icon="back"
+          onClick={() => {
+            setErr(null);
+            setTaskIndex((i) => Math.max(0, i - 1));
+          }}
+          disabled={taskIndex === 0}
+          style={{ opacity: taskIndex === 0 ? 0.45 : 1 }}
+        >
+          Previous
+        </window.Button>
+        <span style={{ fontSize: 12.5, color: 'var(--text-3)' }}>
+          Use the main Save &amp; continue button for the next step.
+        </span>
       </div>
+
+      {authFor && window.AuthFlowModal && (
+        <window.AuthFlowModal
+          ext={exts.find((e) => e.name === authFor) || ext}
+          onClose={() => setAuthFor(null)}
+          onDone={() => {
+            setAuthDone((s) => ({ ...s, [authFor]: true }));
+            setAuthSkipped((s) => ({ ...s, [authFor]: false }));
+            setAuthFor(null);
+            loadConfigurable();
+          }}
+        />
+      )}
     </div>
   );
 }
