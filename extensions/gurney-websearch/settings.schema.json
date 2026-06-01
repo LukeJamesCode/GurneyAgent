@@ -1,6 +1,11 @@
 {
   "type": "object",
   "properties": {
+    "confirm_before_search": {
+      "type": "boolean",
+      "default": true,
+      "description": "Ask for approval before Gurney searches the web. In chat/agent use this shows a Yes/No prompt before each web_search runs; in the Learn tab it confirms before a researched course is built. Turn off to allow all web access without asking. (The chat/agent prompt takes effect on the next agent start.)"
+    },
     "backend": {
       "type": "string",
       "enum": ["duckduckgo", "searxng"],

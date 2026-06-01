@@ -16,6 +16,7 @@ Format: `## [version] — YYYY-MM-DD`
 
 ### Security
 
+- **Approval gate before any web access (on by default).** `web_search` is a confirm-tier tool — it shows a Yes/No prompt (Telegram buttons / panel confirm card) and waits before searching; the Learn tab shows an "Allow web access?" dialog (Cancel / Always allow / Allow & build) before building a researched course. A new `confirm_before_search` setting (default `true`) turns the gate off to allow all access.
 - The `web_search` results and the Tudor research brief are the only paths that put third-party web content in front of a model. They share one hardened chokepoint (SSRF + HTML-strip + untrusted framing + marker neutralization). Note the residual limit: prompt-injection framing reduces but cannot fully eliminate the risk on small local models; mutating tools remain `confirm`-tier as the backstop, and DNS-rebinding is out of scope for v1 (page-fetch is opt-in).
 
 ---

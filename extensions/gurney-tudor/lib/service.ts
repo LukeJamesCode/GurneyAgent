@@ -243,6 +243,8 @@ export interface TudorStatus {
   localModel: string;
   codexAvailable: boolean;
   websearchAvailable: boolean;
+  // Whether the Learn tab should confirm before building a researched course.
+  confirmBeforeSearch: boolean;
 }
 
 export function status(ctx: TudorCtx): TudorStatus {
@@ -262,5 +264,8 @@ export function status(ctx: TudorCtx): TudorStatus {
     localModel: labelFor(ctx.llm, chooseModel(ctx.llm, 'local').ref),
     codexAvailable: store.isExtensionEnabled(ctx.db, 'gurney-codex'),
     websearchAvailable,
+    confirmBeforeSearch:
+      store.readExtSettingFor(ctx.db, 'gurney-websearch', 'confirm_before_search', 'true') !==
+      'false',
   };
 }

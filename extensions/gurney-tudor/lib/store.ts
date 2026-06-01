@@ -331,13 +331,23 @@ export function setSegmentVariants(
   );
 }
 
-// Read a gurney-tudor extension setting straight from the shared core table.
-// Lets the frontend (which has no host.settings) read the user's defaults.
-export function readExtSetting(db: DB, key: string, fallback: string): string {
+// Read any extension's setting straight from the shared core table. Lets the
+// frontend (which has no host.settings) read a user's defaults — including a
+// sibling extension's, e.g. gurney-websearch's confirm-before-search flag.
+export function readExtSettingFor(
+  db: DB,
+  extension: string,
+  key: string,
+  fallback: string,
+): string {
   const row = db
-    .prepare(`SELECT value FROM extension_settings WHERE extension = 'gurney-tudor' AND key = ?`)
-    .get(key) as { value: string } | undefined;
+    .prepare(`SELECT value FROM extension_settings WHERE extension = ? AND key = ?`)
+    .get(extension, key) as { value: string } | undefined;
   return row?.value ?? fallback;
+}
+
+export function readExtSetting(db: DB, key: string, fallback: string): string {
+  return readExtSettingFor(db, 'gurney-tudor', key, fallback);
 }
 
 export function isExtensionEnabled(db: DB, name: string): boolean {

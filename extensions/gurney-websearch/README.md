@@ -26,6 +26,14 @@ a model. That's inherently risky, so the guards are first-class:
 - **Read-only.** It fetches and returns text. It never executes anything, and
   page-fetching (beyond result snippets) is **off by default**.
 - **Bounded.** Per-request timeouts, a result cap (1–10), and length caps.
+- **Approval gate (on by default).** Before the agent searches, it asks. In
+  chat/agent use, `web_search` is a **confirm-tier** tool — it pops a Yes/No
+  prompt (Telegram inline buttons or the panel's confirm card) and waits for
+  your answer. In the Learn tab, a researched course shows an "Allow web
+  access?" dialog with **Cancel / Always allow / Allow & build**. Flip
+  `confirm_before_search` off to allow all access without asking. (The chat
+  prompt is fixed when the tool registers, so turning it off there applies on
+  the next agent start; the Learn-tab dialog updates immediately.)
 
 ## Use
 
@@ -38,9 +46,10 @@ a model. That's inherently risky, so the guards are first-class:
 
 ## Settings (`gurney config gurney-websearch`)
 
-| Setting           | Default      | Notes                                                                  |
-| ----------------- | ------------ | ---------------------------------------------------------------------- |
-| `backend`         | `duckduckgo` | `duckduckgo` (no setup) or `searxng` (falls back to DDG if it's empty). |
+| Setting                 | Default      | Notes                                                                  |
+| ----------------------- | ------------ | ---------------------------------------------------------------------- |
+| `confirm_before_search` | `true`       | Ask for Yes/No approval before any web search. Off = allow all.        |
+| `backend`               | `duckduckgo` | `duckduckgo` (no setup) or `searxng` (falls back to DDG if it's empty). |
 | `searxng_url`     | _(empty)_    | Base URL of your SearXNG instance. Must be a public http(s) host.       |
 | `max_results`     | `6`          | Results per search (1–10).                                              |
 | `timeout_seconds` | `12`         | Per-request network timeout.                                            |

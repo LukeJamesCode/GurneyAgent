@@ -33,6 +33,12 @@ function formatResults(
 }
 
 export function register(host: Host): void {
+  // Whether the agent must ask before searching. Read once at registration:
+  // the tool's permission tier is fixed when it's registered, so flipping this
+  // off takes effect on the next agent start (the safe default — ON — needs no
+  // action). The Learn-tab research path reads it live.
+  const confirmBeforeSearch = host.settings.get<boolean>('confirm_before_search', true) === true;
+
   host.tools.register({
     name: 'web_search',
     description:
@@ -46,7 +52,18 @@ export function register(host: Host): void {
       },
       required: ['query'],
     },
-    tier: 'auto',
+    // 'confirm' pops a Yes/No prompt (Telegram buttons / panel confirm card) and
+    // waits for the user before the search runs; 'auto' allows it without asking.
+    tier: confirmBeforeSearch ? 'confirm' : 'auto',
+    confirmPrompt: (args) => {
+      const q = String((args as { query?: unknown }).query ?? '').trim();
+      const opts = readOpts(host);
+      const via =
+        opts.backend === 'searxng' && opts.searxngUrl
+          ? domainOf(opts.searxngUrl)
+          : 'duckduckgo.com';
+      return `Allow Gurney to search the web for: "${q}"? (via ${via})`;
+    },
     async invoke(args) {
       const query = String((args as { query?: unknown }).query ?? '').trim();
       if (!query) return 'No query provided.';

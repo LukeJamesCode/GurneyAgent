@@ -318,6 +318,7 @@ function Library({ onOpen }) {
   const [websearch, setWebsearch] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const load = useCallback(async () => {
     const [s, c] = await Promise.all([
@@ -337,9 +338,11 @@ function Library({ onOpen }) {
     load();
   }, [load]);
 
-  const create = useCallback(async () => {
+  // The actual build request. Goes through only after the web-access gate (if any).
+  const doCreate = useCallback(async () => {
     const t = topic.trim();
     if (!t || busy) return;
+    setConfirmOpen(false);
     setBusy(true);
     setErr(null);
     const r = await window.api.post('/api/tudor/courses', {
@@ -357,6 +360,27 @@ function Library({ onOpen }) {
     }
   }, [topic, depth, generator, websearch, busy, onOpen]);
 
+  // Build click: if this course will touch the web and the gate is on, ask first.
+  const create = useCallback(() => {
+    const t = topic.trim();
+    if (!t || busy) return;
+    if (websearch && status && status.websearchAvailable && status.confirmBeforeSearch) {
+      setConfirmOpen(true);
+      return;
+    }
+    doCreate();
+  }, [topic, busy, websearch, status, doCreate]);
+
+  // "Always allow" turns the gate off (persisted to gurney-websearch settings)
+  // and proceeds. Re-enable any time from Extensions → gurney-websearch.
+  const allowAlways = useCallback(async () => {
+    await window.api.post('/api/extensions/gurney-websearch/settings', {
+      confirm_before_search: false,
+    });
+    setStatus((s) => (s ? { ...s, confirmBeforeSearch: false } : s));
+    doCreate();
+  }, [doCreate]);
+
   const remove = useCallback(
     async (id) => {
       await window.api.post(`/api/tudor/courses/${id}/delete`, {});
@@ -371,6 +395,37 @@ function Library({ onOpen }) {
 
   return (
     <div>
+      <window.Modal
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        title="Allow web access?"
+        tone="shield"
+        width={460}
+        footer={
+          <>
+            <window.Button variant="ghost" onClick={() => setConfirmOpen(false)}>
+              Cancel
+            </window.Button>
+            <window.Button variant="subtle" onClick={allowAlways}>
+              Always allow
+            </window.Button>
+            <window.Button variant="primary" icon="search" onClick={doCreate}>
+              Allow &amp; build
+            </window.Button>
+          </>
+        }
+      >
+        <div>
+          Gurney will search the web to research <strong>“{topic.trim()}”</strong> before building
+          this course. Results are treated as untrusted reference material and never as
+          instructions.
+        </div>
+        <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--text-3)' }}>
+          “Always allow” turns off this prompt for future searches — you can re-enable it any time
+          under Extensions → gurney-websearch.
+        </div>
+      </window.Modal>
+
       <window.SectionTitle sub="Turn any topic into a course you can actually walk through — built once, then instant to learn.">
         Learn
       </window.SectionTitle>
