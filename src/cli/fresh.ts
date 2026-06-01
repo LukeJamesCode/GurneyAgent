@@ -12,24 +12,34 @@ import { killPanel } from './panel.js';
 import { run as runUpdate } from './update.js';
 import { run as runInit } from './init.js';
 
-export async function run(): Promise<void> {
+export interface FreshOptions {
+  yes?: boolean;
+  init?: boolean;
+  stopPanel?: boolean;
+}
+
+export async function run(options: FreshOptions = {}): Promise<void> {
   const home = homeDir();
+  const shouldRunInit = options.init !== false;
+  const shouldStopPanel = options.stopPanel !== false;
 
   process.stdout.write(
     'Fresh install will erase all Gurney config, the database, logs, installed extensions,\n' +
       'and extension state, including Gurney-managed Piper binaries, ffmpeg paths, and voice\n' +
-      'models, and will stop the web panel (killing any orphan still on its port).\n' +
+      `models${shouldStopPanel ? ', and will stop the web panel (killing any orphan still on its port)' : ''}.\n` +
       'Ollama models in ~/.ollama are NOT touched — re-pull only if you want to.\n' +
       `Data directory: ${home}\n\n`,
   );
 
-  const ok = await confirm({
-    message: 'Are you sure? This cannot be undone.',
-    default: false,
-  });
-  if (!ok) {
-    process.stdout.write('Aborted.\n');
-    return;
+  if (!options.yes) {
+    const ok = await confirm({
+      message: 'Are you sure? This cannot be undone.',
+      default: false,
+    });
+    if (!ok) {
+      process.stdout.write('Aborted.\n');
+      return;
+    }
   }
 
   // Stop a running daemon before wiping its home dir. Poll until it actually
@@ -50,9 +60,7 @@ export async function run(): Promise<void> {
       await new Promise<void>((resolve) => setTimeout(resolve, 200));
     }
     if (isAlive(pid)) {
-      process.stdout.write(
-        `Daemon (pid ${pid}) did not exit within 10s; sending SIGKILL.\n`,
-      );
+      process.stdout.write(`Daemon (pid ${pid}) did not exit within 10s; sending SIGKILL.\n`);
       try {
         process.kill(pid, 'SIGKILL');
       } catch {
@@ -65,13 +73,24 @@ export async function run(): Promise<void> {
   // SIGTERM above doesn't reach it. killPanel also reaps orphans still holding
   // the panel's port, which a previous crash can leave behind (the same
   // ERR_EMPTY_RESPONSE situation users hit when 'gurney stop' missed them).
-  killPanel(home);
+  if (shouldStopPanel) {
+    killPanel(home);
+  } else {
+    process.stdout.write('Leaving gurney-frontend running for browser setup handoff.\n');
+  }
 
   process.stdout.write(`Wiping ${home}...\n`);
   rmSync(home, { recursive: true, force: true });
   process.stdout.write('Data directory cleared.\n\n');
 
   await runUpdate();
+
+  if (!shouldRunInit) {
+    process.stdout.write(
+      '\nFresh wipe and update complete. Run `gurney init` to configure Gurney.\n',
+    );
+    return;
+  }
 
   process.stdout.write('\n--- Running setup wizard ---\n\n');
   // Re-exec `init` in a FRESH process so it runs the code we just rebuilt, not

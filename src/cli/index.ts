@@ -149,9 +149,16 @@ program
 program
   .command('fresh')
   .description('Wipe all Gurney data, update code, and re-run the setup wizard')
-  .action(async () => {
+  .option('-y, --yes', 'Skip the destructive confirmation prompt')
+  .option('--skip-init', 'Wipe and update without launching the terminal setup wizard')
+  .option('--keep-panel', 'Do not stop the gurney-frontend panel process')
+  .action(async (opts: { yes?: boolean; skipInit?: boolean; keepPanel?: boolean }) => {
     const { run } = await import('./fresh.js');
-    await call('fresh', run);
+    await call('fresh', run, {
+      yes: !!opts.yes,
+      init: !opts.skipInit,
+      stopPanel: !opts.keepPanel,
+    });
   });
 
 program

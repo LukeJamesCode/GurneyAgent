@@ -61,6 +61,8 @@ import {
 } from '../../src/core/extension-readiness.js';
 import { readMetrics } from '../../src/core/metrics.js';
 import {
+  ensurePrivateDir,
+  ensurePrivateFile,
   effectiveConfig,
   homeDir,
   loadConfig,
@@ -68,7 +70,13 @@ import {
   validateOllamaUrl,
   type GurneyConfig,
 } from '../../src/cli/config-store.js';
-import { isAlive, logFilePath, metricsFilePath, readPid } from '../../src/cli/daemon.js';
+import {
+  frontendPidFilePath,
+  isAlive,
+  logFilePath,
+  metricsFilePath,
+  readPid,
+} from '../../src/cli/daemon.js';
 import type { Manifest, SettingsSchema } from '../../src/core/extensions.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -327,6 +335,14 @@ async function runSystemCommand(
     command: formatGurneyCommand(spec.args),
     output: (r.out + r.err).trimEnd(),
   };
+}
+
+function restorePanelPidfileAfterFresh(): void {
+  const home = homeDir();
+  const file = frontendPidFilePath(home);
+  ensurePrivateDir(dirname(file));
+  writeFileSync(file, String(process.pid), { encoding: 'utf8', mode: 0o600 });
+  ensurePrivateFile(file);
 }
 
 // ---------------------------------------------------------------------------
@@ -2022,11 +2038,30 @@ async function handleApi(
     }
 
     if (path === '/api/maintenance/update' && method === 'POST') {
-      const r = await runGurney(opts, ['update'], 600_000);
+      const r = await runGurney(opts, ['update'], 1_800_000);
       return sendJson(res, r.code === 0 ? 200 : 500, {
         ok: r.code === 0,
         code: r.code,
         command: 'gurney update',
+        output: r.out + r.err,
+      });
+    }
+
+    if (path === '/api/maintenance/fresh' && method === 'POST') {
+      const { confirm } = await readJson<{ confirm?: string }>(req);
+      if (confirm !== 'RESET') {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'type RESET to confirm a fresh install',
+        });
+      }
+      const args = ['fresh', '--yes', '--skip-init', '--keep-panel'];
+      const r = await runGurney(opts, args, 1_800_000);
+      if (r.code === 0) restorePanelPidfileAfterFresh();
+      return sendJson(res, r.code === 0 ? 200 : 500, {
+        ok: r.code === 0,
+        code: r.code,
+        command: formatGurneyCommand(args),
         output: r.out + r.err,
       });
     }

@@ -67,6 +67,23 @@ function SystemTab({ state, onReset }) {
     return result;
   };
 
+  const runMaintenanceFresh = async (confirmText) => {
+    const seq = ++commandSeq.current;
+    const command = 'gurney fresh --yes --skip-init --keep-panel';
+    setCmd({ running: true, result: { ok: true, command, output: '' } });
+    const r = await window.api.post('/api/maintenance/fresh', { confirm: confirmText });
+    const data = r.data || {};
+    const result = {
+      ok: r.ok && data.ok !== false,
+      code: data.code,
+      command: data.command || command,
+      output: data.output || r.error || '',
+    };
+    if (seq === commandSeq.current) setCmd({ running: false, result });
+    if (result.ok) onReset();
+    return result;
+  };
+
   const changeSub = (next) => {
     setSub(next);
     if (SYSTEM_COMMAND_LABELS[next]) {
@@ -94,7 +111,7 @@ function SystemTab({ state, onReset }) {
       {sub === 'doctor' && <Doctor onRunCommand={() => runSystemTabCommand('doctor')} />}
       {sub === 'logs' && <LogViewer />}
       {sub === 'maintenance' && (
-        <Maintenance state={state} onReset={onReset} onUpdate={runMaintenanceUpdate} />
+        <Maintenance state={state} onUpdate={runMaintenanceUpdate} onFresh={runMaintenanceFresh} />
       )}
       {sub === 'commands' && <Commands />}
       {/* The Schedule and Metrics views have no terminal output, so they skip the footer. */}
@@ -671,8 +688,9 @@ function LogViewer() {
 }
 
 /* ---- maintenance ---- */
-function Maintenance({ state, onReset, onUpdate }) {
+function Maintenance({ state, onUpdate, onFresh }) {
   const [updating, setUpdating] = useStateSys(false);
+  const [freshing, setFreshing] = useStateSys(false);
   const [resetOpen, setResetOpen] = useStateSys(false);
   const [confirmText, setConfirmText] = useStateSys('');
   const version = state && state.version ? state.version : '';
@@ -683,6 +701,17 @@ function Maintenance({ state, onReset, onUpdate }) {
       await onUpdate();
     } finally {
       setUpdating(false);
+    }
+  };
+
+  const doFresh = async () => {
+    setFreshing(true);
+    setResetOpen(false);
+    try {
+      await onFresh(confirmText);
+    } finally {
+      setFreshing(false);
+      setConfirmText('');
     }
   };
 
@@ -705,7 +734,7 @@ function Maintenance({ state, onReset, onUpdate }) {
             {version ? ` Currently v${version}.` : ''}
           </p>
         </div>
-        <window.Button variant="primary" onClick={doUpdate} disabled={updating}>
+        <window.Button variant="primary" onClick={doUpdate} disabled={updating || freshing}>
           {updating ? (
             <>
               <window.Icon name="refresh" size={16} className="spin" /> Updating…
@@ -731,17 +760,18 @@ function Maintenance({ state, onReset, onUpdate }) {
         <p style={{ fontSize: 13.5, color: 'var(--text-2)', lineHeight: 1.55, marginBottom: 14 }}>
           A fresh install (<span className="mono">gurney fresh</span>) wipes{' '}
           <b>all configuration, extensions, and stored data</b> and re-runs first-time setup. This
-          cannot be undone and must be confirmed in the terminal for safety.
+          cannot be undone.
         </p>
         <window.Button
           variant="outline_danger"
           icon="trash"
+          disabled={freshing || updating}
           onClick={() => {
             setResetOpen(true);
             setConfirmText('');
           }}
         >
-          Fresh install / Reset…
+          {freshing ? 'Fresh install running...' : 'Fresh install / Reset...'}
         </window.Button>
       </div>
 
@@ -759,23 +789,20 @@ function Maintenance({ state, onReset, onUpdate }) {
             <window.Button
               variant="danger"
               icon="trash"
-              disabled={confirmText !== 'RESET'}
-              style={{ opacity: confirmText === 'RESET' ? 1 : 0.5 }}
-              onClick={() => {
-                setResetOpen(false);
-                onReset();
-              }}
+              disabled={confirmText !== 'RESET' || freshing}
+              style={{ opacity: confirmText === 'RESET' && !freshing ? 1 : 0.5 }}
+              onClick={doFresh}
             >
-              Re-run setup wizard
+              {freshing ? 'Wiping...' : 'Wipe and redownload'}
             </window.Button>
           </>
         }
       >
         <p>
           This permanently deletes your bot token, allowlist, model choices, every installed
-          extension, and all stored data. For safety, the actual wipe runs as{' '}
-          <span className="mono">gurney fresh</span> in the terminal — this button takes you back
-          through the in-browser setup wizard.
+          extension, and all stored data. It runs <span className="mono">gurney fresh</span>,
+          redownloads the current checkout, rebuilds, then returns you to the in-browser setup
+          wizard.
         </p>
         <div style={{ marginTop: 16 }}>
           <window.Label hint="This is a safety check so it can’t happen by accident.">
