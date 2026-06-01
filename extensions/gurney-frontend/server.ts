@@ -2171,6 +2171,7 @@ async function handleApi(
         generator?: string;
         localModel?: string;
         useWebsearch?: boolean;
+        useWebImages?: boolean;
         approvedSources?: Array<{
           title?: string;
           url?: string;
@@ -2212,6 +2213,7 @@ async function handleApi(
           ? { localModel: body.localModel.trim() }
           : {}),
         useWebsearch: body.useWebsearch === true,
+        useWebImages: body.useWebImages !== false,
         ...(approvedSources ? { approvedSources } : {}),
       });
       return sendJson(res, 200, { ok: true, id });

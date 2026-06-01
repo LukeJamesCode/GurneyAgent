@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { fetchPageText, search } from './search.js';
+import { fetchPageImages, fetchPageText, search } from './search.js';
 import { briefFromSources, previewSources, researchTopic, wrapUntrusted } from './research.js';
 
 // Minimal fetch stub returning a canned body for any URL.
@@ -145,4 +145,19 @@ test('getText follows a redirect to another public host', async () => {
     timeoutMs: 1000,
   });
   assert.equal(r, 'followed-content');
+});
+
+test('fetchPageImages extracts social and content images', async () => {
+  const html = `
+    <meta property="og:image" content="/hero.jpg">
+    <img src="/logo.svg" alt="Logo" width="64" height="64">
+    <img srcset="/small.jpg 320w, /large.jpg 900w" alt="Tide chart" width="900" height="500">
+  `;
+  const images = await fetchPageImages('https://example.com/tides/page', {
+    fetchImpl: stubFetch(html),
+  });
+  assert.equal(images.length, 2);
+  assert.equal(images[0]!.imageUrl, 'https://example.com/hero.jpg');
+  assert.equal(images[1]!.imageUrl, 'https://example.com/large.jpg');
+  assert.equal(images[1]!.alt, 'Tide chart');
 });

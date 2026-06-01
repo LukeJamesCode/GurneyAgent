@@ -78,6 +78,29 @@ test('replaceLessonContent is idempotent and marks the lesson ready', () => {
   assert.equal(lesson.quizzes[0]!.answer_idx, 1);
 });
 
+test('segment images are exposed on the tree and cascade with segments', () => {
+  const db = freshDb();
+  const id = store.createCourse(db, { topic: 'tides', depth: 'quick', model: 'm' });
+  const lessons = store.persistOutline(db, id, OUTLINE);
+  const segments = store.replaceLessonContent(db, lessons[0]!.id, LESSON, 5);
+  store.saveSegmentImage(db, segments[0]!.id, {
+    sourceUrl: 'https://example.com/tides',
+    imageUrl: 'https://example.com/tides.jpg',
+    altText: 'Tide diagram',
+    caption: 'A diagram of high and low tides.',
+  });
+
+  let tree = store.getCourseTree(db, id)!;
+  assert.equal(
+    tree.modules[0]!.lessons[0]!.segments[0]!.image!.image_url,
+    'https://example.com/tides.jpg',
+  );
+
+  store.replaceLessonContent(db, lessons[0]!.id, LESSON, 5);
+  tree = store.getCourseTree(db, id)!;
+  assert.equal(tree.modules[0]!.lessons[0]!.segments[0]!.image, null);
+});
+
 test('progress is clamped and reflected in the tree and summary', () => {
   const db = freshDb();
   const id = store.createCourse(db, { topic: 'tides', depth: 'quick', model: 'm' });
