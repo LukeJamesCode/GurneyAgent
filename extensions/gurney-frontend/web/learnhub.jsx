@@ -771,9 +771,19 @@ function CoursePlayer({ courseId, onBack }) {
       setReview(false);
       setCurrentLessonId(id);
       const l = allLessons.find((x) => x.id === id);
-      if (l && l.progress === 'unseen') recordProgress(id, 'in_progress', 0);
+      // Don't mark a failed lesson as "in progress" — it has no content yet.
+      if (l && l.status === 'ready' && l.progress === 'unseen')
+        recordProgress(id, 'in_progress', 0);
     },
     [allLessons, recordProgress],
+  );
+
+  const retryLesson = useCallback(
+    async (lessonId) => {
+      await window.api.post(`/api/tudor/lessons/${lessonId}/regenerate`, {});
+      await fetchTree();
+    },
+    [fetchTree],
   );
 
   const nextAfter = useCallback(
@@ -846,6 +856,8 @@ function CoursePlayer({ courseId, onBack }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           {review ? (
             <ReviewMode tree={tree} onExit={() => setReview(false)} />
+          ) : currentLesson && currentLesson.status === 'failed' ? (
+            <FailedLessonView key={currentLesson.id} lesson={currentLesson} onRetry={retryLesson} />
           ) : currentLesson ? (
             <LessonView
               key={currentLesson.id}
@@ -1000,11 +1012,12 @@ function CourseMap({ tree, currentLessonId, onPick }) {
               const ready = l.status === 'ready';
               const failed = l.status === 'failed';
               const pendingish = l.status === 'pending' || l.status === 'generating';
+              const openable = ready || failed; // failed lessons open a retry panel
               return (
                 <button
                   key={l.id}
-                  disabled={!ready}
-                  onClick={() => ready && onPick(l.id)}
+                  disabled={!openable}
+                  onClick={() => openable && onPick(l.id)}
                   className={l.status === 'generating' ? 'tudor-shimmer' : ''}
                   style={{
                     display: 'flex',
@@ -1021,7 +1034,7 @@ function CourseMap({ tree, currentLessonId, onPick }) {
                         ? 'var(--surface)'
                         : 'transparent',
                     color: ready ? 'var(--text)' : 'var(--text-3)',
-                    cursor: ready ? 'pointer' : 'default',
+                    cursor: openable ? 'pointer' : 'default',
                     fontSize: 13,
                     fontWeight: active ? 600 : 500,
                     opacity: pendingish && l.status === 'pending' ? 0.6 : 1,
@@ -1064,6 +1077,66 @@ function LessonDot({ lesson }) {
   if (lesson.progress === 'done')
     return <window.Icon name="check" size={14} style={{ color: 'var(--ok)' }} />;
   return <window.StatusDot state={lesson.status === 'failed' ? 'error' : 'ok'} size={8} />;
+}
+
+/* ---------------------------------------------------------------- failed lesson */
+function FailedLessonView({ lesson, onRetry }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(false);
+  const retry = async () => {
+    setBusy(true);
+    setErr(false);
+    try {
+      await onRetry(lesson.id);
+      // On success the parent refetches and re-renders this lesson as ready, so
+      // this component unmounts. If it's still here, the retry failed again.
+      setErr(true);
+    } catch (e) {
+      setErr(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: 'var(--text-3)', fontWeight: 600, marginBottom: 4 }}>
+        {lesson.moduleTitle}
+      </div>
+      <h3 style={{ fontSize: 19, marginBottom: 14 }}>{lesson.title}</h3>
+      <window.Card pad={26} style={{ textAlign: 'center' }}>
+        <span
+          style={{
+            width: 50,
+            height: 50,
+            borderRadius: 14,
+            background: 'color-mix(in oklab, var(--warn) 15%, transparent)',
+            color: 'var(--warn)',
+            display: 'grid',
+            placeItems: 'center',
+            margin: '0 auto 14px',
+          }}
+        >
+          <window.Icon name={busy ? 'refresh' : 'alert'} size={24} />
+        </span>
+        <h3 style={{ fontSize: 17, marginBottom: 6 }}>
+          {busy ? 'Regenerating this lesson…' : "This lesson didn't generate"}
+        </h3>
+        <p style={{ color: 'var(--text-3)', fontSize: 14, maxWidth: 420, margin: '0 auto 18px' }}>
+          {busy
+            ? 'Building it now on the local model — this can take up to a minute.'
+            : 'The model likely timed out or returned nothing — common for the first lessons while it warms up. Give it another go.'}
+        </p>
+        {err && !busy && (
+          <div style={{ color: 'var(--err)', fontSize: 13, marginBottom: 12 }}>
+            Still no luck. Check that Ollama is running, then try once more.
+          </div>
+        )}
+        <window.Button variant="primary" icon="refresh" disabled={busy} onClick={retry}>
+          {busy ? 'Working…' : 'Retry lesson'}
+        </window.Button>
+      </window.Card>
+    </div>
+  );
 }
 
 /* ---------------------------------------------------------------- lesson view */

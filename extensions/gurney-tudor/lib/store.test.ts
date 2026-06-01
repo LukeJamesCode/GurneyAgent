@@ -100,6 +100,20 @@ test('deleteCourse cascades to children', () => {
   assert.equal(segs.n, 0);
 });
 
+test('lessonContext resolves course/module/sibling info from a lesson id', () => {
+  const db = freshDb();
+  const id = store.createCourse(db, { topic: 'tides', depth: 'standard', model: 'm' });
+  const lessons = store.persistOutline(db, id, OUTLINE);
+  const ctx = store.lessonContext(db, lessons[0]!.id);
+  assert.ok(ctx);
+  assert.equal(ctx!.courseId, id);
+  assert.equal(ctx!.courseTitle, 'Understanding Tides');
+  assert.equal(ctx!.moduleTitle, 'Gravity');
+  assert.equal(ctx!.lessonTitle, 'Pull of the moon');
+  assert.deepEqual(ctx!.siblingTitles, ['Pull of the moon', 'Two bulges']);
+  assert.equal(store.lessonContext(db, 'nope'), null);
+});
+
 test('pending-lesson listing respects order and status', () => {
   const db = freshDb();
   const id = store.createCourse(db, { topic: 'tides', depth: 'quick', model: 'm' });

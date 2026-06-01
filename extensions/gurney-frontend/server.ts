@@ -2216,6 +2216,12 @@ async function handleApi(
       return sendJson(res, 200, { ok: true });
     }
 
+    const lessonRegen = /^\/api\/tudor\/lessons\/([a-f0-9-]+)\/regenerate$/i.exec(path);
+    if (lessonRegen && method === 'POST') {
+      const r = await tudor.regenerateLesson(await tudorCtx(), lessonRegen[1]!);
+      return sendJson(res, 200, r);
+    }
+
     const segRephrase = /^\/api\/tudor\/segments\/([a-f0-9-]+)\/rephrase$/i.exec(path);
     if (segRephrase && method === 'POST') {
       const b = await readJson<{ mode?: string }>(req);

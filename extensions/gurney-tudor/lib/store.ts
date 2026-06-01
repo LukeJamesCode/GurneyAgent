@@ -116,6 +116,46 @@ export function moduleTitle(db: DB, moduleId: string): string {
   return row?.title ?? '';
 }
 
+// Everything generateLesson needs to (re)build one lesson, looked up from the
+// lesson id alone — used by the manual "retry lesson" path.
+export interface LessonContext {
+  courseId: string;
+  courseTitle: string;
+  moduleTitle: string;
+  lessonTitle: string;
+  siblingTitles: string[];
+}
+
+export function lessonContext(db: DB, lessonId: string): LessonContext | null {
+  const row = db
+    .prepare(
+      `SELECT l.title AS lessonTitle, l.module_id AS moduleId, m.title AS moduleTitle,
+              m.course_id AS courseId, c.title AS courseTitle, c.topic AS topic
+       FROM tudor_lessons l
+       JOIN tudor_modules m ON m.id = l.module_id
+       JOIN tudor_courses c ON c.id = m.course_id
+       WHERE l.id = ?`,
+    )
+    .get(lessonId) as
+    | {
+        lessonTitle: string;
+        moduleId: string;
+        moduleTitle: string;
+        courseId: string;
+        courseTitle: string | null;
+        topic: string;
+      }
+    | undefined;
+  if (!row) return null;
+  return {
+    courseId: row.courseId,
+    courseTitle: row.courseTitle ?? row.topic,
+    moduleTitle: row.moduleTitle,
+    lessonTitle: row.lessonTitle,
+    siblingTitles: moduleSiblingTitles(db, row.moduleId),
+  };
+}
+
 // Replace a lesson's generated content. Idempotent: re-running a lesson (resume
 // or regenerate) clears the prior segments/quizzes first.
 export function replaceLessonContent(

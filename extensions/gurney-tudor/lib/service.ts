@@ -8,7 +8,7 @@ import type { LLM, ProfileName } from '../../../src/core/llm.js';
 import type { Logger } from '../../../src/util/log.js';
 import type { DB } from '../../../src/storage/db.js';
 import type { CourseTree, CourseSummary } from './store.js';
-import type { Depth, Generator, ProgressState } from './types.js';
+import type { Depth, Generator, ParsedLesson, ProgressState } from './types.js';
 import * as store from './store.js';
 import { chooseModel, generateLesson, generateOutline, labelFor, rephrase } from './generate.js';
 import { researchForCourse } from './research.js';
@@ -123,25 +123,34 @@ async function runJob(
     let done = 0;
     for (const lesson of lessons) {
       store.setLessonStatus(db, lesson.id, 'generating');
-      try {
-        const parsed = await withDowngrade(() =>
-          generateLesson(llm, ref, {
-            courseTitle: title,
-            moduleTitle: store.moduleTitle(db, lesson.module_id),
-            lessonTitle: lesson.title,
-            siblingTitles: store.moduleSiblingTitles(db, lesson.module_id),
-            ...(reference ? { reference } : {}),
-          }),
-        );
-        store.replaceLessonContent(db, lesson.id, parsed, estMinutes(lesson.title.length));
-      } catch (e) {
-        log.warn('tudor: lesson generation failed', {
-          courseId,
-          lesson: lesson.title,
-          error: e instanceof Error ? e.message : String(e),
-        });
-        store.setLessonStatus(db, lesson.id, 'failed');
+      const lessonArgs = {
+        courseTitle: title,
+        moduleTitle: store.moduleTitle(db, lesson.module_id),
+        lessonTitle: lesson.title,
+        siblingTitles: store.moduleSiblingTitles(db, lesson.module_id),
+        ...(reference ? { reference } : {}),
+      };
+      // Two attempts. The first lessons in a course often hit a cold model
+      // (inference timeout or an empty completion while Ollama warms up); a
+      // quick second try usually lands once it's loaded. Only the final failure
+      // is logged and marks the lesson failed.
+      let parsed: ParsedLesson | null = null;
+      for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+        try {
+          parsed = await withDowngrade(() => generateLesson(llm, ref, lessonArgs));
+        } catch (e) {
+          if (attempt === 1) {
+            log.warn('tudor: lesson generation failed after retry', {
+              courseId,
+              lesson: lesson.title,
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
+        }
       }
+      if (parsed)
+        store.replaceLessonContent(db, lesson.id, parsed, estMinutes(lesson.title.length));
+      else store.setLessonStatus(db, lesson.id, 'failed');
       done += 1;
       store.updateJob(db, courseId, { done });
     }
@@ -215,6 +224,41 @@ export function recordProgress(
 
 export function deleteCourse(ctx: TudorCtx, id: string): void {
   store.deleteCourse(ctx.db, id);
+}
+
+// Rebuild a single lesson on demand — the recovery path for a lesson that
+// failed during the initial build (cold-model timeout / empty completion).
+// Always uses the local model (cheap, no budget) and the same two-attempt
+// resilience as the build loop.
+export async function regenerateLesson(ctx: TudorCtx, lessonId: string): Promise<{ ok: boolean }> {
+  const c = store.lessonContext(ctx.db, lessonId);
+  if (!c) throw new Error('lesson not found');
+  store.setLessonStatus(ctx.db, lessonId, 'generating');
+  const ref = chooseModel(ctx.llm, 'local').ref;
+  let parsed: ParsedLesson | null = null;
+  for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+    try {
+      parsed = await generateLesson(ctx.llm, ref, {
+        courseTitle: c.courseTitle,
+        moduleTitle: c.moduleTitle,
+        lessonTitle: c.lessonTitle,
+        siblingTitles: c.siblingTitles,
+      });
+    } catch (e) {
+      if (attempt === 1) {
+        ctx.log.warn('tudor: lesson regenerate failed', {
+          lessonId,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  }
+  if (!parsed) {
+    store.setLessonStatus(ctx.db, lessonId, 'failed');
+    return { ok: false };
+  }
+  store.replaceLessonContent(ctx.db, lessonId, parsed, 4 + (c.lessonTitle.length % 4));
+  return { ok: true };
 }
 
 // On-demand "explain simpler / go deeper". Caches the result on the segment so
