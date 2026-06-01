@@ -363,7 +363,15 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        minHeight: 0,
+        overflow: 'hidden',
+      }}
+    >
       <VoiceHeader
         agent={agent}
         onStart={onStart}
@@ -384,8 +392,9 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
           marginTop: 12,
           display: 'flex',
           gap: 12,
-          flexWrap: 'wrap',
+          flexWrap: 'nowrap',
           alignItems: 'stretch',
+          overflow: 'hidden',
         }}
       >
         <div
@@ -393,6 +402,7 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
             flex: '1 1 0',
             minWidth: 320,
             minHeight: 0,
+            overflow: 'hidden',
             background: 'var(--surface)',
             border: '1px solid var(--border)',
             borderRadius: 'var(--radius)',
@@ -698,6 +708,7 @@ function TurnsPanel({ turns, partial, phase }) {
         minHeight: 0,
         alignSelf: 'stretch',
         maxWidth: 360,
+        height: '100%',
         background: 'var(--surface)',
         border: '1px solid var(--border)',
         borderRadius: 'var(--radius)',
