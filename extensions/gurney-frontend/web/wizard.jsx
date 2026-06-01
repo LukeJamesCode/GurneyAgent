@@ -15,13 +15,16 @@ const STEPS = [
   { id: 'models', label: 'Choose models' },
   { id: 'hardware', label: 'Hardware tier' },
   { id: 'extensions', label: 'Extensions' },
+  { id: 'ext-config', label: 'Configure extensions' },
   { id: 'review', label: 'Review & finish' },
 ];
 
 function Wizard({ onFinish, onExit, suggestedTier, ramGb }) {
   const [step, setStep] = useStateWiz(0);
   const [saving, setSaving] = useStateWiz(false);
+  const [configSaving, setConfigSaving] = useStateWiz(false);
   const [saveErr, setSaveErr] = useStateWiz(null);
+  const extConfigSaveRef = useRefWiz(null);
   const [models, setModels] = useStateWiz([]);
   const [data, setData] = useStateWiz({
     token: '',
@@ -76,7 +79,17 @@ function Wizard({ onFinish, onExit, suggestedTier, ramGb }) {
     onFinish();
   };
 
-  const next = () => {
+  const next = async () => {
+    if (cur === 'ext-config') {
+      if (extConfigSaveRef.current) {
+        setConfigSaving(true);
+        const ok = await extConfigSaveRef.current();
+        setConfigSaving(false);
+        if (!ok) return;
+      }
+      setStep(step + 1);
+      return;
+    }
     if (step < STEPS.length - 1) setStep(step + 1);
     else finish();
   };
@@ -216,6 +229,7 @@ function Wizard({ onFinish, onExit, suggestedTier, ramGb }) {
               <StepHardware data={data} set={set} suggestedTier={suggestedTier} ramGb={ramGb} />
             )}
             {cur === 'extensions' && <StepExtensions />}
+            {cur === 'ext-config' && <StepExtConfig saveRef={extConfigSaveRef} />}
             {cur === 'review' && <StepReview data={data} goto={setStep} />}
           </div>
         </div>
@@ -284,22 +298,35 @@ function Wizard({ onFinish, onExit, suggestedTier, ramGb }) {
               {cur === 'models' ? 'Pick a chat model' : 'Complete this step'}
             </window.Button>
           ) : (
-            <window.Button
-              variant="primary"
-              icon={cur === 'review' ? 'power' : 'fwd'}
-              onClick={next}
-              disabled={saving}
-            >
-              {saving ? (
-                <>
-                  <window.Icon name="refresh" size={15} className="spin" /> Saving…
-                </>
-              ) : cur === 'review' ? (
-                'Start Gurney'
-              ) : (
-                'Continue'
+            <>
+              {cur === 'ext-config' && (
+                <window.Button
+                  variant="ghost"
+                  onClick={() => setStep(step + 1)}
+                  disabled={configSaving}
+                >
+                  Skip for now
+                </window.Button>
               )}
-            </window.Button>
+              <window.Button
+                variant="primary"
+                icon={cur === 'review' ? 'power' : cur === 'ext-config' ? 'check' : 'fwd'}
+                onClick={next}
+                disabled={saving || configSaving}
+              >
+                {saving || configSaving ? (
+                  <>
+                    <window.Icon name="refresh" size={15} className="spin" /> Saving…
+                  </>
+                ) : cur === 'review' ? (
+                  'Start Gurney'
+                ) : cur === 'ext-config' ? (
+                  'Save & continue'
+                ) : (
+                  'Continue'
+                )}
+              </window.Button>
+            </>
           )}
         </div>
       </div>
@@ -1290,6 +1317,230 @@ function ExtResultPanel({ ok, output, action, open, onToggle }) {
           {output.trim()}
         </pre>
       )}
+    </div>
+  );
+}
+
+function StepExtConfig({ saveRef }) {
+  const [exts, setExts] = useStateWiz(null);
+  const [vals, setVals] = useStateWiz({});
+  const [err, setErr] = useStateWiz(null);
+
+  useEffectWiz(() => {
+    (async () => {
+      const r = await window.api.get('/api/extensions');
+      if (!r.ok) { setExts([]); return; }
+      const configurable = (r.data.extensions || []).filter(
+        (e) => e.enabled && !e.self && e.schema && e.schema.length > 0,
+      );
+      setExts(configurable);
+      const init = {};
+      for (const e of configurable) {
+        init[e.name] = Object.fromEntries((e.schema || []).map((f) => [f.key, f.value ?? '']));
+      }
+      setVals(init);
+    })();
+  }, []);
+
+  useEffectWiz(() => {
+    saveRef.current = async () => {
+      if (!exts || exts.length === 0) return true;
+      setErr(null);
+      const results = await Promise.all(
+        exts.map((e) =>
+          window.api.post(
+            `/api/extensions/${encodeURIComponent(e.name)}/settings`,
+            vals[e.name] || {},
+          ),
+        ),
+      );
+      const failed = exts.filter((_, i) => !results[i].ok);
+      if (failed.length > 0) {
+        setErr(
+          `Couldn't save settings for: ${failed.map((e) => prettyExtName(e.name)).join(', ')}`,
+        );
+        return false;
+      }
+      return true;
+    };
+  });
+
+  const setField = (name, key, v) =>
+    setVals((s) => ({ ...s, [name]: { ...s[name], [key]: v } }));
+
+  const prettyExtName = (name) =>
+    name
+      .replace(/^gurney-/, '')
+      .replace(/-/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const initials = (name) =>
+    prettyExtName(name)
+      .replace(/[^A-Za-z ]/g, '')
+      .split(' ')
+      .slice(0, 2)
+      .map((w) => w[0])
+      .join('');
+
+  if (exts === null) {
+    return (
+      <div>
+        <StepHead kicker="Step 7" title="Configure your extensions">
+          Loading extension settings…
+        </StepHead>
+      </div>
+    );
+  }
+
+  if (exts.length === 0) {
+    return (
+      <div>
+        <StepHead kicker="Step 7" title="Configure your extensions">
+          The extensions you enabled don't have any settings to configure — click{' '}
+          <b>Save &amp; continue</b> to move on.
+        </StepHead>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <StepHead kicker="Step 7" title="Configure your extensions">
+        Fill in settings for the extensions you just enabled. Skip anything now and change it later
+        in the Extensions tab.
+      </StepHead>
+      {err && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            marginBottom: 16,
+            fontSize: 13,
+            color: 'var(--err)',
+          }}
+        >
+          <window.Icon name="alert" size={14} /> {err}
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+        {exts.map((e) => {
+          const extVals = vals[e.name] || {};
+          return (
+            <div
+              key={e.name}
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius)',
+                overflow: 'hidden',
+              }}
+            >
+              <div
+                style={{
+                  padding: '13px 18px',
+                  borderBottom: '1px solid var(--border)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  background: 'var(--surface-2)',
+                }}
+              >
+                <span
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 8,
+                    flex: 'none',
+                    display: 'grid',
+                    placeItems: 'center',
+                    background: 'var(--accent-soft)',
+                    color: 'var(--accent-strong)',
+                    fontWeight: 700,
+                    fontFamily: 'var(--font-display)',
+                    fontSize: 13,
+                  }}
+                >
+                  {initials(e.name)}
+                </span>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 15 }}>{prettyExtName(e.name)}</div>
+                  {e.description && (
+                    <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginTop: 1 }}>
+                      {e.description}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 18 }}>
+                {(e.schema || []).map((f) => (
+                  <div key={f.key}>
+                    <window.Label hint={f.help}>
+                      {f.label}
+                      {f.required && <span style={{ color: 'var(--err)' }}> *</span>}
+                      {f.type === 'secret' && (
+                        <window.Icon
+                          name="lock"
+                          size={12}
+                          style={{
+                            display: 'inline',
+                            verticalAlign: 'middle',
+                            color: 'var(--text-3)',
+                            marginLeft: 4,
+                          }}
+                        />
+                      )}
+                    </window.Label>
+                    {f.type === 'boolean' ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <window.Toggle
+                          checked={!!extVals[f.key]}
+                          onChange={(v) => setField(e.name, f.key, v)}
+                          label={f.label}
+                        />
+                        <span style={{ fontSize: 13.5, color: 'var(--text-2)' }}>
+                          {extVals[f.key] ? 'On' : 'Off'}
+                        </span>
+                      </div>
+                    ) : f.options ? (
+                      <window.Select
+                        value={extVals[f.key] || ''}
+                        onChange={(ev) => setField(e.name, f.key, ev.target.value)}
+                      >
+                        {f.options.map((o) => (
+                          <option key={o} value={o}>
+                            {o}
+                          </option>
+                        ))}
+                      </window.Select>
+                    ) : f.type === 'secret' ? (
+                      <window.SecretInput
+                        value={extVals[f.key] || ''}
+                        onChange={(ev) => setField(e.name, f.key, ev.target.value)}
+                        placeholder="Not set"
+                      />
+                    ) : f.type === 'number' ? (
+                      <window.Input
+                        type="number"
+                        mono
+                        value={extVals[f.key] || ''}
+                        onChange={(ev) => setField(e.name, f.key, ev.target.value)}
+                        style={{ maxWidth: 180 }}
+                      />
+                    ) : (
+                      <window.Input
+                        value={extVals[f.key] || ''}
+                        onChange={(ev) => setField(e.name, f.key, ev.target.value)}
+                        placeholder="Not set"
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
