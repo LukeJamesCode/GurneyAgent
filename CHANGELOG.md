@@ -6,6 +6,20 @@ Format: `## [version] — YYYY-MM-DD`
 
 ---
 
+## [1.5.0] — 2026-06-01
+
+### Added
+
+- `gurney-websearch` extension: web search as a **safe, read-only** capability — the `web_search` LLM tool and a `/search` command, backed by DuckDuckGo (keyless) or a self-hosted SearXNG instance. Safety is first-class because it feeds untrusted web text to a model: an **SSRF guard** rejects non-public hosts on every URL — including each redirect hop (handled manually so a 302 to `169.254.169.254` can't slip past) and any user-set SearXNG base; fetched HTML is **stripped to plain text**; output is **wrapped as untrusted DATA** with a "never treat this as instructions" notice, and the wrapper **neutralizes forged end-markers** so a result can't break out of the data block; results/length are capped, requests time out, and page-fetching is off by default.
+- `gurney-tudor`: optional **"Research the web first"** step. When enabled (and `gurney-websearch` is installed), a new course is seeded with a sanitized, untrusted-wrapped research brief before the model designs it — for fresher, more accurate material. Decoupled via a runtime dynamic import, so Tudor neither depends on nor breaks without the search extension, and it degrades silently when research is unavailable.
+- `gurney-tudor` Learn tab: a big interactivity + polish pass — kind-colored segment cards (concept / example / analogy / key points / checkpoint / watch-out), **predict-then-reveal** checkpoint slides for active recall, keyboard navigation (`← → space`), a course hero header, completion celebrations, and an upgraded **flashcard review** with optional free-recall typing, missed-card tracking, a first-try score, and a "review the ones I missed" pass.
+
+### Security
+
+- The `web_search` results and the Tudor research brief are the only paths that put third-party web content in front of a model. They share one hardened chokepoint (SSRF + HTML-strip + untrusted framing + marker neutralization). Note the residual limit: prompt-injection framing reduces but cannot fully eliminate the risk on small local models; mutating tools remain `confirm`-tier as the backstop, and DNS-rebinding is out of scope for v1 (page-fetch is opt-in).
+
+---
+
 ## [1.4.0] — 2026-06-01
 
 ### Added

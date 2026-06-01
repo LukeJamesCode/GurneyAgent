@@ -1,15 +1,16 @@
 /* global React, window */
 // Learn Hub — the gurney-tudor front end. A topic goes in; a full interactive
 // course comes out and you step through it. All playback reads pre-generated
-// data (no model calls), so it's instant; only the build itself, the rephrase,
-// and (nothing else) ever touch a model. Self-contained: talks to /api/tudor/*.
+// data (no model calls), so it's instant; only the build, the on-demand
+// rephrase, and (optional) web research ever touch a model or the network.
+// Self-contained: talks to /api/tudor/*.
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 /* ---------------------------------------------------------------- tiny markdown
    A small, safe markdown -> React renderer. Everything renders as React
    children (escaped by React), so there's no innerHTML / XSS surface. Handles
-   the subset a lesson actually uses: headings, lists, blockquotes, fenced code,
-   and inline **bold** / *italic* / `code`. */
+   the subset a lesson uses: headings, lists, blockquotes, fenced code, and
+   inline **bold** / *italic* / `code`. */
 function mdInline(text, keyBase) {
   const nodes = [];
   let rest = String(text);
@@ -67,7 +68,7 @@ function MD({ text }) {
       const code = [];
       i++;
       while (i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i++]);
-      i++; // closing fence
+      i++;
       blocks.push(
         <pre
           key={key++}
@@ -149,7 +150,6 @@ function MD({ text }) {
       i++;
       continue;
     }
-    // paragraph: gather consecutive non-blank, non-special lines
     const para = [];
     while (
       i < lines.length &&
@@ -170,20 +170,72 @@ function MD({ text }) {
   return <div style={{ color: 'var(--text-2)', fontSize: 14.5 }}>{blocks}</div>;
 }
 
-/* ---------------------------------------------------------------- segment theme */
+/* ---------------------------------------------------------------- segment theme
+   Each kind gets a distinct hue + icon so a lesson has visual rhythm and the
+   learner can tell "here's an analogy" from "watch out" at a glance. */
 const KIND = {
-  explain: { icon: 'doc', label: 'Concept', tone: 'accent' },
-  example: { icon: 'terminal', label: 'Example', tone: 'accent' },
-  analogy: { icon: 'spark', label: 'Analogy', tone: 'accent' },
-  keypoints: { icon: 'check', label: 'Key points', tone: 'ok' },
-  checkpoint: { icon: 'pulse', label: 'Checkpoint', tone: 'ok' },
-  warning: { icon: 'alert', label: 'Watch out', tone: 'warn' },
+  explain: {
+    icon: 'doc',
+    label: 'Concept',
+    color: 'var(--accent-strong)',
+    soft: 'var(--accent-soft)',
+  },
+  example: {
+    icon: 'terminal',
+    label: 'Example',
+    color: 'var(--info)',
+    soft: 'color-mix(in oklab, var(--info) 13%, transparent)',
+  },
+  analogy: {
+    icon: 'spark',
+    label: 'Analogy',
+    color: 'oklch(0.58 0.14 300)',
+    soft: 'oklch(0.58 0.14 300 / 0.13)',
+  },
+  keypoints: {
+    icon: 'check',
+    label: 'Key points',
+    color: 'var(--accent-strong)',
+    soft: 'var(--accent-soft)',
+  },
+  checkpoint: {
+    icon: 'pulse',
+    label: 'Checkpoint',
+    color: 'var(--warn)',
+    soft: 'color-mix(in oklab, var(--warn) 15%, transparent)',
+  },
+  warning: {
+    icon: 'alert',
+    label: 'Watch out',
+    color: 'var(--err)',
+    soft: 'color-mix(in oklab, var(--err) 12%, transparent)',
+  },
 };
 function kindMeta(k) {
   return KIND[k] || KIND.explain;
 }
+function KindChip({ kind }) {
+  const m = kindMeta(kind);
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        fontSize: 12,
+        fontWeight: 700,
+        padding: '4px 10px',
+        borderRadius: 99,
+        color: m.color,
+        background: m.soft,
+      }}
+    >
+      <window.Icon name={m.icon} size={13} />
+      {m.label}
+    </span>
+  );
+}
 
-/* ---------------------------------------------------------------- progress ring */
 function Ring({ value, total, size = 38, stroke = 4 }) {
   const pct = total > 0 ? value / total : 0;
   const r = (size - stroke) / 2;
@@ -263,6 +315,7 @@ function Library({ onOpen }) {
   const [topic, setTopic] = useState('');
   const [depth, setDepth] = useState('standard');
   const [generator, setGenerator] = useState('local');
+  const [websearch, setWebsearch] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -273,8 +326,9 @@ function Library({ onOpen }) {
     ]);
     if (s.ok) {
       setStatus(s.data);
-      setDepth((d) => d || s.data.defaults.depth);
+      setDepth(s.data.defaults.depth || 'standard');
       setGenerator(s.data.defaults.generator || 'local');
+      setWebsearch(!!s.data.defaults.useWebsearch);
     }
     if (c.ok) setCourses(c.data.courses);
   }, []);
@@ -288,7 +342,12 @@ function Library({ onOpen }) {
     if (!t || busy) return;
     setBusy(true);
     setErr(null);
-    const r = await window.api.post('/api/tudor/courses', { topic: t, depth, generator });
+    const r = await window.api.post('/api/tudor/courses', {
+      topic: t,
+      depth,
+      generator,
+      useWebsearch: websearch,
+    });
     setBusy(false);
     if (r.ok && r.data && r.data.id) {
       setTopic('');
@@ -296,7 +355,7 @@ function Library({ onOpen }) {
     } else {
       setErr((r.data && r.data.error) || r.error || 'Could not start the course.');
     }
-  }, [topic, depth, generator, busy, onOpen]);
+  }, [topic, depth, generator, websearch, busy, onOpen]);
 
   const remove = useCallback(
     async (id) => {
@@ -307,6 +366,7 @@ function Library({ onOpen }) {
   );
 
   const codex = status && status.codexAvailable;
+  const webAvail = status && status.websearchAvailable;
   const localModel = (status && status.localModel) || 'local model';
 
   return (
@@ -316,7 +376,7 @@ function Library({ onOpen }) {
       </window.SectionTitle>
 
       {/* composer */}
-      <window.Card pad={22} style={{ marginBottom: 24 }}>
+      <window.Card pad={22} style={{ marginBottom: 24, animation: 'rise .3s ease both' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
           <span
             style={{
@@ -414,11 +474,32 @@ function Library({ onOpen }) {
               <window.Badge tone="neutral">{localModel}</window.Badge>
             )}
           </div>
-          <span style={{ fontSize: 12, color: 'var(--text-3)', flex: 1, textAlign: 'right' }}>
-            {generator === 'codex'
-              ? 'Codex is faster but uses your daily budget. Falls back to local automatically.'
-              : `Built locally on ${localModel} — free, and a few minutes on a small box.`}
-          </span>
+          {webAvail && (
+            <label
+              style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+              title="Search the web for current facts before designing the course"
+            >
+              <window.Toggle
+                checked={websearch}
+                onChange={setWebsearch}
+                label="Research the web first"
+              />
+              <span style={{ fontSize: 12.5, color: 'var(--text-2)', fontWeight: 600 }}>
+                <window.Icon
+                  name="search"
+                  size={13}
+                  style={{ verticalAlign: -2, marginRight: 4 }}
+                />
+                Research first
+              </span>
+            </label>
+          )}
+        </div>
+        <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-3)' }}>
+          {generator === 'codex'
+            ? 'Codex is faster but uses your daily budget. Falls back to local automatically.'
+            : `Built locally on ${localModel} — free, and a few minutes on a small box.`}
+          {websearch && webAvail ? ' · Will gather web sources first (adds a little time).' : ''}
         </div>
         {err && (
           <div style={{ marginTop: 12, color: 'var(--err)', fontSize: 13 }}>
@@ -473,6 +554,7 @@ function CourseCard({ course, onOpen, onDelete }) {
   const ready = course.readyCount || 0;
   const total = course.lessonCount || 0;
   const building = course.status === 'generating';
+  const complete = !building && total > 0 && done >= total;
   return (
     <window.Card
       pad={16}
@@ -505,7 +587,9 @@ function CourseCard({ course, onOpen, onDelete }) {
             {course.topic}
           </div>
         </div>
-        <window.Badge tone={badge.tone}>{badge.label}</window.Badge>
+        <window.Badge tone={complete ? 'accent' : badge.tone}>
+          {complete ? 'Mastered' : badge.label}
+        </window.Badge>
       </div>
 
       <div>
@@ -650,11 +734,23 @@ function CoursePlayer({ courseId, onBack }) {
   const course = tree.course;
   const building = course.status === 'generating';
   const job = snap || tree.job || { phase: 'outline', done: 0, total: 0 };
+  const complete = !building && allLessons.length > 0 && doneCount >= allLessons.length;
 
   return (
     <div>
-      {/* header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
+      {/* hero header */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          marginBottom: 18,
+          padding: '16px 18px',
+          borderRadius: 'var(--radius)',
+          background: 'linear-gradient(120deg, var(--accent-soft), transparent 70%)',
+          border: '1px solid var(--border)',
+        }}
+      >
         <window.IconButton name="back" label="Back to courses" onClick={onBack} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <h2 style={{ fontSize: 21, lineHeight: 1.2 }}>{course.title || course.topic}</h2>
@@ -683,6 +779,7 @@ function CoursePlayer({ courseId, onBack }) {
       </div>
 
       {building && <GeneratingBanner job={job} />}
+      {complete && !review && !currentLesson && <CompleteBanner onReview={() => setReview(true)} />}
 
       <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start' }}>
         {/* course map */}
@@ -697,7 +794,6 @@ function CoursePlayer({ courseId, onBack }) {
           ) : currentLesson ? (
             <LessonView
               key={currentLesson.id}
-              courseId={courseId}
               lesson={currentLesson}
               hasNext={!!nextAfter(currentLesson.id)}
               onProgress={recordProgress}
@@ -711,6 +807,7 @@ function CoursePlayer({ courseId, onBack }) {
             <Overview
               course={course}
               building={building}
+              complete={complete}
               readyLessons={readyLessons}
               onStart={() => readyLessons[0] && openLesson(readyLessons[0].id)}
             />
@@ -726,7 +823,7 @@ function GeneratingBanner({ job }) {
   const detail =
     job.phase === 'lessons' && job.total
       ? `${job.done} of ${job.total} lessons ready`
-      : 'Mapping out the modules…';
+      : 'Researching and mapping out the modules…';
   return (
     <window.Card
       pad={14}
@@ -755,10 +852,42 @@ function GeneratingBanner({ job }) {
   );
 }
 
-function Overview({ course, building, readyLessons, onStart }) {
+function CompleteBanner({ onReview }) {
+  return (
+    <window.Card
+      pad={16}
+      style={{
+        marginBottom: 18,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        background: 'var(--accent-soft)',
+        borderColor: 'transparent',
+      }}
+    >
+      <span className="tudor-pop" style={{ fontSize: 24 }}>
+        🎉
+      </span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>
+          You've completed every lesson!
+        </div>
+        <div style={{ fontSize: 12.5, color: 'var(--text-2)' }}>
+          Lock it in with a quick flashcard review.
+        </div>
+      </div>
+      <window.Button variant="primary" icon="copy" onClick={onReview}>
+        Review
+      </window.Button>
+    </window.Card>
+  );
+}
+
+function Overview({ course, building, complete, readyLessons, onStart }) {
   return (
     <window.Card pad={26} style={{ textAlign: 'center' }}>
       <span
+        className="tudor-pop"
         style={{
           width: 52,
           height: 52,
@@ -770,7 +899,7 @@ function Overview({ course, building, readyLessons, onStart }) {
           margin: '0 auto 14px',
         }}
       >
-        <window.Icon name="spark" size={26} />
+        <window.Icon name={complete ? 'check' : 'spark'} size={26} />
       </span>
       <h3 style={{ fontSize: 18, marginBottom: 6 }}>{course.title || course.topic}</h3>
       <p style={{ color: 'var(--text-3)', fontSize: 14, maxWidth: 420, margin: '0 auto 18px' }}>
@@ -780,7 +909,7 @@ function Overview({ course, building, readyLessons, onStart }) {
       </p>
       {readyLessons.length > 0 ? (
         <window.Button variant="primary" icon="fwd" onClick={onStart}>
-          Start learning
+          {complete ? 'Revisit lessons' : 'Start learning'}
         </window.Button>
       ) : (
         <div style={{ color: 'var(--text-3)', fontSize: 13.5 }}>
@@ -815,11 +944,13 @@ function CourseMap({ tree, currentLessonId, onPick }) {
               const active = l.id === currentLessonId;
               const ready = l.status === 'ready';
               const failed = l.status === 'failed';
+              const pendingish = l.status === 'pending' || l.status === 'generating';
               return (
                 <button
                   key={l.id}
                   disabled={!ready}
                   onClick={() => ready && onPick(l.id)}
+                  className={l.status === 'generating' ? 'tudor-shimmer' : ''}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -838,6 +969,7 @@ function CourseMap({ tree, currentLessonId, onPick }) {
                     cursor: ready ? 'pointer' : 'default',
                     fontSize: 13,
                     fontWeight: active ? 600 : 500,
+                    opacity: pendingish && l.status === 'pending' ? 0.6 : 1,
                   }}
                 >
                   <LessonDot lesson={l} />
@@ -880,20 +1012,20 @@ function LessonDot({ lesson }) {
 }
 
 /* ---------------------------------------------------------------- lesson view */
-function LessonView({ courseId, lesson, hasNext, onProgress, onNext }) {
-  // phase: walk segments, then quiz (if any), then a confidence rating.
+function LessonView({ lesson, hasNext, onProgress, onNext }) {
   const segs = lesson.segments || [];
   const quizzes = lesson.quizzes || [];
-  const [step, setStep] = useState(0); // 0..segs.length-1 = segment; segs.length = quiz/done
+  const [step, setStep] = useState(0);
   const atQuiz = step >= segs.length;
-  const total = segs.length;
   const containerRef = useRef(null);
 
-  // keyboard navigation
   useEffect(() => {
     const onKey = (e) => {
-      if (e.target && /input|textarea/i.test(e.target.tagName)) return;
-      if (e.key === 'ArrowRight') setStep((s) => Math.min(segs.length, s + 1));
+      if (e.target && /input|textarea|button/i.test(e.target.tagName)) return;
+      if (e.key === 'ArrowRight' || e.key === ' ') {
+        if (e.key === ' ') e.preventDefault();
+        setStep((s) => Math.min(segs.length, s + 1));
+      }
       if (e.key === 'ArrowLeft') setStep((s) => Math.max(0, s - 1));
     };
     window.addEventListener('keydown', onKey);
@@ -916,8 +1048,7 @@ function LessonView({ courseId, lesson, hasNext, onProgress, onNext }) {
       </div>
       <h3 style={{ fontSize: 19, marginBottom: 14 }}>{lesson.title}</h3>
 
-      {/* stepper dots */}
-      {total > 0 && (
+      {segs.length > 0 && (
         <div style={{ display: 'flex', gap: 5, marginBottom: 16 }}>
           {segs.map((_, i) => (
             <div
@@ -957,21 +1088,27 @@ function LessonView({ courseId, lesson, hasNext, onProgress, onNext }) {
         )}
       </div>
 
-      {/* nav */}
       {!atQuiz && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 18 }}>
-          <window.Button
-            variant="ghost"
-            icon="back"
-            onClick={() => setStep((s) => Math.max(0, s - 1))}
-            disabled={step === 0}
+        <>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 18 }}>
+            <window.Button
+              variant="ghost"
+              icon="back"
+              onClick={() => setStep((s) => Math.max(0, s - 1))}
+              disabled={step === 0}
+            >
+              Back
+            </window.Button>
+            <window.Button variant="primary" icon="fwd" onClick={() => setStep((s) => s + 1)}>
+              {step === segs.length - 1 ? (quizzes.length ? 'Check yourself' : 'Finish') : 'Next'}
+            </window.Button>
+          </div>
+          <div
+            style={{ textAlign: 'center', marginTop: 10, fontSize: 11.5, color: 'var(--text-3)' }}
           >
-            Back
-          </window.Button>
-          <window.Button variant="primary" icon="fwd" onClick={() => setStep((s) => s + 1)}>
-            {step === segs.length - 1 ? (quizzes.length ? 'Check yourself' : 'Finish') : 'Next'}
-          </window.Button>
-        </div>
+            Tip: use <kbd>←</kbd> <kbd>→</kbd> or <kbd>space</kbd> to move through the lesson
+          </div>
+        </>
       )}
     </div>
   );
@@ -979,7 +1116,11 @@ function LessonView({ courseId, lesson, hasNext, onProgress, onNext }) {
 
 function SegmentCard({ segment }) {
   const meta = kindMeta(segment.kind);
-  const [variant, setVariant] = useState(null); // {mode, text} or {mode, loading:true}
+  // Checkpoint segments are a retrieval prompt: hide the body so the learner
+  // tries to answer in their head first, then reveals. Active recall > re-reading.
+  const isCheckpoint = segment.kind === 'checkpoint';
+  const [revealed, setRevealed] = useState(!isCheckpoint);
+  const [variant, setVariant] = useState(null);
   const cacheRef = useRef({});
 
   const rephrase = useCallback(
@@ -1001,23 +1142,42 @@ function SegmentCard({ segment }) {
   );
 
   return (
-    <window.Card pad={22} style={{ animation: 'rise .2s ease' }}>
+    <window.Card
+      pad={22}
+      style={{ animation: 'rise .22s ease both', borderLeft: `3px solid ${meta.color}` }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-        <window.Badge tone={meta.tone}>
-          <window.Icon name={meta.icon} size={13} />
-          {meta.label}
-        </window.Badge>
+        <KindChip kind={segment.kind} />
       </div>
-      <MD text={segment.body_md} />
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 18, flexWrap: 'wrap' }}>
-        <window.Button size="sm" variant="subtle" onClick={() => rephrase('simpler')}>
-          Explain it simpler
-        </window.Button>
-        <window.Button size="sm" variant="subtle" onClick={() => rephrase('deeper')}>
-          Go deeper
-        </window.Button>
-      </div>
+      {revealed ? (
+        <MD text={segment.body_md} />
+      ) : (
+        <div style={{ textAlign: 'center', padding: '18px 0' }}>
+          <div style={{ fontSize: 14.5, color: 'var(--text-2)', marginBottom: 14 }}>
+            <window.Icon
+              name="pulse"
+              size={16}
+              style={{ verticalAlign: -3, marginRight: 6, color: meta.color }}
+            />
+            Pause and try to answer this in your head first.
+          </div>
+          <window.Button variant="subtle" icon="eye" onClick={() => setRevealed(true)}>
+            Reveal
+          </window.Button>
+        </div>
+      )}
+
+      {revealed && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 18, flexWrap: 'wrap' }}>
+          <window.Button size="sm" variant="subtle" onClick={() => rephrase('simpler')}>
+            Explain it simpler
+          </window.Button>
+          <window.Button size="sm" variant="subtle" onClick={() => rephrase('deeper')}>
+            Go deeper
+          </window.Button>
+        </div>
+      )}
 
       {variant && (
         <div
@@ -1120,7 +1280,10 @@ function LessonEnd({ quizzes, onComplete, onNext, hasNext }) {
                   cursor: 'pointer',
                   fontSize: 13,
                   color: 'var(--text-2)',
+                  transition: 'transform .08s',
                 }}
+                onMouseEnter={(e) => (e.currentTarget.style.transform = 'translateY(-2px)')}
+                onMouseLeave={(e) => (e.currentTarget.style.transform = '')}
               >
                 <span style={{ fontSize: 26 }}>{o.emoji}</span>
                 {o.label}
@@ -1131,11 +1294,9 @@ function LessonEnd({ quizzes, onComplete, onNext, hasNext }) {
       )}
       {rated && (
         <window.Card pad={22} style={{ marginTop: 16, textAlign: 'center' }}>
-          <window.Icon
-            name="check"
-            size={28}
-            style={{ color: 'var(--ok)', margin: '0 auto 8px' }}
-          />
+          <div className="tudor-pop" style={{ fontSize: 30, marginBottom: 4 }}>
+            🎯
+          </div>
           <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Lesson complete!</div>
           {hasNext ? (
             <window.Button variant="primary" icon="fwd" onClick={onNext}>
@@ -1153,7 +1314,7 @@ function LessonEnd({ quizzes, onComplete, onNext, hasNext }) {
 }
 
 function Quiz({ quizzes, onAllAnswered }) {
-  const [answers, setAnswers] = useState({}); // qIdx -> chosenIdx
+  const [answers, setAnswers] = useState({});
   useEffect(() => {
     if (Object.keys(answers).length >= quizzes.length) onAllAnswered();
   }, [answers, quizzes.length, onAllAnswered]);
@@ -1167,10 +1328,7 @@ function Quiz({ quizzes, onAllAnswered }) {
         return (
           <window.Card key={q.id} pad={20}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <window.Badge tone="ok">
-                <window.Icon name="pulse" size={13} />
-                Check
-              </window.Badge>
+              <KindChip kind="checkpoint" />
             </div>
             <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12, color: 'var(--text)' }}>
               {q.question}
@@ -1181,7 +1339,6 @@ function Quiz({ quizzes, onAllAnswered }) {
                 const isChosen = ci === chosen;
                 let bg = 'var(--surface-2)';
                 let bd = 'var(--border)';
-                let col = 'var(--text)';
                 if (answered) {
                   if (isCorrect) {
                     bg = 'color-mix(in oklab, var(--ok) 14%, var(--surface))';
@@ -1205,9 +1362,10 @@ function Quiz({ quizzes, onAllAnswered }) {
                       borderRadius: 'var(--radius-sm)',
                       border: `1px solid ${bd}`,
                       background: bg,
-                      color: col,
+                      color: 'var(--text)',
                       cursor: answered ? 'default' : 'pointer',
                       fontSize: 14,
+                      transition: 'background .15s, border-color .15s',
                     }}
                   >
                     <span
@@ -1229,7 +1387,9 @@ function Quiz({ quizzes, onAllAnswered }) {
                     </span>
                     <span style={{ flex: 1 }}>{choice}</span>
                     {answered && isCorrect && (
-                      <window.Icon name="check" size={16} style={{ color: 'var(--ok)' }} />
+                      <span className="tudor-pop">
+                        <window.Icon name="check" size={16} style={{ color: 'var(--ok)' }} />
+                      </span>
                     )}
                     {answered && isChosen && !isCorrect && (
                       <window.Icon name="x" size={16} style={{ color: 'var(--err)' }} />
@@ -1273,7 +1433,7 @@ function buildCards(tree) {
         const choices = JSON.parse(q.choices_json);
         cards.push({
           front: q.question,
-          back: `${choices[q.answer_idx]}${q.explain_md ? `\n\n${q.explain_md}` : ''}`,
+          back: `**${choices[q.answer_idx]}**${q.explain_md ? `\n\n${q.explain_md}` : ''}`,
           tag: l.title,
         });
       }
@@ -1286,23 +1446,22 @@ function buildCards(tree) {
   return cards;
 }
 
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 function ReviewMode({ tree, onExit }) {
   const cards = useMemo(() => buildCards(tree), [tree]);
-  const [order, setOrder] = useState(() => cards.map((_, i) => i));
+  const [order, setOrder] = useState(() => shuffle(cards.map((_, i) => i)));
   const [pos, setPos] = useState(0);
   const [flipped, setFlipped] = useState(false);
-
-  useEffect(() => {
-    // shuffle once on entry for varied recall practice
-    setOrder((o) => {
-      const a = [...o];
-      for (let i = a.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [a[i], a[j]] = [a[j], a[i]];
-      }
-      return a;
-    });
-  }, []);
+  const [recall, setRecall] = useState('');
+  const [missed, setMissed] = useState(() => new Set());
 
   if (cards.length === 0) {
     return (
@@ -1320,20 +1479,23 @@ function ReviewMode({ tree, onExit }) {
   const done = pos >= order.length;
   const card = !done ? cards[order[pos]] : null;
 
-  const advance = (again) => {
+  const advance = (got) => {
     setFlipped(false);
-    if (again) {
-      // push this card to the end for another pass
-      setOrder((o) => {
-        const a = [...o];
-        const [c] = a.splice(pos, 1);
-        a.push(c);
-        return a;
-      });
-    } else {
-      setPos((p) => p + 1);
-    }
+    setRecall('');
+    if (!got) setMissed((s) => new Set(s).add(order[pos]));
+    setPos((p) => p + 1);
   };
+
+  const restart = (onlyMissed) => {
+    const base = onlyMissed ? [...missed] : cards.map((_, i) => i);
+    setOrder(shuffle(base));
+    setPos(0);
+    setFlipped(false);
+    setRecall('');
+    setMissed(new Set());
+  };
+
+  const score = order.length - missed.size;
 
   return (
     <div>
@@ -1356,26 +1518,27 @@ function ReviewMode({ tree, onExit }) {
 
       {done ? (
         <window.Card pad={30} style={{ textAlign: 'center' }}>
-          <window.Icon
-            name="check"
-            size={30}
-            style={{ color: 'var(--ok)', margin: '0 auto 10px' }}
-          />
-          <div style={{ fontWeight: 700, fontSize: 17, marginBottom: 14 }}>
-            Review complete — nicely done.
+          <div className="tudor-pop" style={{ fontSize: 34, marginBottom: 8 }}>
+            {missed.size === 0 ? '🏆' : '✅'}
           </div>
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-            <window.Button
-              variant="subtle"
-              icon="refresh"
-              onClick={() => {
-                setPos(0);
-                setFlipped(false);
-              }}
-            >
-              Again
+          <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 6 }}>
+            {score} / {order.length} on the first try
+          </div>
+          <div style={{ fontSize: 13.5, color: 'var(--text-3)', marginBottom: 18 }}>
+            {missed.size === 0
+              ? 'Perfect recall — this has really stuck.'
+              : `${missed.size} to firm up. Spaced practice is how it sticks.`}
+          </div>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+            {missed.size > 0 && (
+              <window.Button variant="primary" icon="refresh" onClick={() => restart(true)}>
+                Review the {missed.size} I missed
+              </window.Button>
+            )}
+            <window.Button variant="subtle" icon="refresh" onClick={() => restart(false)}>
+              Shuffle &amp; go again
             </window.Button>
-            <window.Button variant="primary" onClick={onExit}>
+            <window.Button variant="ghost" onClick={onExit}>
               Back to course
             </window.Button>
           </div>
@@ -1383,11 +1546,9 @@ function ReviewMode({ tree, onExit }) {
       ) : (
         <>
           <window.Card
-            pad={30}
-            onClick={() => setFlipped((f) => !f)}
+            pad={28}
             style={{
-              cursor: 'pointer',
-              minHeight: 200,
+              minHeight: 210,
               display: 'flex',
               flexDirection: 'column',
               justifyContent: 'center',
@@ -1399,22 +1560,62 @@ function ReviewMode({ tree, onExit }) {
               {card.tag}
             </div>
             {!flipped ? (
-              <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text)', lineHeight: 1.4 }}>
-                {card.front}
-              </div>
+              <>
+                <div
+                  style={{ fontSize: 18, fontWeight: 600, color: 'var(--text)', lineHeight: 1.4 }}
+                >
+                  {card.front}
+                </div>
+                <textarea
+                  value={recall}
+                  onChange={(e) => setRecall(e.target.value)}
+                  placeholder="Type what you remember (optional) — then reveal…"
+                  rows={2}
+                  style={{
+                    marginTop: 16,
+                    width: '100%',
+                    resize: 'vertical',
+                    fontFamily: 'var(--font-ui)',
+                    fontSize: 14,
+                    color: 'var(--text)',
+                    background: 'var(--surface-2)',
+                    border: '1px solid var(--border-2)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '10px 12px',
+                    outline: 'none',
+                  }}
+                />
+              </>
             ) : (
-              <MD text={card.back} />
+              <>
+                {recall.trim() && (
+                  <div
+                    style={{
+                      fontSize: 12.5,
+                      color: 'var(--text-3)',
+                      marginBottom: 10,
+                      fontStyle: 'italic',
+                    }}
+                  >
+                    You wrote: “{recall.trim()}”
+                  </div>
+                )}
+                <MD text={card.back} />
+              </>
             )}
-            <div style={{ marginTop: 16, fontSize: 12, color: 'var(--text-3)' }}>
-              {flipped ? '' : 'Click to reveal the answer'}
-            </div>
           </window.Card>
-          {flipped && (
-            <div style={{ display: 'flex', gap: 10, marginTop: 14, justifyContent: 'center' }}>
-              <window.Button variant="subtle" icon="refresh" onClick={() => advance(true)}>
-                Review again
+          {!flipped ? (
+            <div style={{ display: 'flex', justifyContent: 'center', marginTop: 14 }}>
+              <window.Button variant="primary" icon="eye" onClick={() => setFlipped(true)}>
+                Reveal answer
               </window.Button>
-              <window.Button variant="ok" icon="check" onClick={() => advance(false)}>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 10, marginTop: 14, justifyContent: 'center' }}>
+              <window.Button variant="subtle" icon="refresh" onClick={() => advance(false)}>
+                Didn't get it
+              </window.Button>
+              <window.Button variant="ok" icon="check" onClick={() => advance(true)}>
                 Got it
               </window.Button>
             </div>

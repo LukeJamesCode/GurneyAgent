@@ -11,6 +11,7 @@ import type { CourseTree, CourseSummary } from './store.js';
 import type { Depth, Generator, ProgressState } from './types.js';
 import * as store from './store.js';
 import { chooseModel, generateLesson, generateOutline, labelFor, rephrase } from './generate.js';
+import { researchForCourse } from './research.js';
 
 export interface TudorCtx {
   db: DB;
@@ -30,14 +31,14 @@ function estMinutes(seed: number): number {
 
 export function startCourse(
   ctx: TudorCtx,
-  args: { topic: string; depth: Depth; generator: Generator },
+  args: { topic: string; depth: Depth; generator: Generator; useWebsearch?: boolean },
 ): string {
   const topic = args.topic.trim().slice(0, 300);
   const choice = chooseModel(ctx.llm, args.generator);
   const id = store.createCourse(ctx.db, { topic, depth: args.depth, model: choice.label });
   // Fire-and-forget — the panel/daemon process keeps running, and progress is
   // tracked in the DB so the UI can follow along and resume if needed.
-  void runJob(ctx, id, args.depth, choice).catch((e) => {
+  void runJob(ctx, id, args.depth, choice, { useWebsearch: !!args.useWebsearch }).catch((e) => {
     ctx.log.error('tudor: generation job crashed', {
       courseId: id,
       error: e instanceof Error ? e.message : String(e),
@@ -66,6 +67,7 @@ async function runJob(
   courseId: string,
   depth: Depth,
   choice: ReturnType<typeof chooseModel> | null,
+  opts: { useWebsearch?: boolean } = {},
 ): Promise<void> {
   if (activeJobs.has(courseId)) return;
   activeJobs.add(courseId);
@@ -91,15 +93,22 @@ async function runJob(
   };
 
   try {
-    // --- Phase 1: outline (only if not already built) ---
+    // --- Phase 0: optional web research (fresh builds only) ---
     let lessons = store.listPendingLessons(db, courseId);
     const course = store.getCourse(db, courseId);
     const hasModules = (store.getCourseTree(db, courseId)?.modules.length ?? 0) > 0;
 
+    let reference = '';
+    if (!hasModules && opts.useWebsearch && store.isExtensionEnabled(db, 'gurney-websearch')) {
+      const outcome = await researchForCourse(course?.topic ?? '', log);
+      reference = outcome.reference;
+    }
+
+    // --- Phase 1: outline (only if not already built) ---
     if (!hasModules) {
       store.updateJob(db, courseId, { phase: 'outline', done: 0, total: 0 });
       const outline = await withDowngrade(() =>
-        generateOutline(llm, ref, course?.topic ?? '', depth, log),
+        generateOutline(llm, ref, course?.topic ?? '', depth, log, reference || undefined),
       );
       store.persistOutline(db, courseId, outline);
       lessons = store.listPendingLessons(db, courseId);
@@ -121,6 +130,7 @@ async function runJob(
             moduleTitle: store.moduleTitle(db, lesson.module_id),
             lessonTitle: lesson.title,
             siblingTitles: store.moduleSiblingTitles(db, lesson.module_id),
+            ...(reference ? { reference } : {}),
           }),
         );
         store.replaceLessonContent(db, lesson.id, parsed, estMinutes(lesson.title.length));
@@ -229,22 +239,28 @@ export async function rephraseSegment(
 
 export interface TudorStatus {
   ok: true;
-  defaults: { generator: Generator; depth: Depth };
+  defaults: { generator: Generator; depth: Depth; useWebsearch: boolean };
   localModel: string;
   codexAvailable: boolean;
+  websearchAvailable: boolean;
 }
 
 export function status(ctx: TudorCtx): TudorStatus {
   const generator =
     (store.readExtSetting(ctx.db, 'default_generator', 'local') as Generator) || 'local';
   const depth = (store.readExtSetting(ctx.db, 'default_depth', 'standard') as Depth) || 'standard';
+  const websearchAvailable = store.isExtensionEnabled(ctx.db, 'gurney-websearch');
   return {
     ok: true,
     defaults: {
       generator: generator === 'codex' ? 'codex' : 'local',
       depth: ['quick', 'standard', 'deep'].includes(depth) ? depth : 'standard',
+      // Only default the toggle on when the extension is actually available.
+      useWebsearch:
+        websearchAvailable && store.readExtSetting(ctx.db, 'use_websearch', 'false') === 'true',
     },
     localModel: labelFor(ctx.llm, chooseModel(ctx.llm, 'local').ref),
     codexAvailable: store.isExtensionEnabled(ctx.db, 'gurney-codex'),
+    websearchAvailable,
   };
 }

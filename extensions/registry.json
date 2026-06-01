@@ -34,5 +34,11 @@
     "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
     "subpath": "extensions/gurney-tudor",
     "description": "Guided-learning studio: turn any topic into a full interactive course in the web panel — modules, step-through lessons, checkpoints, quizzes, flashcard review, and a mastery map. Builds locally on qwen, with optional Codex."
+  },
+  {
+    "name": "gurney-websearch",
+    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
+    "subpath": "extensions/gurney-websearch",
+    "description": "Safe, read-only web search as an LLM tool and /search command (DuckDuckGo or self-hosted SearXNG). SSRF-guarded, stripped to plain text, framed as untrusted data. Also powers Gurney-Tudor's optional research step."
   }
 ]

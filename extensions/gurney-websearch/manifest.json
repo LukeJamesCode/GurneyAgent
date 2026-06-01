@@ -1,0 +1,13 @@
+{
+  "name": "gurney-websearch",
+  "version": "0.1.0",
+  "description": "Web search as a safe, read-only LLM tool (DuckDuckGo or a self-hosted SearXNG). Results are SSRF-guarded, stripped to plain text, and framed as untrusted reference data. Also powers Gurney-Tudor's optional 'research the topic first' step.",
+  "gurney": ">=0.1.0",
+  "deps": [],
+  "capabilities": ["network"],
+  "entrypoints": {
+    "tools": "./tools.ts"
+  },
+  "telegram_commands": [{ "command": "search", "description": "Search the web" }],
+  "intent_pattern": "\\b(search|google|look up|find|web|latest|news|who is|what is|current)\\b"
+}

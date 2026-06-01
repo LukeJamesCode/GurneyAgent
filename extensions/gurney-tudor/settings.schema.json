@@ -12,6 +12,11 @@
       "enum": ["quick", "standard", "deep"],
       "default": "standard",
       "description": "How many modules and lessons a new course aims for. 'quick' is fastest to generate; 'deep' is the most thorough but takes the longest on local models."
+    },
+    "use_websearch": {
+      "type": "boolean",
+      "default": false,
+      "description": "Research the topic on the web before building a course, for fresher and more accurate material. Requires the gurney-websearch extension to be installed and enabled; ignored otherwise."
     }
   }
 }

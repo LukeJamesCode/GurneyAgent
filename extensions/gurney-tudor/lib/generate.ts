@@ -89,8 +89,9 @@ export async function generateOutline(
   topic: string,
   depth: Depth,
   log: Logger,
+  reference?: string,
 ): Promise<ParsedOutline> {
-  const user = outlineUser(topic, depth);
+  const user = outlineUser(topic, depth, reference);
   const first = await complete(llm, ref, OUTLINE_SYSTEM, user, 700);
   try {
     return parseOutline(first);
@@ -112,7 +113,13 @@ export async function generateOutline(
 export async function generateLesson(
   llm: LLM,
   ref: ProfileName | { model: string },
-  args: { courseTitle: string; moduleTitle: string; lessonTitle: string; siblingTitles: string[] },
+  args: {
+    courseTitle: string;
+    moduleTitle: string;
+    lessonTitle: string;
+    siblingTitles: string[];
+    reference?: string;
+  },
 ): Promise<ParsedLesson> {
   const user = lessonUser(args);
   const text = await complete(llm, ref, LESSON_SYSTEM, user, 1100);

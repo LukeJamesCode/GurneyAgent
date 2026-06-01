@@ -216,6 +216,43 @@ a {
     opacity: 0;
   }
 }
+/* gurney-tudor: a celebratory pop for lesson/quiz completion, and a soft
+   left-to-right shimmer for the "course building" placeholders. */
+@keyframes tudor-pop {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes tudor-shimmer {
+  0% {
+    background-position: -180px 0;
+  }
+  100% {
+    background-position: 180px 0;
+  }
+}
+.tudor-pop {
+  animation: tudor-pop 0.4s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+.tudor-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--surface-2) 0%,
+    var(--border) 40%,
+    var(--surface-2) 80%
+  );
+  background-size: 300px 100%;
+  animation: tudor-shimmer 1.2s ease-in-out infinite;
+}
 
 .spin {
   animation: spin 0.8s linear infinite;

@@ -2157,7 +2157,12 @@ async function handleApi(
       return sendJson(res, 200, { courses: tudor.listCourses(await tudorCtx()) });
     }
     if (path === '/api/tudor/courses' && method === 'POST') {
-      const body = await readJson<{ topic?: string; depth?: string; generator?: string }>(req);
+      const body = await readJson<{
+        topic?: string;
+        depth?: string;
+        generator?: string;
+        useWebsearch?: boolean;
+      }>(req);
       const topic = (body.topic ?? '').trim();
       if (!topic) return sendJson(res, 400, { error: 'a topic is required' });
       const depthRaw = body.depth ?? 'standard';
@@ -2166,7 +2171,12 @@ async function handleApi(
         | 'standard'
         | 'deep';
       const generator: 'local' | 'codex' = body.generator === 'codex' ? 'codex' : 'local';
-      const id = tudor.startCourse(await tudorCtx(), { topic, depth, generator });
+      const id = tudor.startCourse(await tudorCtx(), {
+        topic,
+        depth,
+        generator,
+        useWebsearch: body.useWebsearch === true,
+      });
       return sendJson(res, 200, { ok: true, id });
     }
 

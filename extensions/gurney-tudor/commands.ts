@@ -22,8 +22,12 @@ export function register(host: Host): void {
       const generator =
         (host.settings.get<string>('default_generator', 'local') as Generator) || 'local';
       const depth = (host.settings.get<string>('default_depth', 'standard') as Depth) || 'standard';
+      const useWebsearch = host.settings.get<boolean>('use_websearch', false) === true;
       try {
-        startCourse({ db: host.db, llm: host.llm, log: host.log }, { topic, depth, generator });
+        startCourse(
+          { db: host.db, llm: host.llm, log: host.log },
+          { topic, depth, generator, useWebsearch },
+        );
         await ctx.reply(
           `📚 Building your course on “${topic}”.\n\n` +
             `Open the Learn tab in the Gurney panel to watch it build and start learning. ` +

@@ -21,27 +21,39 @@ export const OUTLINE_SYSTEM =
   'motivating learning path that builds from fundamentals to mastery. You output ' +
   'ONLY the requested plain-text format — no preamble, no commentary, no markdown fences.';
 
-export function outlineUser(topic: string, depth: Depth): string {
+// `reference` is optional, already-wrapped untrusted web research (see
+// gurney-websearch). When present it's appended so the model grounds the plan in
+// it; the wrapping itself tells the model to treat it as data, not instructions.
+function withReference(lines: string[], reference?: string): string {
+  const body = lines.join('\n');
+  if (!reference) return body;
+  return `${body}\n\nUse the following reference material where relevant; prefer it over guesswork:\n${reference}`;
+}
+
+export function outlineUser(topic: string, depth: Depth, reference?: string): string {
   const shape = DEPTH_SHAPE[depth];
-  return [
-    `Design a course that teaches a motivated beginner: "${topic}".`,
-    '',
-    `Produce ${shape.modules} modules. Each module has ${shape.lessons} lessons.`,
-    'Order them so each lesson builds on the ones before it. Lesson titles should be',
-    'specific and concrete (not "Introduction" or "Overview").',
-    '',
-    'Use EXACTLY this format and nothing else:',
-    '',
-    'TITLE: <a short, engaging course title>',
-    'MODULE: <module 1 title>',
-    'SUMMARY: <one sentence on what this module covers>',
-    '- <lesson title>',
-    '- <lesson title>',
-    'MODULE: <module 2 title>',
-    'SUMMARY: <one sentence>',
-    '- <lesson title>',
-    '- <lesson title>',
-  ].join('\n');
+  return withReference(
+    [
+      `Design a course that teaches a motivated beginner: "${topic}".`,
+      '',
+      `Produce ${shape.modules} modules. Each module has ${shape.lessons} lessons.`,
+      'Order them so each lesson builds on the ones before it. Lesson titles should be',
+      'specific and concrete (not "Introduction" or "Overview").',
+      '',
+      'Use EXACTLY this format and nothing else:',
+      '',
+      'TITLE: <a short, engaging course title>',
+      'MODULE: <module 1 title>',
+      'SUMMARY: <one sentence on what this module covers>',
+      '- <lesson title>',
+      '- <lesson title>',
+      'MODULE: <module 2 title>',
+      'SUMMARY: <one sentence>',
+      '- <lesson title>',
+      '- <lesson title>',
+    ],
+    reference,
+  );
 }
 
 export const LESSON_SYSTEM =
@@ -54,41 +66,45 @@ export function lessonUser(args: {
   moduleTitle: string;
   lessonTitle: string;
   siblingTitles: string[];
+  reference?: string;
 }): string {
   const others = args.siblingTitles.filter((t) => t !== args.lessonTitle);
   const context =
     others.length > 0
       ? `Other lessons in this module (do not repeat them): ${others.join('; ')}.`
       : '';
-  return [
-    `Course: "${args.courseTitle}". Module: "${args.moduleTitle}".`,
-    `Write the lesson: "${args.lessonTitle}".`,
-    context,
-    '',
-    'Write 3 to 5 short segments, then 1 to 2 multiple-choice quiz questions.',
-    'Each segment is one clear idea, 2-5 sentences. You may use markdown inside a',
-    'segment body (bold, lists, `code`). Pick a kind for each segment from:',
-    'explain, example, analogy, keypoints, checkpoint, warning.',
-    '',
-    'Use EXACTLY this format and nothing else:',
-    '',
-    'SEGMENT: explain',
-    '<the explanation>',
-    'SEGMENT: example',
-    '<a concrete worked example>',
-    'SEGMENT: analogy',
-    '<a vivid everyday analogy>',
-    'SEGMENT: keypoints',
-    '- <key takeaway>',
-    '- <key takeaway>',
-    'QUIZ:',
-    'Q: <a question that checks understanding>',
-    '- <option>',
-    '- <option>',
-    '- <option>',
-    'CORRECT: <the letter or number of the right option>',
-    'WHY: <one sentence on why that answer is correct>',
-  ].join('\n');
+  return withReference(
+    [
+      `Course: "${args.courseTitle}". Module: "${args.moduleTitle}".`,
+      `Write the lesson: "${args.lessonTitle}".`,
+      context,
+      '',
+      'Write 3 to 5 short segments, then 1 to 2 multiple-choice quiz questions.',
+      'Each segment is one clear idea, 2-5 sentences. You may use markdown inside a',
+      'segment body (bold, lists, `code`). Pick a kind for each segment from:',
+      'explain, example, analogy, keypoints, checkpoint, warning.',
+      '',
+      'Use EXACTLY this format and nothing else:',
+      '',
+      'SEGMENT: explain',
+      '<the explanation>',
+      'SEGMENT: example',
+      '<a concrete worked example>',
+      'SEGMENT: analogy',
+      '<a vivid everyday analogy>',
+      'SEGMENT: keypoints',
+      '- <key takeaway>',
+      '- <key takeaway>',
+      'QUIZ:',
+      'Q: <a question that checks understanding>',
+      '- <option>',
+      '- <option>',
+      '- <option>',
+      'CORRECT: <the letter or number of the right option>',
+      'WHY: <one sentence on why that answer is correct>',
+    ],
+    args.reference,
+  );
 }
 
 export const REPHRASE_SYSTEM =
