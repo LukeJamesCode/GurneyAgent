@@ -934,6 +934,53 @@ function CoursePlayer({ courseId, onBack }) {
     [fetchTree],
   );
 
+  const exportCourse = useCallback(() => {
+    if (!tree) return;
+    const lines = [];
+    const sep = '='.repeat(80);
+    lines.push(tree.course.title || tree.course.topic);
+    if (tree.course.title) lines.push(`Topic: ${tree.course.topic}`);
+    if (tree.course.model) lines.push(`Model: ${tree.course.model}`);
+    lines.push(`Exported: ${new Date().toLocaleString()}`);
+    lines.push('');
+    tree.modules.forEach((mod, mi) => {
+      lines.push(sep);
+      lines.push(`MODULE ${mi + 1}: ${mod.title}`);
+      lines.push('');
+      mod.lessons.forEach((les, li) => {
+        if (les.status !== 'ready') return;
+        lines.push(`  LESSON ${li + 1}: ${les.title}${les.est_minutes ? ` (${les.est_minutes} min)` : ''}`);
+        lines.push('');
+        (les.segments || []).forEach((seg) => {
+          const meta = kindMeta(seg.kind);
+          lines.push(`    [${meta.label}]`);
+          (seg.body_md || '').split('\n').forEach((l) => lines.push(`    ${l}`));
+          lines.push('');
+        });
+        const quizzes = les.quizzes || [];
+        if (quizzes.length) {
+          lines.push('    QUIZ:');
+          quizzes.forEach((q, qi) => {
+            const choices = JSON.parse(q.choices_json);
+            lines.push(`    Q${qi + 1}: ${q.question}`);
+            choices.forEach((ch, ci) => lines.push(`    ${String.fromCharCode(65 + ci)}) ${ch}`));
+            lines.push(`    Correct: ${String.fromCharCode(65 + q.answer_idx)}) ${choices[q.answer_idx]}`);
+            if (q.explain_md) lines.push(`    Explanation: ${q.explain_md}`);
+            lines.push('');
+          });
+        }
+      });
+    });
+    lines.push(sep);
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(tree.course.title || tree.course.topic).replace(/[^a-z0-9]+/gi, '_').toLowerCase()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [tree]);
+
   const nextAfter = useCallback(
     (id) => {
       const idx = readyLessons.findIndex((l) => l.id === id);
@@ -971,6 +1018,11 @@ function CoursePlayer({ courseId, onBack }) {
             {course.topic} · {course.model || ''}
           </div>
         </div>
+        {!building && readyLessons.length > 0 && (
+          <window.Button variant="subtle" icon="doc" onClick={exportCourse}>
+            Export
+          </window.Button>
+        )}
         {!building && readyLessons.length > 0 && (
           <window.Button
             variant={review ? 'primary' : 'subtle'}
