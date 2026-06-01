@@ -216,6 +216,7 @@ function App() {
   const health = state.health || {};
   const models = state.models || {};
   const enabledExts = (state.extensions && state.extensions.enabledNames) || [];
+  const needsSetup = (state.extensions && state.extensions.needsSetup) || [];
   const voiceEnabled = enabledExts.indexOf('gurney-voice') !== -1;
 
   return (
@@ -229,6 +230,8 @@ function App() {
         busy={busy}
         extCount={state.extensions ? state.extensions.enabled : 0}
         enabledExts={enabledExts}
+        needsSetup={needsSetup}
+        onOpenExtensions={() => setRoute('extensions')}
         theme={theme}
         setTheme={setTheme}
         density={density}
@@ -431,6 +434,8 @@ function Sidebar({
   busy,
   extCount,
   enabledExts,
+  needsSetup,
+  onOpenExtensions,
   theme,
   setTheme,
   density,
@@ -439,6 +444,30 @@ function Sidebar({
   const items = NAV.filter(
     (n) => !n.requiresExt || (enabledExts || []).indexOf(n.requiresExt) !== -1,
   );
+  const setupList = needsSetup || [];
+  const setupCount = setupList.length;
+  // Dismiss persists per setup fingerprint — re-shows if the unfinished list
+  // changes, but stays quiet while the same extensions are pending.
+  const setupKey = setupList
+    .map((s) => s.name)
+    .sort()
+    .join(',');
+  const [dismissedKey, setDismissedKey] = useState(() => {
+    try {
+      return localStorage.getItem('gurney_ext_setup_dismissed') || '';
+    } catch (e) {
+      return '';
+    }
+  });
+  const showPopup = setupCount > 0 && route !== 'extensions' && dismissedKey !== setupKey;
+  const dismissPopup = () => {
+    try {
+      localStorage.setItem('gurney_ext_setup_dismissed', setupKey);
+    } catch (e) {
+      /* ignore */
+    }
+    setDismissedKey(setupKey);
+  };
   return (
     <aside
       style={{
@@ -503,7 +532,30 @@ function Sidebar({
                 style={{ color: on ? 'var(--accent-strong)' : 'var(--text-3)' }}
               />
               <span style={{ flex: 1 }}>{n.label}</span>
-              {n.id === 'extensions' && extCount > 0 && (
+              {n.id === 'extensions' && setupCount > 0 && (
+                <span
+                  title={`${setupCount} extension${setupCount === 1 ? '' : 's'} need setup: ${setupList
+                    .map((s) => s.name.replace(/^gurney-/, ''))
+                    .join(', ')}`}
+                  style={{
+                    minWidth: 18,
+                    height: 18,
+                    padding: '0 6px',
+                    borderRadius: 99,
+                    background: 'var(--warn)',
+                    color: 'var(--on-accent, #fff)',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    lineHeight: 1,
+                  }}
+                >
+                  {setupCount}
+                </span>
+              )}
+              {n.id === 'extensions' && setupCount === 0 && extCount > 0 && (
                 <span
                   style={{
                     fontSize: 11.5,
@@ -519,6 +571,16 @@ function Sidebar({
           );
         })}
       </nav>
+      {showPopup && (
+        <SetupPopup
+          items={setupList}
+          onOpen={() => {
+            dismissPopup();
+            onOpenExtensions && onOpenExtensions();
+          }}
+          onDismiss={dismissPopup}
+        />
+      )}
       <div style={{ flex: 1 }} />
       <div
         style={{
@@ -563,6 +625,82 @@ function Sidebar({
         </div>
       </div>
     </aside>
+  );
+}
+
+function SetupPopup({ items, onOpen, onDismiss }) {
+  const pretty = (name) =>
+    name
+      .replace(/^gurney-/, '')
+      .replace(/-/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  return (
+    <div
+      role="status"
+      style={{
+        marginTop: 10,
+        padding: 12,
+        background: 'color-mix(in oklab, var(--warn) 12%, var(--surface))',
+        border: '1px solid color-mix(in oklab, var(--warn) 40%, transparent)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow-sm)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <window.Icon name="alert" size={15} style={{ color: 'var(--warn)' }} />
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
+          Finish extension setup
+        </span>
+        <button
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          style={{
+            marginLeft: 'auto',
+            background: 'none',
+            border: 'none',
+            color: 'var(--text-3)',
+            cursor: 'pointer',
+            fontSize: 16,
+            lineHeight: 1,
+            padding: 2,
+          }}
+        >
+          ×
+        </button>
+      </div>
+      <div style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.45 }}>
+        {items.length === 1 ? (
+          <>
+            <strong>{pretty(items[0].name)}</strong> still needs{' '}
+            {items[0].status === 'needs_auth' ? 'a connection' : 'required settings'}.
+          </>
+        ) : (
+          <>
+            {items.length} extensions still need setup:{' '}
+            <strong>{items.map((s) => pretty(s.name)).join(', ')}</strong>.
+          </>
+        )}
+      </div>
+      <button
+        onClick={onOpen}
+        style={{
+          alignSelf: 'flex-start',
+          background: 'var(--warn)',
+          color: 'var(--on-accent, #fff)',
+          border: 'none',
+          borderRadius: 'var(--radius-sm)',
+          padding: '6px 10px',
+          fontSize: 12.5,
+          fontWeight: 600,
+          cursor: 'pointer',
+        }}
+      >
+        Open Extensions →
+      </button>
+    </div>
   );
 }
 

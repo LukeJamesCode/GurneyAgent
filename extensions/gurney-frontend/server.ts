@@ -380,6 +380,13 @@ async function buildState(): Promise<unknown> {
   const enabledList = readiness.filter((e) => e.enabled);
   const enabledCount = enabledList.length;
   const enabledNames = enabledList.map((e) => e.name);
+  // Enabled extensions whose readiness check is failing — typically missing
+  // auth (e.g. codex) or required settings (e.g. gurney-everyday-assistant).
+  // Surfaced as a badge on the Extensions nav so first-run users know to
+  // finish setup.
+  const needsSetup = enabledList
+    .filter((e) => e.status === 'needs_auth' || e.status === 'needs_settings')
+    .map((e) => ({ name: e.name, status: e.status, nextAction: e.nextAction }));
   const metrics = readMetrics(metricsFilePath(home));
   const { tier: suggestedTier, ramGb } = suggestTier();
   const fe = frontendSettings();
@@ -406,7 +413,12 @@ async function buildState(): Promise<unknown> {
     ramGb: Math.round(ramGb * 10) / 10,
     freeRamGb: Math.round((freemem() / 1024 ** 3) * 10) / 10,
     logLevel: cfg?.logLevel ?? 'info',
-    extensions: { installed: readiness.length, enabled: enabledCount, enabledNames },
+    extensions: {
+      installed: readiness.length,
+      enabled: enabledCount,
+      enabledNames,
+      needsSetup,
+    },
     proactive: fe['proactive'] !== 'false',
     queueDepth: 0,
     scheduler: metrics
