@@ -69,46 +69,51 @@ function SettingsTab({ onReRunWizard, onSaved }) {
   const locks = cfg.envLocks || {};
 
   return (
-    <div style={{ maxWidth: 760, margin: '0 auto' }}>
-      <window.SectionTitle
-        sub="Everything in Gurney Core's config, in plain language. Changes apply on the next restart."
-        right={
-          <window.Button
-            variant="primary"
-            icon={saving ? undefined : 'check'}
-            onClick={save}
-            disabled={!dirty || saving}
-            style={{ opacity: !dirty || saving ? 0.55 : 1 }}
-          >
-            {saving ? (
-              <>
-                <window.Icon name="refresh" size={16} className="spin" /> Saving…
-              </>
-            ) : saved ? (
-              <>
-                <window.Icon name="check" size={16} /> Saved
-              </>
-            ) : (
-              'Save changes'
-            )}
-          </window.Button>
-        }
-      >
-        Settings
-      </window.SectionTitle>
-      {error && <ErrorNote text={error} />}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'calc(16px * var(--gap))' }}>
-        <TelegramSection cfg={cfg} set={set} locks={locks} />
-        <ModelServerSection
-          cfg={cfg}
-          set={set}
-          locks={locks}
-          models={models}
-          setModels={setModels}
-        />
-        <ModelsSection cfg={cfg} set={set} locks={locks} models={models} onReRun={onReRunWizard} />
-        <HardwareSection cfg={cfg} set={set} locks={locks} />
-        <LoggingSection cfg={cfg} set={set} locks={locks} />
+    <div>
+      <div style={{ maxWidth: 760, margin: '0 auto' }}>
+        <window.SectionTitle
+          sub="Everything in Gurney Core's config, in plain language. Changes apply on the next restart."
+          right={
+            <window.Button
+              variant="primary"
+              icon={saving ? undefined : 'check'}
+              onClick={save}
+              disabled={!dirty || saving}
+              style={{ opacity: !dirty || saving ? 0.55 : 1 }}
+            >
+              {saving ? (
+                <>
+                  <window.Icon name="refresh" size={16} className="spin" /> Saving…
+                </>
+              ) : saved ? (
+                <>
+                  <window.Icon name="check" size={16} /> Saved
+                </>
+              ) : (
+                'Save changes'
+              )}
+            </window.Button>
+          }
+        >
+          Settings
+        </window.SectionTitle>
+        {error && <ErrorNote text={error} />}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'calc(16px * var(--gap))' }}>
+          <TelegramSection cfg={cfg} set={set} locks={locks} />
+          <ModelServerSection
+            cfg={cfg}
+            set={set}
+            locks={locks}
+            models={models}
+            setModels={setModels}
+          />
+          <ModelsSection cfg={cfg} set={set} locks={locks} models={models} onReRun={onReRunWizard} />
+          <HardwareSection cfg={cfg} set={set} locks={locks} />
+          <LoggingSection cfg={cfg} set={set} locks={locks} />
+        </div>
+      </div>
+      <div style={{ marginTop: 40 }}>
+        <window.ExtensionsTab />
       </div>
     </div>
   );
