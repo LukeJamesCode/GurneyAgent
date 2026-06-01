@@ -18,6 +18,8 @@ import type {
   ProgressState,
   QuizRow,
   SegmentRow,
+  Source,
+  SourceRow,
 } from './types.js';
 
 export function createCourse(db: DB, args: { topic: string; depth: Depth; model: string }): string {
@@ -272,6 +274,7 @@ export function listCourses(db: DB): CourseSummary[] {
 export interface CourseTree {
   course: CourseRow;
   job: JobRow | null;
+  sources: SourceRow[];
   modules: Array<
     ModuleRow & {
       lessons: Array<
@@ -321,7 +324,7 @@ export function getCourseTree(db: DB, id: string): CourseTree | null {
       }),
     };
   });
-  return { course, job: getJob(db, id), modules: tree };
+  return { course, job: getJob(db, id), sources: listSources(db, id), modules: tree };
 }
 
 export function upsertProgress(
@@ -342,6 +345,26 @@ export function upsertProgress(
 export function deleteCourse(db: DB, id: string): void {
   // Children cascade via ON DELETE CASCADE (foreign_keys is ON on the shared DB).
   db.prepare(`DELETE FROM tudor_courses WHERE id = ?`).run(id);
+}
+
+// Persist the web sources a course was researched from. Idempotent: clears any
+// existing rows first so a rebuild doesn't duplicate them.
+export function saveSources(db: DB, courseId: string, sources: Source[]): void {
+  const insert = db.prepare(
+    `INSERT INTO tudor_sources (id, course_id, idx, title, url, domain) VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  db.transaction(() => {
+    db.prepare(`DELETE FROM tudor_sources WHERE course_id = ?`).run(courseId);
+    sources.forEach((s, i) => {
+      insert.run(randomUUID(), courseId, i, s.title, s.url, s.domain ?? null);
+    });
+  })();
+}
+
+export function listSources(db: DB, courseId: string): SourceRow[] {
+  return db
+    .prepare(`SELECT * FROM tudor_sources WHERE course_id = ? ORDER BY idx`)
+    .all(courseId) as SourceRow[];
 }
 
 export function getSegment(db: DB, segmentId: string): SegmentRow | null {

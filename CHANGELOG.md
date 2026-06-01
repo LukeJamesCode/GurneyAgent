@@ -6,6 +6,20 @@ Format: `## [version] — YYYY-MM-DD`
 
 ---
 
+## [1.6.0] — 2026-06-01
+
+### Added
+
+- `gurney-tudor`: **pick the exact local model** for a build. When "Local" is selected the composer shows a model dropdown of your installed Ollama tags (from `/api/models`); the chosen tag is used directly for generation instead of the default profile pick.
+- `gurney-tudor`: **websites used for a topic are recorded and shown.** Research sources are persisted per course (new `tudor_sources` table / migration `0002`) and listed on the course page with clickable links.
+- `gurney-tudor` + `gurney-websearch`: **per-website approval before any web access.** With the gate on, building a researched course first runs the search and opens an "Approve websites for this topic" dialog — each result has its own allow toggle, and only the sites you approve are read and recorded. "Always allow" builds with all sites and turns the gate off (re-enable under Extensions → gurney-websearch). New `web_search` library entry points (`previewSources`, `briefFromSources`) and a `POST /api/tudor/research/preview` route back this.
+
+### Changed
+
+- `gurney-tudor`: an empty approved-sources list is now honoured as "use no web sources" rather than silently falling back to an automatic search.
+
+---
+
 ## [1.5.0] — 2026-06-01
 
 ### Added

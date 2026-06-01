@@ -8,10 +8,10 @@ import type { LLM, ProfileName } from '../../../src/core/llm.js';
 import type { Logger } from '../../../src/util/log.js';
 import type { DB } from '../../../src/storage/db.js';
 import type { CourseTree, CourseSummary } from './store.js';
-import type { Depth, Generator, ParsedLesson, ProgressState } from './types.js';
+import type { Depth, Generator, ParsedLesson, ProgressState, Source } from './types.js';
 import * as store from './store.js';
 import { chooseModel, generateLesson, generateOutline, labelFor, rephrase } from './generate.js';
-import { researchForCourse } from './research.js';
+import { previewSourcesForTopic, referenceFromSources, researchForCourse } from './research.js';
 
 export interface TudorCtx {
   db: DB;
@@ -31,20 +31,37 @@ function estMinutes(seed: number): number {
 
 export function startCourse(
   ctx: TudorCtx,
-  args: { topic: string; depth: Depth; generator: Generator; useWebsearch?: boolean },
+  args: {
+    topic: string;
+    depth: Depth;
+    generator: Generator;
+    localModel?: string;
+    useWebsearch?: boolean;
+    approvedSources?: Source[];
+  },
 ): string {
   const topic = args.topic.trim().slice(0, 300);
-  const choice = chooseModel(ctx.llm, args.generator);
+  const choice = chooseModel(ctx.llm, args.generator, args.localModel);
   const id = store.createCourse(ctx.db, { topic, depth: args.depth, model: choice.label });
   // Fire-and-forget — the panel/daemon process keeps running, and progress is
   // tracked in the DB so the UI can follow along and resume if needed.
-  void runJob(ctx, id, args.depth, choice, { useWebsearch: !!args.useWebsearch }).catch((e) => {
+  void runJob(ctx, id, args.depth, choice, {
+    useWebsearch: !!args.useWebsearch,
+    ...(args.approvedSources ? { approvedSources: args.approvedSources } : {}),
+  }).catch((e) => {
     ctx.log.error('tudor: generation job crashed', {
       courseId: id,
       error: e instanceof Error ? e.message : String(e),
     });
   });
   return id;
+}
+
+// Search-only preview: the candidate websites for a topic, so the Learn tab can
+// ask the user to approve each one before any of it is used in a build.
+export async function previewSources(ctx: TudorCtx, topic: string): Promise<Source[]> {
+  if (!store.isExtensionEnabled(ctx.db, 'gurney-websearch')) return [];
+  return previewSourcesForTopic(topic.trim().slice(0, 300), ctx.log);
 }
 
 // Re-attach to a course that's still 'generating' but has no live job in this
@@ -67,7 +84,7 @@ async function runJob(
   courseId: string,
   depth: Depth,
   choice: ReturnType<typeof chooseModel> | null,
-  opts: { useWebsearch?: boolean } = {},
+  opts: { useWebsearch?: boolean; approvedSources?: Source[] } = {},
 ): Promise<void> {
   if (activeJobs.has(courseId)) return;
   activeJobs.add(courseId);
@@ -100,8 +117,20 @@ async function runJob(
 
     let reference = '';
     if (!hasModules && opts.useWebsearch && store.isExtensionEnabled(db, 'gurney-websearch')) {
-      const outcome = await researchForCourse(course?.topic ?? '', log);
-      reference = outcome.reference;
+      if (opts.approvedSources !== undefined) {
+        // The user saw the candidate websites and approved exactly these — use
+        // only them (an empty list means "approved none", so no research at all).
+        if (opts.approvedSources.length > 0) {
+          reference = await referenceFromSources(opts.approvedSources, log);
+          store.saveSources(db, courseId, opts.approvedSources);
+        }
+      } else {
+        // No per-site approval supplied (e.g. /learn, or the gate is off) —
+        // search and use what comes back, recording it.
+        const outcome = await researchForCourse(course?.topic ?? '', log);
+        reference = outcome.reference;
+        if (outcome.sources.length > 0) store.saveSources(db, courseId, outcome.sources);
+      }
     }
 
     // --- Phase 1: outline (only if not already built) ---

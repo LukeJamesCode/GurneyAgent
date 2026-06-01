@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
@@ -13,7 +13,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 function freshDb(): DB {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  db.exec(readFileSync(join(HERE, '..', 'migrations', '0001_tudor.sql'), 'utf8'));
+  // Apply every migration in order so the test schema matches production.
+  const dir = join(HERE, '..', 'migrations');
+  for (const f of readdirSync(dir)
+    .filter((n) => n.endsWith('.sql'))
+    .sort()) {
+    db.exec(readFileSync(join(dir, f), 'utf8'));
+  }
   return db as unknown as DB;
 }
 
@@ -98,6 +104,32 @@ test('deleteCourse cascades to children', () => {
   const mods = db.prepare(`SELECT COUNT(*) AS n FROM tudor_modules`).get() as { n: number };
   assert.equal(mods.n, 0);
   assert.equal(segs.n, 0);
+});
+
+test('saveSources persists sources, exposes them on the tree, and cascades on delete', () => {
+  const db = freshDb();
+  const id = store.createCourse(db, { topic: 'tides', depth: 'quick', model: 'm' });
+  store.persistOutline(db, id, OUTLINE);
+  store.saveSources(db, id, [
+    { title: 'NOAA Tides', url: 'https://noaa.gov/tides', domain: 'noaa.gov' },
+    { title: 'Moon & Sea', url: 'https://example.com/moon' },
+  ]);
+  // Idempotent: re-saving replaces rather than duplicates.
+  store.saveSources(db, id, [
+    { title: 'NOAA Tides', url: 'https://noaa.gov/tides', domain: 'noaa.gov' },
+  ]);
+
+  const list = store.listSources(db, id);
+  assert.equal(list.length, 1);
+  assert.equal(list[0]!.domain, 'noaa.gov');
+
+  const tree = store.getCourseTree(db, id)!;
+  assert.equal(tree.sources.length, 1);
+  assert.equal(tree.sources[0]!.url, 'https://noaa.gov/tides');
+
+  store.deleteCourse(db, id);
+  const n = db.prepare(`SELECT COUNT(*) AS n FROM tudor_sources`).get() as { n: number };
+  assert.equal(n.n, 0);
 });
 
 test('lessonContext resolves course/module/sibling info from a lesson id', () => {

@@ -312,24 +312,39 @@ const EXAMPLES = [
 function Library({ onOpen }) {
   const [status, setStatus] = useState(null);
   const [courses, setCourses] = useState(null);
+  const [models, setModels] = useState([]); // installed local model tags
   const [topic, setTopic] = useState('');
   const [depth, setDepth] = useState('standard');
   const [generator, setGenerator] = useState('local');
+  const [modelTag, setModelTag] = useState(''); // exact local model for this build
   const [websearch, setWebsearch] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  // Web-access approval modal: phase = 'searching' | 'choose' | 'none' | null.
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [modalPhase, setModalPhase] = useState(null);
+  const [sources, setSources] = useState(null);
+  const [approved, setApproved] = useState(() => new Set());
 
   const load = useCallback(async () => {
-    const [s, c] = await Promise.all([
+    const [s, c, m] = await Promise.all([
       window.api.get('/api/tudor/status'),
       window.api.get('/api/tudor/courses'),
+      window.api.get('/api/models'),
     ]);
+    const list = m.ok && m.data && Array.isArray(m.data.models) ? m.data.models : [];
+    setModels(list);
     if (s.ok) {
       setStatus(s.data);
       setDepth(s.data.defaults.depth || 'standard');
       setGenerator(s.data.defaults.generator || 'local');
       setWebsearch(!!s.data.defaults.useWebsearch);
+      // Default the model picker to the configured default if it's installed.
+      const def =
+        s.data.localModel && list.indexOf(s.data.localModel) !== -1
+          ? s.data.localModel
+          : list[0] || '';
+      setModelTag(def);
     }
     if (c.ok) setCourses(c.data.courses);
   }, []);
@@ -338,48 +353,76 @@ function Library({ onOpen }) {
     load();
   }, [load]);
 
-  // The actual build request. Goes through only after the web-access gate (if any).
-  const doCreate = useCallback(async () => {
-    const t = topic.trim();
-    if (!t || busy) return;
-    setConfirmOpen(false);
-    setBusy(true);
-    setErr(null);
-    const r = await window.api.post('/api/tudor/courses', {
-      topic: t,
-      depth,
-      generator,
-      useWebsearch: websearch,
-    });
-    setBusy(false);
-    if (r.ok && r.data && r.data.id) {
-      setTopic('');
-      onOpen(r.data.id);
-    } else {
-      setErr((r.data && r.data.error) || r.error || 'Could not start the course.');
-    }
-  }, [topic, depth, generator, websearch, busy, onOpen]);
+  const webAvail = status && status.websearchAvailable;
 
-  // Build click: if this course will touch the web and the gate is on, ask first.
-  const create = useCallback(() => {
+  // The actual build request. `approvedSources`: an array (the websites the user
+  // approved — may be empty), or undefined to let the job research on its own.
+  const doCreate = useCallback(
+    async (approvedSources) => {
+      const t = topic.trim();
+      if (!t || busy) return;
+      setConfirmOpen(false);
+      setBusy(true);
+      setErr(null);
+      const body = { topic: t, depth, generator, useWebsearch: websearch };
+      if (generator === 'local' && modelTag) body.localModel = modelTag;
+      if (approvedSources !== undefined) body.approvedSources = approvedSources;
+      const r = await window.api.post('/api/tudor/courses', body);
+      setBusy(false);
+      if (r.ok && r.data && r.data.id) {
+        setTopic('');
+        onOpen(r.data.id);
+      } else {
+        setErr((r.data && r.data.error) || r.error || 'Could not start the course.');
+      }
+    },
+    [topic, depth, generator, websearch, modelTag, busy, onOpen],
+  );
+
+  // Build click: if this course will touch the web and the gate is on, run the
+  // search first and let the user approve each website before anything is used.
+  const create = useCallback(async () => {
     const t = topic.trim();
     if (!t || busy) return;
-    if (websearch && status && status.websearchAvailable && status.confirmBeforeSearch) {
+    if (websearch && webAvail && status.confirmBeforeSearch) {
+      setSources(null);
+      setApproved(new Set());
+      setModalPhase('searching');
       setConfirmOpen(true);
+      const r = await window.api.post('/api/tudor/research/preview', { topic: t });
+      const found = r.ok && r.data && Array.isArray(r.data.sources) ? r.data.sources : [];
+      setSources(found);
+      setApproved(new Set(found.map((_, i) => i)));
+      setModalPhase(found.length ? 'choose' : 'none');
       return;
     }
-    doCreate();
-  }, [topic, busy, websearch, status, doCreate]);
+    doCreate(undefined);
+  }, [topic, busy, websearch, webAvail, status, doCreate]);
 
-  // "Always allow" turns the gate off (persisted to gurney-websearch settings)
-  // and proceeds. Re-enable any time from Extensions → gurney-websearch.
+  const toggleApprove = useCallback((i) => {
+    setApproved((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  }, []);
+
+  // Build with exactly the websites the user ticked (may be none).
+  const buildSelected = useCallback(() => {
+    const picked = (sources || []).filter((_, i) => approved.has(i));
+    doCreate(picked);
+  }, [sources, approved, doCreate]);
+
+  // "Always allow" turns the gate off (persisted) and builds with every site
+  // found. Re-enable any time from Extensions → gurney-websearch.
   const allowAlways = useCallback(async () => {
     await window.api.post('/api/extensions/gurney-websearch/settings', {
       confirm_before_search: false,
     });
     setStatus((s) => (s ? { ...s, confirmBeforeSearch: false } : s));
-    doCreate();
-  }, [doCreate]);
+    doCreate(sources || []);
+  }, [doCreate, sources]);
 
   const remove = useCallback(
     async (id) => {
@@ -390,40 +433,129 @@ function Library({ onOpen }) {
   );
 
   const codex = status && status.codexAvailable;
-  const webAvail = status && status.websearchAvailable;
-  const localModel = (status && status.localModel) || 'local model';
+  const localLabel = modelTag || (status && status.localModel) || 'local model';
 
   return (
     <div>
       <window.Modal
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
-        title="Allow web access?"
+        title={modalPhase === 'choose' ? 'Approve websites for this topic' : 'Web access'}
         tone="shield"
-        width={460}
+        width={540}
         footer={
-          <>
-            <window.Button variant="ghost" onClick={() => setConfirmOpen(false)}>
-              Cancel
-            </window.Button>
-            <window.Button variant="subtle" onClick={allowAlways}>
-              Always allow
-            </window.Button>
-            <window.Button variant="primary" icon="search" onClick={doCreate}>
-              Allow &amp; build
-            </window.Button>
-          </>
+          modalPhase === 'choose' ? (
+            <>
+              <window.Button variant="ghost" onClick={() => setConfirmOpen(false)}>
+                Cancel
+              </window.Button>
+              <window.Button variant="subtle" onClick={allowAlways}>
+                Always allow
+              </window.Button>
+              <window.Button variant="primary" icon="spark" onClick={buildSelected}>
+                {approved.size > 0
+                  ? `Build with ${approved.size} site${approved.size === 1 ? '' : 's'}`
+                  : 'Build without sources'}
+              </window.Button>
+            </>
+          ) : modalPhase === 'none' ? (
+            <>
+              <window.Button variant="ghost" onClick={() => setConfirmOpen(false)}>
+                Cancel
+              </window.Button>
+              <window.Button variant="primary" icon="spark" onClick={() => doCreate([])}>
+                Build anyway
+              </window.Button>
+            </>
+          ) : null
         }
       >
-        <div>
-          Gurney will search the web to research <strong>“{topic.trim()}”</strong> before building
-          this course. Results are treated as untrusted reference material and never as
-          instructions.
-        </div>
-        <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--text-3)' }}>
-          “Always allow” turns off this prompt for future searches — you can re-enable it any time
-          under Extensions → gurney-websearch.
-        </div>
+        {modalPhase === 'searching' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0' }}>
+            <window.StatusDot state="starting" size={10} pulse />
+            <span>
+              Searching the web for <strong>“{topic.trim()}”</strong>…
+            </span>
+          </div>
+        )}
+        {modalPhase === 'none' && (
+          <div>
+            No web results came back for <strong>“{topic.trim()}”</strong>. You can build the course
+            from the model’s own knowledge instead.
+          </div>
+        )}
+        {modalPhase === 'choose' && (
+          <div>
+            <div style={{ marginBottom: 12, color: 'var(--text-2)' }}>
+              Gurney found these websites. Approve which ones it may read for this topic — only the
+              ones you allow are used, and they’re treated as untrusted reference, never as
+              instructions.
+            </div>
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+                maxHeight: 340,
+                overflow: 'auto',
+              }}
+            >
+              {(sources || []).map((s, i) => (
+                <label
+                  key={s.url + i}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 11,
+                    padding: '10px 12px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border)',
+                    background: approved.has(i) ? 'var(--accent-soft)' : 'var(--surface-2)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ marginTop: 1 }}>
+                    <window.Toggle
+                      checked={approved.has(i)}
+                      onChange={() => toggleApprove(i)}
+                      label={`Allow ${s.domain || s.url}`}
+                    />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text)' }}>
+                      {s.title}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--accent-strong)',
+                        fontFamily: 'var(--font-mono)',
+                      }}
+                    >
+                      {s.domain || s.url}
+                    </div>
+                    {s.snippet && (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: 'var(--text-3)',
+                          marginTop: 3,
+                          lineHeight: 1.45,
+                        }}
+                      >
+                        {s.snippet}
+                      </div>
+                    )}
+                  </div>
+                </label>
+              ))}
+            </div>
+            <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-3)' }}>
+              “Always allow” builds with every site and stops asking — re-enable under Extensions →
+              gurney-websearch.
+            </div>
+          </div>
+        )}
       </window.Modal>
 
       <window.SectionTitle sub="Turn any topic into a course you can actually walk through — built once, then instant to learn.">
@@ -526,9 +658,25 @@ function Library({ onOpen }) {
                 ]}
               />
             ) : (
-              <window.Badge tone="neutral">{localModel}</window.Badge>
+              <window.Badge tone="neutral">Local</window.Badge>
             )}
           </div>
+          {generator === 'local' && models.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+              <span style={{ fontSize: 12.5, color: 'var(--text-3)', fontWeight: 600 }}>Model</span>
+              <window.Select
+                value={modelTag}
+                onChange={(e) => setModelTag(e.target.value)}
+                style={{ minWidth: 170 }}
+              >
+                {models.map((mTag) => (
+                  <option key={mTag} value={mTag}>
+                    {mTag}
+                  </option>
+                ))}
+              </window.Select>
+            </div>
+          )}
           {webAvail && (
             <label
               style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
@@ -553,8 +701,8 @@ function Library({ onOpen }) {
         <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-3)' }}>
           {generator === 'codex'
             ? 'Codex is faster but uses your daily budget. Falls back to local automatically.'
-            : `Built locally on ${localModel} — free, and a few minutes on a small box.`}
-          {websearch && webAvail ? ' · Will gather web sources first (adds a little time).' : ''}
+            : `Built locally on ${localLabel} — free, and a few minutes on a small box.`}
+          {websearch && webAvail ? ' · You’ll approve which websites it uses first.' : ''}
         </div>
         {err && (
           <div style={{ marginTop: 12, color: 'var(--err)', fontSize: 13 }}>
@@ -871,13 +1019,16 @@ function CoursePlayer({ courseId, onBack }) {
               }}
             />
           ) : (
-            <Overview
-              course={course}
-              building={building}
-              complete={complete}
-              readyLessons={readyLessons}
-              onStart={() => readyLessons[0] && openLesson(readyLessons[0].id)}
-            />
+            <>
+              <Overview
+                course={course}
+                building={building}
+                complete={complete}
+                readyLessons={readyLessons}
+                onStart={() => readyLessons[0] && openLesson(readyLessons[0].id)}
+              />
+              <SourcesPanel sources={tree.sources} />
+            </>
           )}
         </div>
       </div>
@@ -946,6 +1097,65 @@ function CompleteBanner({ onReview }) {
       <window.Button variant="primary" icon="copy" onClick={onReview}>
         Review
       </window.Button>
+    </window.Card>
+  );
+}
+
+function SourcesPanel({ sources }) {
+  if (!sources || sources.length === 0) return null;
+  return (
+    <window.Card pad={18} style={{ marginTop: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <window.Icon name="link" size={16} style={{ color: 'var(--accent-strong)' }} />
+        <span style={{ fontWeight: 700, fontSize: 14 }}>Websites used for this topic</span>
+        <window.Badge tone="neutral">{sources.length}</window.Badge>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {sources.map((s) => (
+          <a
+            key={s.id}
+            href={s.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              textDecoration: 'none',
+              padding: '8px 10px',
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--border)',
+              background: 'var(--surface-2)',
+            }}
+          >
+            <window.Icon name="doc" size={15} style={{ color: 'var(--text-3)' }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: 'var(--text)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {s.title}
+              </div>
+              <div
+                style={{
+                  fontSize: 11.5,
+                  color: 'var(--accent-strong)',
+                  fontFamily: 'var(--font-mono)',
+                }}
+              >
+                {s.domain || s.url}
+              </div>
+            </div>
+            <window.Icon name="link" size={14} style={{ color: 'var(--text-3)' }} />
+          </a>
+        ))}
+      </div>
     </window.Card>
   );
 }

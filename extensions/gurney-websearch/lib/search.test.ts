@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { fetchPageText, search } from './search.js';
-import { researchTopic, wrapUntrusted } from './research.js';
+import { briefFromSources, previewSources, researchTopic, wrapUntrusted } from './research.js';
 
 // Minimal fetch stub returning a canned body for any URL.
 function stubFetch(body: string, ok = true): typeof fetch {
@@ -84,6 +84,27 @@ test('search reads a SearXNG JSON response and drops unsafe urls', async () => {
 test('search returns [] on a failed request rather than throwing', async () => {
   const results = await search('q', { fetchImpl: stubFetch('', false) });
   assert.deepEqual(results, []);
+});
+
+test('previewSources returns candidate sites with domains, SSRF-filtered', async () => {
+  const sources = await previewSources('how tides work', { fetchImpl: stubFetch(DDG_HTML) });
+  assert.equal(sources.length, 2); // metadata result dropped
+  assert.equal(sources[0]!.domain, 'example.com');
+  assert.ok(sources[0]!.snippet.includes("moon's gravity"));
+});
+
+test('briefFromSources wraps approved sources as untrusted data', () => {
+  const brief = briefFromSources([
+    {
+      title: 'How tides work',
+      url: 'https://example.com/tides',
+      domain: 'example.com',
+      snippet: 'moon pulls',
+    },
+  ]);
+  assert.ok(brief.includes('WEB_RESULTS'));
+  assert.ok(brief.includes('example.com'));
+  assert.ok(brief.includes('How tides work'));
 });
 
 test('researchTopic builds a brief and sources from results', async () => {

@@ -2156,12 +2156,27 @@ async function handleApi(
     if (path === '/api/tudor/courses' && method === 'GET') {
       return sendJson(res, 200, { courses: tudor.listCourses(await tudorCtx()) });
     }
+    if (path === '/api/tudor/research/preview' && method === 'POST') {
+      const { topic } = await readJson<{ topic?: string }>(req);
+      const t = (topic ?? '').trim();
+      if (!t) return sendJson(res, 400, { error: 'a topic is required' });
+      const sources = await tudor.previewSources(await tudorCtx(), t);
+      return sendJson(res, 200, { sources });
+    }
+
     if (path === '/api/tudor/courses' && method === 'POST') {
       const body = await readJson<{
         topic?: string;
         depth?: string;
         generator?: string;
+        localModel?: string;
         useWebsearch?: boolean;
+        approvedSources?: Array<{
+          title?: string;
+          url?: string;
+          domain?: string;
+          snippet?: string;
+        }>;
       }>(req);
       const topic = (body.topic ?? '').trim();
       if (!topic) return sendJson(res, 400, { error: 'a topic is required' });
@@ -2171,11 +2186,33 @@ async function handleApi(
         | 'standard'
         | 'deep';
       const generator: 'local' | 'codex' = body.generator === 'codex' ? 'codex' : 'local';
+      // Keep only well-formed http(s) sources the client sent back as approved.
+      const approvedSources = Array.isArray(body.approvedSources)
+        ? body.approvedSources
+            .filter(
+              (s) =>
+                s &&
+                typeof s.url === 'string' &&
+                /^https?:\/\//i.test(s.url) &&
+                typeof s.title === 'string',
+            )
+            .slice(0, 8)
+            .map((s) => ({
+              title: String(s.title),
+              url: String(s.url),
+              ...(s.domain ? { domain: String(s.domain) } : {}),
+              ...(s.snippet ? { snippet: String(s.snippet) } : {}),
+            }))
+        : undefined;
       const id = tudor.startCourse(await tudorCtx(), {
         topic,
         depth,
         generator,
+        ...(typeof body.localModel === 'string' && body.localModel.trim()
+          ? { localModel: body.localModel.trim() }
+          : {}),
         useWebsearch: body.useWebsearch === true,
+        ...(approvedSources ? { approvedSources } : {}),
       });
       return sendJson(res, 200, { ok: true, id });
     }

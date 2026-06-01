@@ -48,10 +48,16 @@ function bestLocalProfile(llm: LLM): ProfileName {
   return 'chat';
 }
 
-export function chooseModel(llm: LLM, generator: Generator): ModelChoice {
+export function chooseModel(llm: LLM, generator: Generator, localModel?: string): ModelChoice {
   const fallback = bestLocalProfile(llm);
   if (generator === 'codex') {
     return { ref: { model: 'codex' }, label: 'codex', fallback };
+  }
+  // An explicit local model tag (e.g. "qwen3.5:7b") wins over the default
+  // profile pick, so the learner can choose exactly which model builds a course.
+  if (localModel && localModel.trim()) {
+    const tag = localModel.trim();
+    return { ref: { model: tag }, label: tag, fallback };
   }
   return { ref: fallback, label: llm.resolveModel(fallback), fallback };
 }

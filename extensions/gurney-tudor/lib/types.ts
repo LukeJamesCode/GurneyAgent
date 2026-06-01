@@ -92,6 +92,23 @@ export interface JobRow {
   updated_at: number;
 }
 
+export interface SourceRow {
+  id: string;
+  course_id: string;
+  idx: number;
+  title: string;
+  url: string;
+  domain: string | null;
+}
+
+// A web source as it flows through the research/approval path (pre-persist).
+export interface Source {
+  title: string;
+  url: string;
+  domain?: string;
+  snippet?: string;
+}
+
 // ---- Parsed (pre-persist) shapes produced by lib/parse.ts ----
 
 export interface ParsedOutline {
