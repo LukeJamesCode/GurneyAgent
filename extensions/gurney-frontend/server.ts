@@ -921,6 +921,7 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
   let full = '';
   let orchestratorRan = false;
   let afterTurnBase: AfterTurnContext | undefined;
+  const instantReplies: string[] = [];
 
   const runOrchestrator = async (): Promise<void> => {
     orchestratorRan = true;
@@ -970,6 +971,7 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
         if (controller.signal.aborted) return;
         chatHistory.push({ role: 'assistant', text: t, time: hhmm() });
         sse('instant', { text: t });
+        instantReplies.push(t);
       },
       next: runNext,
     };
@@ -990,14 +992,19 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     // gurney-voice's spoken reply (its sendVoice lands on this still-open
     // stream as a `voice` event); afterTurn feeds learning/routine extensions.
     // Keep the stream open until they settle so the voice clip is delivered.
-    if (orchestratorRan && full && !controller.signal.aborted) {
-      await runAfterReplies(runtime, runtime.chatId, runtime.userId, full);
-      if (afterTurnBase) {
-        await runAfterTurns(runtime, {
-          ...afterTurnBase,
-          assistantText: full,
-          finishedAt: Date.now(),
-        });
+    if (!controller.signal.aborted) {
+      if (!orchestratorRan && instantReplies.length > 0) {
+        // Instant-only turn (intercept handled it fully) — speak the reply.
+        await runAfterReplies(runtime, runtime.chatId, runtime.userId, instantReplies.join('\n'));
+      } else if (orchestratorRan && full) {
+        await runAfterReplies(runtime, runtime.chatId, runtime.userId, full);
+        if (afterTurnBase) {
+          await runAfterTurns(runtime, {
+            ...afterTurnBase,
+            assistantText: full,
+            finishedAt: Date.now(),
+          });
+        }
       }
     }
   } catch (e) {
