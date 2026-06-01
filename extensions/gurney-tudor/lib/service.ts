@@ -11,7 +11,6 @@ import type { CourseTree, CourseSummary } from './store.js';
 import type { Depth, Generator, ParsedLesson, ProgressState, Source } from './types.js';
 import * as store from './store.js';
 import { chooseModel, generateLesson, generateOutline, labelFor, rephrase } from './generate.js';
-import { collectImageCandidates, verifyImageForSegment } from './images.js';
 import { previewSourcesForTopic, referenceFromSources, researchForCourse } from './research.js';
 
 export interface TudorCtx {
@@ -39,7 +38,6 @@ export function startCourse(
     generator: Generator;
     localModel?: string;
     useWebsearch?: boolean;
-    useWebImages?: boolean;
     approvedSources?: Source[];
   },
 ): string {
@@ -50,7 +48,6 @@ export function startCourse(
   // tracked in the DB so the UI can follow along and resume if needed.
   void runJob(ctx, id, args.depth, choice, {
     useWebsearch: !!args.useWebsearch,
-    useWebImages: args.useWebImages !== false,
     ...(args.approvedSources ? { approvedSources: args.approvedSources } : {}),
   }).catch((e) => {
     ctx.log.error('tudor: generation job crashed', {
@@ -88,7 +85,7 @@ async function runJob(
   courseId: string,
   depth: Depth,
   choice: ReturnType<typeof chooseModel> | null,
-  opts: { useWebsearch?: boolean; useWebImages?: boolean; approvedSources?: Source[] } = {},
+  opts: { useWebsearch?: boolean; approvedSources?: Source[] } = {},
 ): Promise<void> {
   if (activeJobs.has(courseId)) return;
   activeJobs.add(courseId);
@@ -123,7 +120,6 @@ async function runJob(
     const hasModules = (store.getCourseTree(db, courseId)?.modules.length ?? 0) > 0;
 
     let reference = '';
-    let researchSources: Source[] = [];
     if (!hasModules && opts.useWebsearch && store.isExtensionEnabled(db, 'gurney-websearch')) {
       if (opts.approvedSources !== undefined) {
         // The user saw the candidate websites and approved exactly these — use
@@ -131,23 +127,15 @@ async function runJob(
         if (opts.approvedSources.length > 0) {
           reference = await referenceFromSources(opts.approvedSources, log);
           store.saveSources(db, courseId, opts.approvedSources);
-          researchSources = opts.approvedSources;
         }
       } else {
         // No per-site approval supplied (e.g. /learn, or the gate is off) —
         // search and use what comes back, recording it.
         const outcome = await researchForCourse(course?.topic ?? '', log);
         reference = outcome.reference;
-        if (outcome.sources.length > 0) {
-          store.saveSources(db, courseId, outcome.sources);
-          researchSources = outcome.sources;
-        }
+        if (outcome.sources.length > 0) store.saveSources(db, courseId, outcome.sources);
       }
     }
-    const imageCandidates =
-      opts.useWebImages !== false && researchSources.length > 0
-        ? await collectImageCandidates(researchSources, log)
-        : [];
 
     // --- Phase 1: outline (only if not already built) ---
     if (!hasModules) {
@@ -194,36 +182,9 @@ async function runJob(
           }
         }
       }
-      if (parsed) {
-        const segments = store.replaceLessonContent(
-          db,
-          lesson.id,
-          parsed,
-          estMinutes(lesson.title.length),
-        );
-        if (imageCandidates.length > 0) {
-          let imagesSaved = 0;
-          for (const segment of segments) {
-            if (imagesSaved >= 2) break;
-            const verified = await verifyImageForSegment(
-              llm,
-              imageCandidates,
-              {
-                courseTitle: title,
-                moduleTitle: lessonArgs.moduleTitle,
-                lessonTitle: lesson.title,
-                kind: segment.kind,
-                body: segment.body_md,
-              },
-              log,
-            );
-            if (verified) {
-              store.saveSegmentImage(db, segment.id, verified);
-              imagesSaved += 1;
-            }
-          }
-        }
-      } else store.setLessonStatus(db, lesson.id, 'failed');
+      if (parsed)
+        store.replaceLessonContent(db, lesson.id, parsed, estMinutes(lesson.title.length));
+      else store.setLessonStatus(db, lesson.id, 'failed');
       done += 1;
       store.updateJob(db, courseId, { done });
     }
@@ -364,7 +325,7 @@ export async function rephraseSegment(
 
 export interface TudorStatus {
   ok: true;
-  defaults: { generator: Generator; depth: Depth; useWebsearch: boolean; useWebImages: boolean };
+  defaults: { generator: Generator; depth: Depth; useWebsearch: boolean };
   localModel: string;
   codexAvailable: boolean;
   websearchAvailable: boolean;
@@ -385,7 +346,6 @@ export function status(ctx: TudorCtx): TudorStatus {
       // Only default the toggle on when the extension is actually available.
       useWebsearch:
         websearchAvailable && store.readExtSetting(ctx.db, 'use_websearch', 'false') === 'true',
-      useWebImages: store.readExtSetting(ctx.db, 'use_web_images', 'true') !== 'false',
     },
     localModel: labelFor(ctx.llm, chooseModel(ctx.llm, 'local').ref),
     codexAvailable: store.isExtensionEnabled(ctx.db, 'gurney-codex'),

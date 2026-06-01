@@ -14,14 +14,6 @@ export interface SearchResult {
   snippet: string;
 }
 
-export interface PageImage {
-  pageUrl: string;
-  imageUrl: string;
-  alt: string;
-  width?: number;
-  height?: number;
-}
-
 export type Backend = 'duckduckgo' | 'searxng';
 
 export interface SearchOptions {
@@ -120,110 +112,6 @@ function parseDuckHtml(html: string, max: number): SearchResult[] {
   return out;
 }
 
-function attrValue(attrs: string, name: string): string {
-  const re = new RegExp(`\\s${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
-  const m = re.exec(attrs);
-  return decodeHtmlAttr(m?.[2] ?? m?.[3] ?? m?.[4] ?? '');
-}
-
-function decodeHtmlAttr(s: string): string {
-  return htmlToText(s).replace(/\s+/g, ' ').trim();
-}
-
-function numberAttr(attrs: string, name: string): number | undefined {
-  const raw = attrValue(attrs, name);
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
-
-function srcFromSrcset(srcset: string): string {
-  let best = '';
-  let bestScore = -1;
-  for (const part of srcset.split(',')) {
-    const pieces = part.trim().split(/\s+/);
-    const url = pieces[0] ?? '';
-    const scoreRaw = pieces[1] ?? '1x';
-    const score = Number.parseFloat(scoreRaw.replace(/[wx]$/i, ''));
-    if (url && Number.isFinite(score) && score > bestScore) {
-      best = url;
-      bestScore = score;
-    }
-  }
-  return best;
-}
-
-function resolveImageUrl(raw: string, pageUrl: string): string | null {
-  if (!raw || raw.startsWith('data:') || raw.startsWith('blob:')) return null;
-  try {
-    const url = new URL(raw, pageUrl).toString();
-    if (!isSafeUrl(url)) return null;
-    if (/\.(svg|ico)(?:[?#]|$)/i.test(url)) return null;
-    return url;
-  } catch {
-    return null;
-  }
-}
-
-function looksDecorative(url: string, alt: string, width?: number, height?: number): boolean {
-  const hay = `${url} ${alt}`.toLowerCase();
-  if (/\b(logo|icon|sprite|avatar|profile|tracking|pixel|blank|spacer|badge)\b/.test(hay))
-    return true;
-  if (width !== undefined && height !== undefined && (width < 180 || height < 120)) return true;
-  return false;
-}
-
-function addImage(
-  out: PageImage[],
-  seen: Set<string>,
-  pageUrl: string,
-  imageUrl: string | null,
-  alt: string,
-  width?: number,
-  height?: number,
-): void {
-  if (!imageUrl || seen.has(imageUrl)) return;
-  if (looksDecorative(imageUrl, alt, width, height)) return;
-  seen.add(imageUrl);
-  out.push({
-    pageUrl,
-    imageUrl,
-    alt,
-    ...(width !== undefined ? { width } : {}),
-    ...(height !== undefined ? { height } : {}),
-  });
-}
-
-function parsePageImages(html: string, pageUrl: string, max: number): PageImage[] {
-  const out: PageImage[] = [];
-  const seen = new Set<string>();
-
-  const metaRe =
-    /<meta\b([^>]*(?:property|name)\s*=\s*["'](?:og:image(?::secure_url)?|twitter:image(?::src)?)["'][^>]*)>/gi;
-  let mm: RegExpExecArray | null;
-  while ((mm = metaRe.exec(html)) && out.length < max) {
-    const attrs = mm[1] ?? '';
-    const url = resolveImageUrl(attrValue(attrs, 'content'), pageUrl);
-    addImage(out, seen, pageUrl, url, 'social preview image');
-  }
-
-  const imgRe = /<img\b([^>]*)>/gi;
-  let im: RegExpExecArray | null;
-  while ((im = imgRe.exec(html)) && out.length < max) {
-    const attrs = im[1] ?? '';
-    const src =
-      attrValue(attrs, 'src') ||
-      attrValue(attrs, 'data-src') ||
-      attrValue(attrs, 'data-original') ||
-      srcFromSrcset(attrValue(attrs, 'srcset'));
-    const width = numberAttr(attrs, 'width');
-    const height = numberAttr(attrs, 'height');
-    const url = resolveImageUrl(src, pageUrl);
-    addImage(out, seen, pageUrl, url, attrValue(attrs, 'alt'), width, height);
-  }
-
-  return out;
-}
-
 async function searchDuckDuckGo(
   query: string,
   fetchImpl: typeof fetch,
@@ -299,18 +187,6 @@ export async function fetchPageText(
   if (!html) return null;
   const text = htmlToText(html);
   return text ? truncate(text, opts.maxChars ?? 2000) : null;
-}
-
-// Fetch one page and return candidate content images. Uses the same safe fetch
-// and redirect validation as text extraction. This intentionally returns URLs,
-// not bytes; callers can decide whether and when to download a candidate image.
-export async function fetchPageImages(
-  url: string,
-  opts: { fetchImpl?: typeof fetch; timeoutMs?: number; maxImages?: number } = {},
-): Promise<PageImage[]> {
-  const html = await getText(url, opts.fetchImpl ?? fetch, opts.timeoutMs ?? 12_000);
-  if (!html) return [];
-  return parsePageImages(html, url, Math.max(1, Math.min(20, opts.maxImages ?? 8)));
 }
 
 export { domainOf };

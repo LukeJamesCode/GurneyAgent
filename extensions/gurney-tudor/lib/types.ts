@@ -65,16 +65,6 @@ export interface SegmentRow {
   variants_json: string | null;
 }
 
-export interface SegmentImageRow {
-  id: string;
-  segment_id: string;
-  source_url: string;
-  image_url: string;
-  alt_text: string | null;
-  caption: string | null;
-  verified_at: number;
-}
-
 export interface QuizRow {
   id: string;
   lesson_id: string;
@@ -117,14 +107,6 @@ export interface Source {
   url: string;
   domain?: string;
   snippet?: string;
-}
-
-export interface ImageCandidate {
-  pageUrl: string;
-  imageUrl: string;
-  alt?: string;
-  width?: number;
-  height?: number;
 }
 
 // ---- Parsed (pre-persist) shapes produced by lib/parse.ts ----

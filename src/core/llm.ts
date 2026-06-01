@@ -28,9 +28,6 @@ export type Role = 'system' | 'user' | 'assistant' | 'tool';
 export interface ChatMessage {
   role: Role;
   content: string;
-  // Base64-encoded images for Ollama multimodal models. Only user messages
-  // should carry images; text-only providers may ignore this field.
-  images?: string[];
   tool_call_id?: string;
   tool_name?: string;
 }
@@ -464,7 +461,6 @@ export function createOllama(opts: OllamaOptions): LLM {
       messages: messages.map((m) => ({
         role: m.role,
         content: m.content,
-        ...(m.images && m.images.length > 0 ? { images: m.images } : {}),
         ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
         ...(m.tool_name ? { name: m.tool_name } : {}),
       })),

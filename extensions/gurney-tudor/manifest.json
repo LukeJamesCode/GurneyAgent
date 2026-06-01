@@ -4,7 +4,7 @@
   "description": "Gurney-Tudor: a guided-learning studio. Turn any topic into a full interactive course you step through in the web panel — modules, lessons, slides, checkpoints, quizzes, flashcard review, and a mastery map. Builds locally on qwen (free) with optional Codex for speed.",
   "gurney": ">=0.1.0",
   "deps": [],
-  "capabilities": ["storage", "llm", "network"],
+  "capabilities": ["storage", "llm"],
   "entrypoints": {
     "commands": "./commands.ts"
   },

@@ -17,7 +17,6 @@ import type {
   ProgressRow,
   ProgressState,
   QuizRow,
-  SegmentImageRow,
   SegmentRow,
   Source,
   SourceRow,
@@ -166,7 +165,7 @@ export function replaceLessonContent(
   lessonId: string,
   lesson: ParsedLesson,
   estMinutes: number,
-): SegmentRow[] {
+): void {
   const insertSeg = db.prepare(
     `INSERT INTO tudor_segments (id, lesson_id, idx, kind, body_md, narration, variants_json)
      VALUES (?, ?, ?, ?, ?, NULL, NULL)`,
@@ -175,22 +174,11 @@ export function replaceLessonContent(
     `INSERT INTO tudor_quizzes (id, lesson_id, idx, question, choices_json, answer_idx, explain_md)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
-  const inserted: SegmentRow[] = [];
   db.transaction(() => {
     db.prepare(`DELETE FROM tudor_segments WHERE lesson_id = ?`).run(lessonId);
     db.prepare(`DELETE FROM tudor_quizzes WHERE lesson_id = ?`).run(lessonId);
     lesson.segments.forEach((s, i) => {
-      const id = randomUUID();
-      insertSeg.run(id, lessonId, i, s.kind, s.body);
-      inserted.push({
-        id,
-        lesson_id: lessonId,
-        idx: i,
-        kind: s.kind,
-        body_md: s.body,
-        narration: null,
-        variants_json: null,
-      });
+      insertSeg.run(randomUUID(), lessonId, i, s.kind, s.body);
     });
     lesson.quiz.forEach((q, i) => {
       insertQuiz.run(
@@ -208,7 +196,6 @@ export function replaceLessonContent(
       lessonId,
     );
   })();
-  return inserted;
 }
 
 // --- Jobs ---
@@ -292,7 +279,7 @@ export interface CourseTree {
     ModuleRow & {
       lessons: Array<
         LessonRow & {
-          segments: Array<SegmentRow & { image: SegmentImageRow | null }>;
+          segments: SegmentRow[];
           quizzes: QuizRow[];
           progress: ProgressState;
           confidence: number;
@@ -312,16 +299,6 @@ export function getCourseTree(db: DB, id: string): CourseTree | null {
     .prepare(`SELECT * FROM tudor_progress WHERE course_id = ?`)
     .all(id) as ProgressRow[];
   const progress = new Map(progressRows.map((p) => [p.lesson_id, p]));
-  const imageRows = db
-    .prepare(
-      `SELECT si.* FROM tudor_segment_images si
-       JOIN tudor_segments s ON s.id = si.segment_id
-       JOIN tudor_lessons l ON l.id = s.lesson_id
-       JOIN tudor_modules m ON m.id = l.module_id
-       WHERE m.course_id = ?`,
-    )
-    .all(id) as SegmentImageRow[];
-  const images = new Map(imageRows.map((img) => [img.segment_id, img]));
 
   const tree: CourseTree['modules'] = modules.map((m) => {
     const lessons = db
@@ -339,7 +316,7 @@ export function getCourseTree(db: DB, id: string): CourseTree | null {
         const p = progress.get(l.id);
         return {
           ...l,
-          segments: segments.map((s) => ({ ...s, image: images.get(s.id) ?? null })),
+          segments,
           quizzes,
           progress: (p?.state ?? 'unseen') as ProgressState,
           confidence: p?.confidence ?? 0,
@@ -388,32 +365,6 @@ export function listSources(db: DB, courseId: string): SourceRow[] {
   return db
     .prepare(`SELECT * FROM tudor_sources WHERE course_id = ? ORDER BY idx`)
     .all(courseId) as SourceRow[];
-}
-
-export function saveSegmentImage(
-  db: DB,
-  segmentId: string,
-  image: { sourceUrl: string; imageUrl: string; altText: string; caption: string },
-): void {
-  db.prepare(
-    `INSERT INTO tudor_segment_images
-       (id, segment_id, source_url, image_url, alt_text, caption, verified_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(segment_id) DO UPDATE SET
-       source_url = excluded.source_url,
-       image_url = excluded.image_url,
-       alt_text = excluded.alt_text,
-       caption = excluded.caption,
-       verified_at = excluded.verified_at`,
-  ).run(
-    randomUUID(),
-    segmentId,
-    image.sourceUrl,
-    image.imageUrl,
-    image.altText || null,
-    image.caption || null,
-    Date.now(),
-  );
 }
 
 export function getSegment(db: DB, segmentId: string): SegmentRow | null {

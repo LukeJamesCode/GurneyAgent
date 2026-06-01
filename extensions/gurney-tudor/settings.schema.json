@@ -17,11 +17,6 @@
       "type": "boolean",
       "default": false,
       "description": "Research the topic on the web before building a course, for fresher and more accurate material. Requires the gurney-websearch extension to be installed and enabled; ignored otherwise."
-    },
-    "use_web_images": {
-      "type": "boolean",
-      "default": true,
-      "description": "When web research is enabled, pull useful images from the same source pages and ask the local multimodal model to verify them for the current lesson segment."
     }
   }
 }

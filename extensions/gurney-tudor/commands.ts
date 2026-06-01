@@ -23,11 +23,10 @@ export function register(host: Host): void {
         (host.settings.get<string>('default_generator', 'local') as Generator) || 'local';
       const depth = (host.settings.get<string>('default_depth', 'standard') as Depth) || 'standard';
       const useWebsearch = host.settings.get<boolean>('use_websearch', false) === true;
-      const useWebImages = host.settings.get<boolean>('use_web_images', true) !== false;
       try {
         startCourse(
           { db: host.db, llm: host.llm, log: host.log },
-          { topic, depth, generator, useWebsearch, useWebImages },
+          { topic, depth, generator, useWebsearch },
         );
         await ctx.reply(
           `📚 Building your course on “${topic}”.\n\n` +

@@ -318,7 +318,6 @@ function Library({ onOpen }) {
   const [generator, setGenerator] = useState('local');
   const [modelTag, setModelTag] = useState(''); // exact local model for this build
   const [websearch, setWebsearch] = useState(false);
-  const [webImages, setWebImages] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   // Web-access approval modal: phase = 'searching' | 'choose' | 'none' | null.
@@ -340,7 +339,6 @@ function Library({ onOpen }) {
       setDepth(s.data.defaults.depth || 'standard');
       setGenerator(s.data.defaults.generator || 'local');
       setWebsearch(!!s.data.defaults.useWebsearch);
-      setWebImages(s.data.defaults.useWebImages !== false);
       // Default the model picker to the configured default if it's installed.
       const def =
         s.data.localModel && list.indexOf(s.data.localModel) !== -1
@@ -366,7 +364,7 @@ function Library({ onOpen }) {
       setConfirmOpen(false);
       setBusy(true);
       setErr(null);
-      const body = { topic: t, depth, generator, useWebsearch: websearch, useWebImages: webImages };
+      const body = { topic: t, depth, generator, useWebsearch: websearch };
       if (generator === 'local' && modelTag) body.localModel = modelTag;
       if (approvedSources !== undefined) body.approvedSources = approvedSources;
       const r = await window.api.post('/api/tudor/courses', body);
@@ -378,7 +376,7 @@ function Library({ onOpen }) {
         setErr((r.data && r.data.error) || r.error || 'Could not start the course.');
       }
     },
-    [topic, depth, generator, websearch, webImages, modelTag, busy, onOpen],
+    [topic, depth, generator, websearch, modelTag, busy, onOpen],
   );
 
   // Build click: if this course will touch the web and the gate is on, run the
@@ -956,21 +954,12 @@ function CoursePlayer({ courseId, onBack }) {
       lines.push('');
       mod.lessons.forEach((les, li) => {
         if (les.status !== 'ready') return;
-        lines.push(
-          `  LESSON ${li + 1}: ${les.title}${les.est_minutes ? ` (${les.est_minutes} min)` : ''}`,
-        );
+        lines.push(`  LESSON ${li + 1}: ${les.title}${les.est_minutes ? ` (${les.est_minutes} min)` : ''}`);
         lines.push('');
         (les.segments || []).forEach((seg) => {
           const meta = kindMeta(seg.kind);
           lines.push(`    [${meta.label}]`);
           (seg.body_md || '').split('\n').forEach((l) => lines.push(`    ${l}`));
-          if (seg.image) {
-            lines.push(
-              `    Image: ${seg.image.caption || seg.image.alt_text || seg.image.image_url}`,
-            );
-            lines.push(`    ${seg.image.image_url}`);
-            if (seg.image.source_url) lines.push(`    Source: ${seg.image.source_url}`);
-          }
           lines.push('');
         });
         const quizzes = les.quizzes || [];
@@ -980,9 +969,7 @@ function CoursePlayer({ courseId, onBack }) {
             const choices = JSON.parse(q.choices_json);
             lines.push(`    Q${qi + 1}: ${q.question}`);
             choices.forEach((ch, ci) => lines.push(`    ${String.fromCharCode(65 + ci)}) ${ch}`));
-            lines.push(
-              `    Correct: ${String.fromCharCode(65 + q.answer_idx)}) ${choices[q.answer_idx]}`,
-            );
+            lines.push(`    Correct: ${String.fromCharCode(65 + q.answer_idx)}) ${choices[q.answer_idx]}`);
             if (q.explain_md) lines.push(`    Explanation: ${q.explain_md}`);
             lines.push('');
           });
@@ -1041,10 +1028,7 @@ function CoursePlayer({ courseId, onBack }) {
             variant="subtle"
             icon="stop"
             onClick={stopGeneration}
-            style={{
-              color: 'var(--err)',
-              borderColor: 'color-mix(in oklab, var(--err) 38%, transparent)',
-            }}
+            style={{ color: 'var(--err)', borderColor: 'color-mix(in oklab, var(--err) 38%, transparent)' }}
           >
             Stop
           </window.Button>
@@ -1572,10 +1556,7 @@ function SegmentCard({ segment }) {
       </div>
 
       {revealed ? (
-        <>
-          <MD text={segment.body_md} />
-          <SegmentImage image={segment.image} />
-        </>
+        <MD text={segment.body_md} />
       ) : (
         <div style={{ textAlign: 'center', padding: '18px 0' }}>
           <div style={{ fontSize: 14.5, color: 'var(--text-2)', marginBottom: 14 }}>
@@ -1662,55 +1643,6 @@ function SegmentCard({ segment }) {
         </div>
       )}
     </window.Card>
-  );
-}
-
-function SegmentImage({ image }) {
-  if (!image || !image.image_url) return null;
-  return (
-    <figure style={{ margin: '16px 0 0' }}>
-      <img
-        src={image.image_url}
-        alt={image.alt_text || image.caption || ''}
-        loading="lazy"
-        referrerPolicy="no-referrer"
-        style={{
-          display: 'block',
-          width: '100%',
-          maxHeight: 360,
-          objectFit: 'contain',
-          borderRadius: 'var(--radius-sm)',
-          border: '1px solid var(--border)',
-          background: 'var(--surface-2)',
-        }}
-      />
-      {(image.caption || image.source_url) && (
-        <figcaption
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            marginTop: 7,
-            color: 'var(--text-3)',
-            fontSize: 12,
-            lineHeight: 1.35,
-          }}
-        >
-          <window.Icon name="doc" size={13} style={{ flex: 'none' }} />
-          <span style={{ flex: 1 }}>{image.caption || image.alt_text || 'Source image'}</span>
-          {image.source_url && (
-            <a
-              href={image.source_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ color: 'var(--accent-strong)', fontWeight: 600, textDecoration: 'none' }}
-            >
-              Source
-            </a>
-          )}
-        </figcaption>
-      )}
-    </figure>
   );
 }
 

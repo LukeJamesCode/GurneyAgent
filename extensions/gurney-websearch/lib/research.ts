@@ -7,14 +7,7 @@
 // reaches a prompt: core has no prompt-injection defenses yet, so the framing
 // is our mitigation against a search result trying to hijack the model.
 
-import {
-  domainOf,
-  fetchPageImages,
-  fetchPageText,
-  search,
-  type Backend,
-  type PageImage,
-} from './search.js';
+import { domainOf, fetchPageText, search, type Backend } from './search.js';
 import { neutralizeMarkers, truncate } from './sanitize.js';
 
 export interface ResearchOptions {
@@ -55,8 +48,6 @@ export interface PreviewSource {
   domain: string;
   snippet: string;
 }
-
-export type { PageImage };
 
 function briefLine(r: { title: string; url: string; snippet: string; domain?: string }): string {
   const dom = r.domain || domainOf(r.url);
@@ -136,20 +127,4 @@ export async function researchTopic(
     brief,
     sources: results.map((r) => ({ title: r.title, url: r.url })),
   };
-}
-
-export async function imagesFromSources(
-  sources: Array<{ url: string }>,
-  opts: { maxImagesPerSource?: number; timeoutMs?: number; fetchImpl?: typeof fetch } = {},
-): Promise<PageImage[]> {
-  const out: PageImage[] = [];
-  for (const source of sources.slice(0, 8)) {
-    const images = await fetchPageImages(source.url, {
-      maxImages: opts.maxImagesPerSource ?? 8,
-      ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
-      ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
-    });
-    out.push(...images);
-  }
-  return out;
 }
