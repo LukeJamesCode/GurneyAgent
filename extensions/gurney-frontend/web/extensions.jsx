@@ -1201,4 +1201,4 @@ function AuthFlowModal({ ext, onClose, onDone }) {
   );
 }
 
-Object.assign(window, { ExtensionsTab });
+Object.assign(window, { ExtensionsTab, AuthFlowModal });
