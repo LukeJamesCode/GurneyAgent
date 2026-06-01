@@ -10,11 +10,59 @@
 // Chat Hub or Telegram.
 const { useState: useVS, useEffect: useVE, useRef: useVR, useCallback: useVC } = React;
 
+const VOICE_LOG_KEY = 'gurney_chat_messages'; // shared with Chat Hub
+const VOICE_LOG_MAX = 200;
+
+function loadHistoryAsTurns() {
+  try {
+    const raw = localStorage.getItem(VOICE_LOG_KEY);
+    if (!raw) return [];
+    const msgs = JSON.parse(raw);
+    if (!Array.isArray(msgs)) return [];
+    const turns = [];
+    let i = 0;
+    while (i < msgs.length) {
+      const m = msgs[i];
+      if (m.role === 'user') {
+        const turn = { id: m.id ?? Date.now() + Math.random(), user: m.text, assistant: '', audioUrl: null };
+        i++;
+        const parts = [];
+        while (i < msgs.length && msgs[i].role === 'assistant') {
+          parts.push(msgs[i].text);
+          i++;
+        }
+        if (parts.length) turn.assistant = parts.join('\n');
+        turns.push(turn);
+      } else {
+        i++;
+      }
+    }
+    return turns;
+  } catch (e) {
+    return [];
+  }
+}
+
+function appendTurnToStorage(userText, assistantText) {
+  try {
+    const raw = localStorage.getItem(VOICE_LOG_KEY);
+    const arr = raw ? (JSON.parse(raw) ?? []) : [];
+    const msgs = Array.isArray(arr) ? arr : [];
+    const t = new Date().toTimeString().slice(0, 5);
+    msgs.push({ id: Date.now(), role: 'user', text: userText, time: t });
+    msgs.push({ id: Date.now() + 0.5, role: 'assistant', text: assistantText, time: t });
+    const trimmed = msgs.length > VOICE_LOG_MAX ? msgs.slice(-VOICE_LOG_MAX) : msgs;
+    localStorage.setItem(VOICE_LOG_KEY, JSON.stringify(trimmed));
+  } catch (e) {
+    /* quota — silently drop */
+  }
+}
+
 function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
   const running = agent === 'running';
   // idle | listening | thinking | speaking
   const [phase, setPhase] = useVS('idle');
-  const [turns, setTurns] = useVS([]); // { id, user, assistant, audioUrl }
+  const [turns, setTurns] = useVS(loadHistoryAsTurns); // { id, user, assistant, audioUrl }
   const [partial, setPartial] = useVS(''); // streaming assistant text
   const [error, setError] = useVS(null);
   const [continuous, setContinuous] = useVS(false);
@@ -228,6 +276,7 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
               tt.map((row) => (row.id === id ? { ...row, assistant: finalText } : row)),
             );
             setPartial('');
+            if (finalText) appendTurnToStorage(text, finalText);
             if (!gotVoice) {
               // No TTS clip is coming (extension off / synth failed) — just
               // settle and re-arm if continuous is on.
@@ -300,6 +349,7 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
   const clearTurns = () => {
     cancelTurn();
     setTurns([]);
+    try { localStorage.removeItem(VOICE_LOG_KEY); } catch (e) { /* ignore */ }
     window.api.post('/api/chat/clear');
   };
 
