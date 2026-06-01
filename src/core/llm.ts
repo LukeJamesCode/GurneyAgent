@@ -86,6 +86,9 @@ export interface ChatOptions {
   tools?: ToolSchema[];
   // AbortSignal forwarded to fetch so /stop can cancel a streaming reply.
   signal?: AbortSignal;
+  // Per-call timeout override in ms. Defaults to the instance inferenceTimeoutMs
+  // (120s). Pass a higher value for long-running generation (e.g. Tudor lessons).
+  timeoutMs?: number;
   // Stop the model after this many tokens. Soft cap; Ollama also enforces.
   maxTokens?: number;
   // Optional caller context for non-Ollama providers that need to meter or
@@ -482,7 +485,7 @@ export function createOllama(opts: OllamaOptions): LLM {
     // Compose the caller's signal with our own timeout. Without a hard cap a
     // hung Ollama wedges the whole user queue.
     const timeoutCtl = new AbortController();
-    const timeoutId = setTimeout(() => timeoutCtl.abort(), inferenceTimeoutMs);
+    const timeoutId = setTimeout(() => timeoutCtl.abort(), o.timeoutMs ?? inferenceTimeoutMs);
     const composed = o.signal ? composeAbort(o.signal, timeoutCtl.signal) : timeoutCtl.signal;
 
     let res: Response;

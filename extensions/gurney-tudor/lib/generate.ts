@@ -81,7 +81,7 @@ async function complete(
       { role: 'user', content: user },
     ];
     let out = '';
-    for await (const chunk of llm.chat({ profile: ref, messages, maxTokens })) {
+    for await (const chunk of llm.chat({ profile: ref, messages, maxTokens, timeoutMs: 10 * 60_000 })) {
       if (chunk.delta) out += chunk.delta;
       if (out.length > 24_000) break; // safety valve against a runaway stream
     }
