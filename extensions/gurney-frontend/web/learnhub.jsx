@@ -934,6 +934,11 @@ function CoursePlayer({ courseId, onBack }) {
     [fetchTree],
   );
 
+  const stopGeneration = useCallback(async () => {
+    await window.api.post(`/api/tudor/courses/${courseId}/cancel`, {});
+    fetchTree();
+  }, [courseId, fetchTree]);
+
   const exportCourse = useCallback(() => {
     if (!tree) return;
     const lines = [];
@@ -1018,6 +1023,16 @@ function CoursePlayer({ courseId, onBack }) {
             {course.topic} · {course.model || ''}
           </div>
         </div>
+        {building && (
+          <window.Button
+            variant="subtle"
+            icon="stop"
+            onClick={stopGeneration}
+            style={{ color: 'var(--err)', borderColor: 'color-mix(in oklab, var(--err) 38%, transparent)' }}
+          >
+            Stop
+          </window.Button>
+        )}
         {!building && readyLessons.length > 0 && (
           <window.Button variant="subtle" icon="doc" onClick={exportCourse}>
             Export

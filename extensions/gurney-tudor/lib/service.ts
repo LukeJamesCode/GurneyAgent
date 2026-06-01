@@ -23,6 +23,7 @@ export interface TudorCtx {
 // running a job and to detect a course that was left mid-generation by a
 // process restart (so we can transparently resume it).
 const activeJobs = new Set<string>();
+const activeAborts = new Map<string, AbortController>();
 
 function estMinutes(seed: number): number {
   // Cheap deterministic-ish estimate; the UI just wants a rough "5 min" badge.
@@ -88,6 +89,9 @@ async function runJob(
 ): Promise<void> {
   if (activeJobs.has(courseId)) return;
   activeJobs.add(courseId);
+  const ac = new AbortController();
+  activeAborts.set(courseId, ac);
+  const { signal } = ac;
   const { db, llm, log } = ctx;
   // On resume we don't have the original ModelChoice; rebuild a local one.
   let ref: ProfileName | { model: string } = choice?.ref ?? chooseModel(llm, 'local').ref;
@@ -151,6 +155,7 @@ async function runJob(
 
     let done = 0;
     for (const lesson of lessons) {
+      if (signal.aborted) break;
       store.setLessonStatus(db, lesson.id, 'generating');
       const lessonArgs = {
         courseTitle: title,
@@ -195,7 +200,15 @@ async function runJob(
     store.updateJob(db, courseId, { error: e instanceof Error ? e.message : String(e) });
   } finally {
     activeJobs.delete(courseId);
+    activeAborts.delete(courseId);
   }
+}
+
+export function cancelCourse(ctx: TudorCtx, id: string): void {
+  const ac = activeAborts.get(id);
+  if (ac) ac.abort();
+  store.setCourseStatus(ctx.db, id, 'failed');
+  store.updateJob(ctx.db, id, { error: 'Generation stopped by user.' });
 }
 
 // --- Reads & mutations the routes expose ---

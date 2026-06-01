@@ -2235,6 +2235,12 @@ async function handleApi(
       return sendJson(res, 200, { ok: true });
     }
 
+    const courseCancel = /^\/api\/tudor\/courses\/([a-f0-9-]+)\/cancel$/i.exec(path);
+    if (courseCancel && method === 'POST') {
+      tudor.cancelCourse(await tudorCtx(), courseCancel[1]!);
+      return sendJson(res, 200, { ok: true });
+    }
+
     const courseProgress = /^\/api\/tudor\/courses\/([a-f0-9-]+)\/progress$/i.exec(path);
     if (courseProgress && method === 'POST') {
       const b = await readJson<{ lessonId?: string; state?: string; confidence?: number }>(req);
