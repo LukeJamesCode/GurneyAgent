@@ -22,11 +22,12 @@ function SystemTab({ state, onReset }) {
   });
   const commandSeq = useRefSys(0);
   const subs = [
-    { id: 'status', label: 'Status' },
-    { id: 'doctor', label: 'Doctor' },
-    { id: 'logs', label: 'Logs' },
-    { id: 'maintenance', label: 'Maintenance' },
-    { id: 'commands', label: 'Commands' },
+    { value: 'status', label: 'Status' },
+    { value: 'schedule', label: 'Schedule' },
+    { value: 'doctor', label: 'Doctor' },
+    { value: 'logs', label: 'Logs' },
+    { value: 'maintenance', label: 'Maintenance' },
+    { value: 'commands', label: 'Commands' },
   ];
 
   const runSystemTabCommand = async (name = sub) => {
@@ -87,20 +88,26 @@ function SystemTab({ state, onReset }) {
         <window.Segmented value={sub} onChange={changeSub} options={subs} />
       </div>
       {sub === 'status' && <StatusDashboard state={state} />}
+      {sub === 'schedule' && <ScheduleView />}
       {sub === 'doctor' && <Doctor onRunCommand={() => runSystemTabCommand('doctor')} />}
       {sub === 'logs' && <LogViewer />}
       {sub === 'maintenance' && (
         <Maintenance state={state} onReset={onReset} onUpdate={runMaintenanceUpdate} />
       )}
       {sub === 'commands' && <Commands />}
-      <div style={{ marginTop: 16 }}>
-        <CommandOutput
-          result={cmd.result}
-          running={cmd.running}
-          onRun={SYSTEM_COMMAND_LABELS[sub] ? () => runSystemTabCommand(sub) : undefined}
-          empty={sub === 'maintenance' ? 'Run a maintenance action to see output here.' : undefined}
-        />
-      </div>
+      {/* The Schedule view has no terminal output, so it skips the command footer. */}
+      {sub !== 'schedule' && (
+        <div style={{ marginTop: 16 }}>
+          <CommandOutput
+            result={cmd.result}
+            running={cmd.running}
+            onRun={SYSTEM_COMMAND_LABELS[sub] ? () => runSystemTabCommand(sub) : undefined}
+            empty={
+              sub === 'maintenance' ? 'Run a maintenance action to see output here.' : undefined
+            }
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -862,6 +869,300 @@ function Commands() {
           </window.Card>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ---- schedule / proactive timeline ---- */
+// "in 2h 5m" from a millisecond span until the next fire.
+function fmtIn(ms) {
+  if (ms == null) return 'unknown';
+  if (ms <= 0) return 'now';
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  const d = Math.floor(h / 24);
+  if (d > 0) return `in ${d}d ${h % 24}h`;
+  if (h > 0) return `in ${h}h ${m % 60}m`;
+  if (m > 0) return `in ${m}m`;
+  return 'in <1m';
+}
+// Local "Wed 08:00" wall-clock label for an absolute timestamp.
+function fmtClock(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+function fmtTime(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+function prettyJob(name) {
+  return String(name || '')
+    .replace(/[-_]/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+function prettyExt(name) {
+  return String(name || '').replace(/^gurney-/, '');
+}
+// ms from now until the next 08:00 local (today if still upcoming, else tomorrow).
+function untilMorningMs() {
+  const now = new Date();
+  const t = new Date(now);
+  t.setHours(8, 0, 0, 0);
+  if (t.getTime() <= now.getTime()) t.setDate(t.getDate() + 1);
+  return t.getTime() - now.getTime();
+}
+
+function ScheduleView() {
+  const [data, setData] = useStateSys(null);
+  const [error, setError] = useStateSys(null);
+  const [loading, setLoading] = useStateSys(true);
+  const [busy, setBusy] = useStateSys(false);
+
+  const load = async () => {
+    setLoading(true);
+    const r = await window.api.get('/api/scheduler');
+    setLoading(false);
+    if (r.ok) {
+      setData(r.data);
+      setError(null);
+    } else {
+      setError(r.error || 'Could not load the schedule.');
+    }
+  };
+
+  useEffectSys(() => {
+    void load();
+  }, []);
+
+  const snooze = async (ms) => {
+    setBusy(true);
+    await window.api.post('/api/scheduler/snooze', { ms });
+    setBusy(false);
+    void load();
+  };
+
+  if (loading && !data)
+    return <div style={{ maxWidth: 760, color: 'var(--text-3)', fontSize: 13.5 }}>Loading…</div>;
+  if (error)
+    return (
+      <div style={{ maxWidth: 760 }}>
+        <ErrorNote text={error} onRetry={load} />
+      </div>
+    );
+  if (data && data.configured === false)
+    return (
+      <div
+        style={{
+          maxWidth: 760,
+          textAlign: 'center',
+          padding: '50px 20px',
+          border: '1px dashed var(--border-2)',
+          borderRadius: 'var(--radius)',
+          color: 'var(--text-3)',
+        }}
+      >
+        <window.Icon name="pulse" size={28} style={{ margin: '0 auto 10px' }} />
+        <p style={{ fontSize: 14, color: 'var(--text-2)', fontWeight: 600 }}>
+          Nothing scheduled yet
+        </p>
+        <p style={{ fontSize: 13, marginTop: 3 }}>
+          Finish setup (a bot token and an allowed user) so the scheduler can run.
+        </p>
+      </div>
+    );
+
+  const d = data || {};
+  const jobs = d.jobs || [];
+  const now = Date.now();
+  const paused = !!d.pausedUntilMs && d.pausedUntilMs > now;
+  const quietWindow = d.quiet && d.quiet.reason === 'window' ? d.quiet : null;
+  const statusTone = !d.proactive ? 'neutral' : paused || quietWindow ? 'warn' : 'ok';
+  const statusText = !d.proactive
+    ? 'Proactive nudges are off'
+    : paused
+      ? `Snoozed until ${fmtTime(d.pausedUntilMs)}`
+      : quietWindow
+        ? `Quiet hours until ${fmtTime(quietWindow.until)}`
+        : 'Active — Gurney may nudge you';
+
+  return (
+    <div
+      style={{
+        maxWidth: 760,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'calc(16px * var(--gap))',
+      }}
+    >
+      {/* proactive state + snooze */}
+      <window.Card style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <window.Icon name="pulse" size={20} style={{ color: 'var(--text-3)' }} />
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontWeight: 600, fontSize: 15.5 }}>Proactive nudges</div>
+            <p style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 2 }}>
+              When Gurney may message you first — briefings, reminders, and follow-ups.
+            </p>
+          </div>
+          <window.Badge tone={statusTone}>{statusText}</window.Badge>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {paused ? (
+            <window.Button
+              size="sm"
+              variant="primary"
+              icon="power"
+              onClick={() => snooze(0)}
+              disabled={busy}
+            >
+              Resume now
+            </window.Button>
+          ) : (
+            <>
+              <span style={{ fontSize: 13, color: 'var(--text-3)', marginRight: 2 }}>Snooze:</span>
+              <window.Button
+                size="sm"
+                variant="subtle"
+                onClick={() => snooze(3_600_000)}
+                disabled={busy || !d.proactive}
+              >
+                1 hour
+              </window.Button>
+              <window.Button
+                size="sm"
+                variant="subtle"
+                onClick={() => snooze(4 * 3_600_000)}
+                disabled={busy || !d.proactive}
+              >
+                4 hours
+              </window.Button>
+              <window.Button
+                size="sm"
+                variant="subtle"
+                onClick={() => snooze(untilMorningMs())}
+                disabled={busy || !d.proactive}
+              >
+                Until 8 AM
+              </window.Button>
+            </>
+          )}
+        </div>
+        {d.quietWindow && (
+          <p
+            style={{
+              fontSize: 12.5,
+              color: 'var(--text-3)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <window.Icon name="moon" size={13} /> Quiet hours {d.quietWindow} daily · set with{' '}
+            <span className="mono">/quiet</span> in Telegram.
+          </p>
+        )}
+      </window.Card>
+
+      {/* upcoming jobs timeline */}
+      <div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            marginBottom: 10,
+          }}
+        >
+          <span
+            style={{
+              fontSize: 12.5,
+              fontWeight: 700,
+              color: 'var(--text-3)',
+              textTransform: 'uppercase',
+              letterSpacing: '.05em',
+            }}
+          >
+            Upcoming jobs ({jobs.length})
+          </span>
+          <window.Button size="sm" variant="ghost" icon="refresh" onClick={load} disabled={loading}>
+            Refresh
+          </window.Button>
+        </div>
+        {jobs.length === 0 ? (
+          <div
+            style={{
+              textAlign: 'center',
+              padding: '40px 20px',
+              border: '1px dashed var(--border-2)',
+              borderRadius: 'var(--radius)',
+              color: 'var(--text-3)',
+              fontSize: 13.5,
+            }}
+          >
+            No scheduled jobs. Extensions like the everyday assistant register briefings and
+            reminders here.
+          </div>
+        ) : (
+          <window.Card pad={0}>
+            {jobs.map((j, i) => (
+              <div
+                key={j.extension + ':' + j.name}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 14,
+                  padding: '13px 18px',
+                  borderTop: i ? '1px solid var(--border)' : 'none',
+                }}
+              >
+                <div
+                  style={{
+                    width: 92,
+                    flex: 'none',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 2,
+                  }}
+                >
+                  <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--accent-strong)' }}>
+                    {fmtIn(j.nextFireMs == null ? null : j.nextFireMs - now)}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 11.5,
+                      color: 'var(--text-3)',
+                      fontFamily: 'var(--font-mono)',
+                    }}
+                  >
+                    {j.nextFireMs ? fmtClock(j.nextFireMs) : '—'}
+                  </span>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
+                    {prettyJob(j.name)}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: 'var(--text-3)',
+                      fontFamily: 'var(--font-mono)',
+                      marginTop: 2,
+                    }}
+                  >
+                    {j.cron}
+                  </div>
+                </div>
+                <window.Badge tone="neutral">{prettyExt(j.extension)}</window.Badge>
+              </div>
+            ))}
+          </window.Card>
+        )}
+        <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 10 }}>
+          Times are computed in this machine’s local timezone. The running agent fires these; this
+          is a read-only view.
+        </p>
+      </div>
     </div>
   );
 }
