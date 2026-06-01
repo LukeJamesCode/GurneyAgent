@@ -807,7 +807,16 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
       log: cl,
       dataDir,
       db: opts.db,
-      llm: opts.llm,
+      llm: opts.llm.registerProvider
+        ? {
+            ...opts.llm,
+            registerProvider: (provider) => {
+              const off = opts.llm.registerProvider!(provider);
+              reg.disposers.push(off);
+              return off;
+            },
+          }
+        : opts.llm,
       ...(opts.orchestrator ? { orchestrator: opts.orchestrator } : {}),
       settings,
       tools: {

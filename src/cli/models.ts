@@ -1,5 +1,5 @@
-// `gurney models` — list Ollama models and pick chat / reasoning / tools
-// profiles.
+// `gurney models` - list Ollama / enabled extension models and pick chat /
+// reasoning / tools profiles.
 //
 // Distinct from `gurney init` in that it only touches the model fields and
 // never prompts for Telegram / tier / etc. Useful when the user adds or
@@ -9,33 +9,41 @@
 import { input, select } from '@inquirer/prompts';
 import { effectiveConfig, homeDir, loadConfig, saveConfig } from './config-store.js';
 import { probeOllama } from './ollama-probe.js';
+import { availableModelTags } from './model-options.js';
 
 export async function run(): Promise<void> {
   const home = homeDir();
   const cfg = loadConfig(home);
   const effective = effectiveConfig(home);
 
-  process.stdout.write(`Probing Ollama at ${effective.ollama.url}…\n`);
+  process.stdout.write(`Probing Ollama at ${effective.ollama.url}...\n`);
   const probe = await probeOllama(effective.ollama.url);
-  if (!probe.ok) {
-    process.stderr.write(`✗ Ollama unreachable: ${probe.error ?? 'unknown error'}\n`);
+  const choices = availableModelTags(probe.ok ? probe.models : [], home);
+  if (!probe.ok && choices.length === 0) {
+    process.stderr.write(`x Ollama unreachable: ${probe.error ?? 'unknown error'}\n`);
     process.exit(1);
   }
-  if (probe.models.length === 0) {
+  if (probe.ok && choices.length === 0) {
     process.stderr.write(
-      '✗ Ollama is up but reports zero models. `ollama pull qwen3.5:0.8b` first.\n',
+      'x Ollama is up but reports zero models. `ollama pull qwen3.5:0.8b` first.\n',
     );
     process.exit(1);
   }
-  process.stdout.write(`✓ ${probe.models.length} models found.\n\n`);
+  if (probe.ok) {
+    process.stdout.write(`ok ${probe.models.length} Ollama models found.\n\n`);
+  } else {
+    process.stdout.write(
+      `x Ollama unreachable (${probe.error ?? 'unknown error'}); showing enabled extension models.\n\n`,
+    );
+  }
 
   const chatPick = await select({
     message: 'Chat profile model:',
     choices: [
-      ...probe.models.map((m) => ({ name: m, value: m })),
+      ...choices.map((m) => ({ name: m, value: m })),
       { name: '(enter a model name manually)', value: '__custom__' },
     ],
-    default: probe.models.includes(cfg.models.chat) ? cfg.models.chat : probe.models[0],
+    default: choices.includes(cfg.models.chat) ? cfg.models.chat : choices[0],
   });
   cfg.models.chat =
     chatPick === '__custom__'
@@ -45,8 +53,8 @@ export async function run(): Promise<void> {
   const reasonPick = await select({
     message: 'Reasoning profile model:',
     choices: [
-      { name: '(skip — small device)', value: '__skip__' },
-      ...probe.models.map((m) => ({ name: m, value: m })),
+      { name: '(skip - small device)', value: '__skip__' },
+      ...choices.map((m) => ({ name: m, value: m })),
       { name: '(enter a model name manually)', value: '__custom__' },
     ],
     default: cfg.models.reason ?? '__skip__',
@@ -62,8 +70,8 @@ export async function run(): Promise<void> {
   const toolsPick = await select({
     message: 'Tool-use profile model (handles every tool-bearing turn):',
     choices: [
-      { name: '(skip — reuse chat model for tool turns)', value: '__skip__' },
-      ...probe.models.map((m) => ({ name: m, value: m })),
+      { name: '(skip - reuse chat model for tool turns)', value: '__skip__' },
+      ...choices.map((m) => ({ name: m, value: m })),
       { name: '(enter a model name manually)', value: '__custom__' },
     ],
     default: cfg.models.tools ?? '__skip__',
@@ -77,5 +85,5 @@ export async function run(): Promise<void> {
   }
 
   saveConfig(cfg, home);
-  process.stdout.write('✓ Updated chat/reason/tools models.\n');
+  process.stdout.write('ok Updated chat/reason/tools models.\n');
 }

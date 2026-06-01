@@ -28,6 +28,7 @@ import {
   type GurneyConfig,
 } from './config-store.js';
 import { probeOllama } from './ollama-probe.js';
+import { availableModelTags } from './model-options.js';
 import { open as openDb } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import {
@@ -296,60 +297,60 @@ export async function run(): Promise<void> {
   let chatModel = existing.models.chat;
   let reasonModel: string | undefined = existing.models.reason;
   let toolsModel: string | undefined = existing.models.tools;
+  const modelTags = availableModelTags(probe.ok ? probe.models : [], home);
   if (!probe.ok) {
     process.stdout.write(`✗ ${probe.error ?? 'unreachable'}.\n`);
     process.stdout.write(
       'Continuing with defaults; you can run `gurney models` later once Ollama is up.\n',
     );
-  } else {
-    process.stdout.write(`✓ ${probe.models.length} models available.\n`);
-    if (probe.models.length > 0) {
-      const chatChoices = [
-        ...probe.models.map((m) => ({ name: m, value: m })),
-        { name: '(enter a model name manually)', value: '__custom__' },
-      ];
-      const chatPick = await select({
-        message: 'Chat profile model:',
-        choices: chatChoices,
-        default: probe.models.includes(existing.models.chat)
-          ? existing.models.chat
-          : probe.models[0],
-      });
-      chatModel =
-        chatPick === '__custom__'
-          ? await input({ message: 'Chat model tag:', default: existing.models.chat })
-          : chatPick;
+  }
+  if (modelTags.length > 0) {
+    if (probe.ok) process.stdout.write(`✓ ${probe.models.length} Ollama models available.\n`);
+    else process.stdout.write('Enabled extension model options available.\n');
 
-      const reasonChoices = [
-        { name: '(skip — small device)', value: '__skip__' },
-        ...probe.models.map((m) => ({ name: m, value: m })),
-        { name: '(enter a model name manually)', value: '__custom__' },
-      ];
-      const reasonPick = await select({
-        message: 'Reasoning profile model:',
-        choices: reasonChoices,
-        default: existing.models.reason ?? '__skip__',
-      });
-      if (reasonPick === '__skip__') reasonModel = undefined;
-      else if (reasonPick === '__custom__') {
-        reasonModel = await input({ message: 'Reasoning model tag:' });
-      } else reasonModel = reasonPick;
+    const chatChoices = [
+      ...modelTags.map((m) => ({ name: m, value: m })),
+      { name: '(enter a model name manually)', value: '__custom__' },
+    ];
+    const chatPick = await select({
+      message: 'Chat profile model:',
+      choices: chatChoices,
+      default: modelTags.includes(existing.models.chat) ? existing.models.chat : modelTags[0],
+    });
+    chatModel =
+      chatPick === '__custom__'
+        ? await input({ message: 'Chat model tag:', default: existing.models.chat })
+        : chatPick;
 
-      const toolsChoices = [
-        { name: '(skip — reuse chat model for tool turns)', value: '__skip__' },
-        ...probe.models.map((m) => ({ name: m, value: m })),
-        { name: '(enter a model name manually)', value: '__custom__' },
-      ];
-      const toolsPick = await select({
-        message: 'Tool-use profile model (handles every tool-bearing turn):',
-        choices: toolsChoices,
-        default: existing.models.tools ?? '__skip__',
-      });
-      if (toolsPick === '__skip__') toolsModel = undefined;
-      else if (toolsPick === '__custom__') {
-        toolsModel = await input({ message: 'Tool-use model tag:' });
-      } else toolsModel = toolsPick;
-    }
+    const reasonChoices = [
+      { name: '(skip — small device)', value: '__skip__' },
+      ...modelTags.map((m) => ({ name: m, value: m })),
+      { name: '(enter a model name manually)', value: '__custom__' },
+    ];
+    const reasonPick = await select({
+      message: 'Reasoning profile model:',
+      choices: reasonChoices,
+      default: existing.models.reason ?? '__skip__',
+    });
+    if (reasonPick === '__skip__') reasonModel = undefined;
+    else if (reasonPick === '__custom__') {
+      reasonModel = await input({ message: 'Reasoning model tag:' });
+    } else reasonModel = reasonPick;
+
+    const toolsChoices = [
+      { name: '(skip — reuse chat model for tool turns)', value: '__skip__' },
+      ...modelTags.map((m) => ({ name: m, value: m })),
+      { name: '(enter a model name manually)', value: '__custom__' },
+    ];
+    const toolsPick = await select({
+      message: 'Tool-use profile model (handles every tool-bearing turn):',
+      choices: toolsChoices,
+      default: existing.models.tools ?? '__skip__',
+    });
+    if (toolsPick === '__skip__') toolsModel = undefined;
+    else if (toolsPick === '__custom__') {
+      toolsModel = await input({ message: 'Tool-use model tag:' });
+    } else toolsModel = toolsPick;
   }
 
   // -- Tier --------------------------------------------------------------

@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { effectiveConfig, homeDir } from './config-store.js';
 import { extensionFolders } from './extension-paths.js';
 import { probeOllama } from './ollama-probe.js';
+import { isExternalModelRef } from './model-options.js';
 import { loadMigrations } from '../storage/db.js';
 import Database from 'better-sqlite3';
 
@@ -241,14 +242,22 @@ async function checkOllama(
   reasonModel: string | undefined,
   toolsModel: string | undefined,
 ): Promise<CheckResult> {
+  const configured = [chatModel, reasonModel, toolsModel].filter(Boolean) as string[];
+  const localModels = configured.filter((m) => !isExternalModelRef(m));
   const probe = await probeOllama(url);
   if (!probe.ok) {
+    if (localModels.length === 0) {
+      return { name: 'ollama', ok: true, msg: 'not required by configured model profiles' };
+    }
     return { name: 'ollama', ok: false, msg: `${url}: ${probe.error ?? 'unreachable'}` };
   }
   const missing: string[] = [];
-  if (chatModel && !modelPresent(probe.models, chatModel)) missing.push(chatModel);
-  if (reasonModel && !modelPresent(probe.models, reasonModel)) missing.push(reasonModel);
-  if (toolsModel && !modelPresent(probe.models, toolsModel)) missing.push(toolsModel);
+  if (chatModel && !isExternalModelRef(chatModel) && !modelPresent(probe.models, chatModel))
+    missing.push(chatModel);
+  if (reasonModel && !isExternalModelRef(reasonModel) && !modelPresent(probe.models, reasonModel))
+    missing.push(reasonModel);
+  if (toolsModel && !isExternalModelRef(toolsModel) && !modelPresent(probe.models, toolsModel))
+    missing.push(toolsModel);
   if (missing.length > 0) {
     return {
       name: 'ollama',
@@ -420,7 +429,11 @@ function resolveVoicePath(
       process.platform === 'win32'
         ? spawnSync('where', [raw], { encoding: 'utf8', shell: true })
         : spawnSync('sh', ['-c', `command -v ${shQuote(raw)}`], { encoding: 'utf8' });
-    const out = String(which.stdout ?? '').trim().split(/\r?\n/)[0]?.trim() ?? '';
+    const out =
+      String(which.stdout ?? '')
+        .trim()
+        .split(/\r?\n/)[0]
+        ?.trim() ?? '';
     return { found: which.status === 0 && out.length > 0, where: out || raw, kind: 'set' };
   }
   // Setting unset — fall back. Same shape: path means check disk; bare name
@@ -432,7 +445,11 @@ function resolveVoicePath(
     process.platform === 'win32'
       ? spawnSync('where', [fallback], { encoding: 'utf8', shell: true })
       : spawnSync('sh', ['-c', `command -v ${shQuote(fallback)}`], { encoding: 'utf8' });
-  const out = String(which.stdout ?? '').trim().split(/\r?\n/)[0]?.trim() ?? '';
+  const out =
+    String(which.stdout ?? '')
+      .trim()
+      .split(/\r?\n/)[0]
+      ?.trim() ?? '';
   return { found: which.status === 0 && out.length > 0, where: out || fallback, kind: 'default' };
 }
 
@@ -478,7 +495,10 @@ function checkVoice(home: string): CheckResult {
       { label: 'whisper', r: resolveVoicePath(s.get('whisper_bin') ?? '', 'whisper-cli') },
       {
         label: 'voice-model',
-        r: resolveVoicePath(s.get('voice_model_path') ?? '', join(stateDir, 'voices', `${voiceId}.onnx`)),
+        r: resolveVoicePath(
+          s.get('voice_model_path') ?? '',
+          join(stateDir, 'voices', `${voiceId}.onnx`),
+        ),
       },
       {
         label: 'whisper-model',

@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { open as openDb, type DB } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import { createOllama } from '../core/llm.js';
+import { createRoutedLLM } from '../core/llm-router.js';
 import { profilesForTier } from './profiles.js';
 import { createToolRegistry, type ToolHandler, type ToolContext } from '../core/tools.js';
 import { createOrchestrator } from '../core/orchestrator.js';
@@ -209,13 +210,15 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   const idleEvictionMs = envInt('GURNEY_HEAVY_IDLE_MS') ?? tierIdleMs;
   const inferenceTimeoutMs = envInt('GURNEY_INFERENCE_TIMEOUT_MS');
 
-  const llm = createOllama({
-    baseUrl: cfg.ollama.url,
-    profiles,
-    log,
-    idleEvictionMs,
-    ...(inferenceTimeoutMs !== undefined ? { inferenceTimeoutMs } : {}),
-  });
+  const llm = createRoutedLLM(
+    createOllama({
+      baseUrl: cfg.ollama.url,
+      profiles,
+      log,
+      idleEvictionMs,
+      ...(inferenceTimeoutMs !== undefined ? { inferenceTimeoutMs } : {}),
+    }),
+  );
 
   // Confirm-tier gate. The Telegram adapter (built further down) provides the
   // real Yes/No prompt; until then this fails closed so a confirm-tier tool can

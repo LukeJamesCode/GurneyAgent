@@ -14,6 +14,7 @@
 import type { Host } from '../../src/core/extensions.js';
 import { runHandoff } from './lib/run.js';
 import { readTokens } from './lib/store.js';
+import { createCodexModelProvider } from './lib/model-provider.js';
 
 // Deterministic auto-route heuristic. Returns true when a message looks like a
 // substantial generative task the local model can't do well — so the
@@ -54,6 +55,8 @@ const HANDOFF_INTENT =
   '\\b(code|coding|refactor|implement|debug|rewrite|optimi[sz]e|function|script|program|regex|algorithm|tests?|write|draft|essay|email|explain|summari[sz]e|analy[sz]e|plan|design|outline|research|compare|calculate|solve|translate|brainstorm)\\b';
 
 export function register(host: Host): void {
+  host.llm.registerProvider?.(createCodexModelProvider(host));
+
   host.tools.register({
     name: 'codex_handoff',
     intentPattern: HANDOFF_INTENT,

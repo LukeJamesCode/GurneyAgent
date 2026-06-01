@@ -88,6 +88,12 @@ export interface ChatOptions {
   signal?: AbortSignal;
   // Stop the model after this many tokens. Soft cap; Ollama also enforces.
   maxTokens?: number;
+  // Optional caller context for non-Ollama providers that need to meter or
+  // attribute a turn. Ollama ignores this.
+  context?: {
+    chatId?: number;
+    conversationId?: number;
+  };
 }
 
 export interface ChatChunk {
@@ -114,6 +120,19 @@ export interface BreakerSnapshot {
   retryAt: number | null;
 }
 
+export interface LLMProviderChatOptions extends ChatOptions {
+  // The fully resolved configured model reference, e.g. "codex" or
+  // "codex:gpt-5-codex".
+  model: string;
+}
+
+export interface LLMProvider {
+  id: string;
+  models?: () => string[];
+  health?: () => Promise<{ ok: boolean; models: string[] }>;
+  chat(opts: LLMProviderChatOptions): AsyncIterable<ChatChunk>;
+}
+
 export interface LLM {
   chat(opts: ChatOptions): AsyncIterable<ChatChunk>;
   health(): Promise<{
@@ -128,6 +147,9 @@ export interface LLM {
   breakerSnapshot(): BreakerSnapshot;
   // Stop the idle-eviction timer. Test/teardown hook.
   stopIdleEviction(): void;
+  // Optional extension hook. Routed LLMs expose this so an enabled extension can
+  // contribute a model alias without core importing extension code.
+  registerProvider?: (provider: LLMProvider) => () => void;
 }
 
 export class CircuitOpenError extends Error {

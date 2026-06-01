@@ -624,6 +624,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           messages: built.messages,
           ...(toolSchemas.length > 0 ? { tools: toolSchemas } : {}),
           signal: abort.signal,
+          context: { chatId: msg.chatId, conversationId },
         });
         lastChunk = await drain(initial);
 
@@ -788,6 +789,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           messages: buildPromptForTurn(true).messages,
           maxTokens: FOLLOWUP_MAX_TOKENS,
           signal: abort.signal,
+          context: { chatId: msg.chatId, conversationId },
         });
         lastChunk = await drain(followup);
       }
@@ -811,6 +813,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           profile: defaultProfile,
           messages: buildPromptForTurn(true).messages,
           signal: abort.signal,
+          context: { chatId: msg.chatId, conversationId },
         });
         lastChunk = await drain(noToolsFollowup);
       }
@@ -842,6 +845,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
             profile: defaultProfile,
             messages: buildPromptForTurn(true).messages,
             signal: abort.signal,
+            context: { chatId: msg.chatId, conversationId },
           });
           lastChunk = await drain(noToolsFollowup);
         } catch (e2) {

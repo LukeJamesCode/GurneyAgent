@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { open as openDb, type DB } from '../../src/storage/db.js';
 import { createLogger } from '../../src/util/log.js';
 import { createOllama } from '../../src/core/llm.js';
+import { createRoutedLLM } from '../../src/core/llm-router.js';
 import { createOrchestrator, type Orchestrator } from '../../src/core/orchestrator.js';
 import { createToolRegistry, type ToolContext, type ToolHandler } from '../../src/core/tools.js';
 import { createScheduler, type Nudge } from '../../src/core/scheduler.js';
@@ -52,6 +53,7 @@ import {
 } from '../../src/core/extensions.js';
 import { profilesForTier } from '../../src/cli/profiles.js';
 import { probeOllama } from '../../src/cli/ollama-probe.js';
+import { availableModelTags } from '../../src/cli/model-options.js';
 import { collectDoctorChecks } from '../../src/cli/doctor.js';
 import { configureNativeDepsForExtension } from '../../src/cli/ext-setup.js';
 import { discover as discoverExt, runAuthForExt, type AuthRunnerIO } from '../../src/cli/auth.js';
@@ -761,13 +763,15 @@ async function getDirectChatRuntime(cfg: GurneyConfig): Promise<DirectChatRuntim
     const idleEvictionMs = envInt('GURNEY_HEAVY_IDLE_MS') ?? tierIdleMs;
     const inferenceTimeoutMs = envInt('GURNEY_INFERENCE_TIMEOUT_MS');
 
-    const llm = createOllama({
-      baseUrl: cfg.ollama.url,
-      profiles,
-      log,
-      idleEvictionMs,
-      ...(inferenceTimeoutMs !== undefined ? { inferenceTimeoutMs } : {}),
-    });
+    const llm = createRoutedLLM(
+      createOllama({
+        baseUrl: cfg.ollama.url,
+        profiles,
+        log,
+        idleEvictionMs,
+        ...(inferenceTimeoutMs !== undefined ? { inferenceTimeoutMs } : {}),
+      }),
+    );
     // Shared mutable state between the live chat stream and the tool/voice
     // hooks created below. `sink.current` is the SSE emitter while a chat
     // request is in flight (null when idle); pendingConfirms parks confirm-tier
@@ -1775,7 +1779,10 @@ async function handleApi(
 
     if (path === '/api/models' && method === 'GET') {
       const probe = await probeOllama(effectiveConfig(homeDir()).ollama.url);
-      return sendJson(res, 200, probe);
+      return sendJson(res, 200, {
+        ...probe,
+        models: availableModelTags(probe.ok ? probe.models : [], homeDir()),
+      });
     }
 
     if (path === '/api/telegram/validate' && method === 'POST') {
