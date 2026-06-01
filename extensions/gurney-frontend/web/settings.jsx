@@ -5,6 +5,7 @@
 // win over the on-disk config.json. Changes are staged locally and written with
 // one Save; they take effect on the next agent restart.
 const { useState: useStateSet, useEffect: useEffectSet } = React;
+const FRONTEND_EXT_NAME = 'gurney-frontend';
 
 function SettingsTab({ onReRunWizard, onSaved }) {
   const [cfg, setCfg] = useStateSet(null);
@@ -107,13 +108,17 @@ function SettingsTab({ onReRunWizard, onSaved }) {
             models={models}
             setModels={setModels}
           />
-          <ModelsSection cfg={cfg} set={set} locks={locks} models={models} onReRun={onReRunWizard} />
+          <ModelsSection
+            cfg={cfg}
+            set={set}
+            locks={locks}
+            models={models}
+            onReRun={onReRunWizard}
+          />
           <HardwareSection cfg={cfg} set={set} locks={locks} />
           <LoggingSection cfg={cfg} set={set} locks={locks} />
+          <FrontendSection onSaved={onSaved} />
         </div>
-      </div>
-      <div style={{ marginTop: 40 }}>
-        <window.ExtensionsTab />
       </div>
     </div>
   );
@@ -523,6 +528,146 @@ function LoggingSection({ cfg, set, locks }) {
         )}
       </div>
     </Group>
+  );
+}
+
+function FrontendSection({ onSaved }) {
+  const [fields, setFields] = useStateSet(null);
+  const [error, setError] = useStateSet(null);
+  const [dirty, setDirty] = useStateSet(false);
+  const [saving, setSaving] = useStateSet(false);
+  const [saved, setSaved] = useStateSet(false);
+
+  const load = async () => {
+    const r = await window.api.get(
+      `/api/extensions/${encodeURIComponent(FRONTEND_EXT_NAME)}/settings`,
+    );
+    if (r.ok && r.data && Array.isArray(r.data.schema)) {
+      setFields(r.data.schema);
+      setError(null);
+      setDirty(false);
+    } else {
+      setError((r.data && r.data.error) || r.error || 'Could not load frontend settings.');
+    }
+  };
+
+  useEffectSet(() => {
+    load();
+  }, []);
+
+  const set = (key, value) => {
+    setFields((current) =>
+      current.map((field) => (field.key === key ? { ...field, value } : field)),
+    );
+    setDirty(true);
+    setSaved(false);
+  };
+
+  const save = async () => {
+    if (!fields) return;
+    setSaving(true);
+    setError(null);
+    const body = Object.fromEntries(fields.map((field) => [field.key, field.value]));
+    const r = await window.api.post(
+      `/api/extensions/${encodeURIComponent(FRONTEND_EXT_NAME)}/settings`,
+      body,
+    );
+    setSaving(false);
+    if (r.ok) {
+      setDirty(false);
+      setSaved(true);
+      onSaved && onSaved();
+      load();
+    } else setError(r.error || 'Could not save frontend settings.');
+  };
+
+  return (
+    <div>
+      <window.SectionTitle
+        sub="The panel itself: listener, auth token, HTTPS, and the proactive toggle. Restart the panel after changing host, port, or TLS settings."
+        right={
+          fields ? (
+            <window.Button
+              variant="primary"
+              icon={saving ? undefined : 'check'}
+              onClick={save}
+              disabled={!dirty || saving}
+              style={{ opacity: !dirty || saving ? 0.55 : 1 }}
+            >
+              {saving ? (
+                <>
+                  <window.Icon name="refresh" size={16} className="spin" /> Savingâ€¦
+                </>
+              ) : saved ? (
+                <>
+                  <window.Icon name="check" size={16} /> Saved
+                </>
+              ) : (
+                'Save panel settings'
+              )}
+            </window.Button>
+          ) : null
+        }
+      >
+        Frontend
+      </window.SectionTitle>
+      {error && <ErrorNote text={error} onRetry={load} />}
+      {!fields ? (
+        <window.Card style={{ color: 'var(--text-3)', fontSize: 13.5 }}>
+          Loading frontend settings…
+        </window.Card>
+      ) : (
+        <window.Card style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {fields.map((field) => (
+            <div key={field.key}>
+              <window.Label hint={field.help}>
+                {field.label} {field.required && <span style={{ color: 'var(--err)' }}>*</span>}{' '}
+                {field.type === 'secret' && (
+                  <window.Icon
+                    name="lock"
+                    size={12}
+                    style={{ display: 'inline', verticalAlign: 'middle', color: 'var(--text-3)' }}
+                  />
+                )}
+              </window.Label>
+              {field.type === 'boolean' ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <window.Toggle
+                    checked={!!field.value}
+                    onChange={(v) => set(field.key, v)}
+                    label={field.label}
+                  />
+                  <span style={{ fontSize: 13.5, color: 'var(--text-2)' }}>
+                    {field.value ? 'On' : 'Off'}
+                  </span>
+                </div>
+              ) : field.type === 'secret' ? (
+                <window.SecretInput
+                  value={field.value || ''}
+                  onChange={(e) => set(field.key, e.target.value)}
+                  placeholder="Not set"
+                />
+              ) : field.type === 'number' ? (
+                <window.Input
+                  type="number"
+                  mono
+                  value={field.value}
+                  onChange={(e) => set(field.key, e.target.value)}
+                  style={{ maxWidth: 180 }}
+                />
+              ) : (
+                <window.Input
+                  mono
+                  value={field.value || ''}
+                  onChange={(e) => set(field.key, e.target.value)}
+                  placeholder="Not set"
+                />
+              )}
+            </div>
+          ))}
+        </window.Card>
+      )}
+    </div>
   );
 }
 

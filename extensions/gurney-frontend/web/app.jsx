@@ -218,6 +218,11 @@ function App() {
   const models = state.models || {};
   const enabledExts = (state.extensions && state.extensions.enabledNames) || [];
   const needsSetup = (state.extensions && state.extensions.needsSetup) || [];
+  const panelEnabled = enabledExts.indexOf('gurney-frontend') !== -1;
+  const visibleExtCount = Math.max(
+    0,
+    ((state.extensions && state.extensions.enabled) || 0) - (panelEnabled ? 1 : 0),
+  );
   const voiceEnabled = enabledExts.indexOf('gurney-voice') !== -1;
 
   return (
@@ -229,7 +234,7 @@ function App() {
         onStart={() => agentAction('start')}
         onStop={() => agentAction('stop')}
         busy={busy}
-        extCount={state.extensions ? state.extensions.enabled : 0}
+        extCount={visibleExtCount}
         enabledExts={enabledExts}
         needsSetup={needsSetup}
         onOpenExtensions={() => setRoute('extensions')}

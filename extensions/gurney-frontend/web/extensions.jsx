@@ -49,6 +49,10 @@ function ExtensionsTab() {
 
   if (settingsFor) {
     const ext = exts.find((e) => e.name === settingsFor);
+    if (!ext) {
+      setSettingsFor(null);
+      return null;
+    }
     return (
       <ExtSettings
         ext={ext}
@@ -96,10 +100,11 @@ function ExtensionsTab() {
     );
   }
 
-  const enabled = exts.filter((e) => e.enabled);
-  const disabled = exts.filter((e) => !e.enabled);
-  const filtered = tab === 'all' ? exts : tab === 'enabled' ? enabled : disabled;
-  const setupNeeded = exts.filter((e) => e.source === 'user' && !e.self && e.status !== 'ready');
+  const visibleExts = exts.filter((e) => !e.self);
+  const enabled = visibleExts.filter((e) => e.enabled);
+  const disabled = visibleExts.filter((e) => !e.enabled);
+  const filtered = tab === 'all' ? visibleExts : tab === 'enabled' ? enabled : disabled;
+  const setupNeeded = visibleExts.filter((e) => e.source === 'user' && e.status !== 'ready');
   const showSetupPrompt = setupNeeded.length > 0 && !setupPromptDismissed;
 
   return (
@@ -123,7 +128,7 @@ function ExtensionsTab() {
           value={tab}
           onChange={setTab}
           options={[
-            { value: 'all', label: `All (${exts.length})` },
+            { value: 'all', label: `All (${visibleExts.length})` },
             { value: 'enabled', label: `Enabled (${enabled.length})` },
             { value: 'disabled', label: `Disabled (${disabled.length})` },
           ]}
@@ -133,7 +138,7 @@ function ExtensionsTab() {
         </span>
       </div>
 
-      {exts.length === 0 && !error && (
+      {visibleExts.length === 0 && !error && (
         <div
           style={{
             textAlign: 'center',

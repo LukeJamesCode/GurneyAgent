@@ -24,7 +24,12 @@ function loadHistoryAsTurns() {
     while (i < msgs.length) {
       const m = msgs[i];
       if (m.role === 'user') {
-        const turn = { id: m.id ?? Date.now() + Math.random(), user: m.text, assistant: '', audioUrl: null };
+        const turn = {
+          id: m.id ?? Date.now() + Math.random(),
+          user: m.text,
+          assistant: '',
+          audioUrl: null,
+        };
         i++;
         const parts = [];
         while (i < msgs.length && msgs[i].role === 'assistant') {
@@ -349,7 +354,11 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
   const clearTurns = () => {
     cancelTurn();
     setTurns([]);
-    try { localStorage.removeItem(VOICE_LOG_KEY); } catch (e) { /* ignore */ }
+    try {
+      localStorage.removeItem(VOICE_LOG_KEY);
+    } catch (e) {
+      /* ignore */
+    }
     window.api.post('/api/chat/clear');
   };
 
@@ -376,12 +385,14 @@ function VoiceHub({ agent, onStart, onStop, health, activeModel, onLeave }) {
           display: 'flex',
           gap: 12,
           flexWrap: 'wrap',
+          alignItems: 'stretch',
         }}
       >
         <div
           style={{
-            flex: 2,
+            flex: '1 1 0',
             minWidth: 320,
+            minHeight: 0,
             background: 'var(--surface)',
             border: '1px solid var(--border)',
             borderRadius: 'var(--radius)',
@@ -681,8 +692,11 @@ function TurnsPanel({ turns, partial, phase }) {
   return (
     <div
       style={{
-        flex: 1,
-        minWidth: 260,
+        flex: '0 1 360px',
+        width: '100%',
+        minWidth: 0,
+        minHeight: 0,
+        alignSelf: 'stretch',
         maxWidth: 360,
         background: 'var(--surface)',
         border: '1px solid var(--border)',
@@ -710,7 +724,9 @@ function TurnsPanel({ turns, partial, phase }) {
         ref={scrollRef}
         style={{
           flex: 1,
+          minHeight: 0,
           overflowY: 'auto',
+          overflowX: 'hidden',
           padding: 14,
           display: 'flex',
           flexDirection: 'column',
@@ -726,7 +742,15 @@ function TurnsPanel({ turns, partial, phase }) {
           <TurnRow key={t.id} turn={t} />
         ))}
         {phase === 'thinking' && partial && !turns.some((t) => t.assistant === partial) && (
-          <div style={{ fontSize: 13.5, color: 'var(--text-2)', whiteSpace: 'pre-wrap' }}>
+          <div
+            style={{
+              fontSize: 13.5,
+              color: 'var(--text-2)',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              overflowWrap: 'anywhere',
+            }}
+          >
             <span style={{ color: 'var(--text-3)', fontSize: 11.5, fontWeight: 600 }}>
               GURNEY (typing)
             </span>
@@ -752,7 +776,15 @@ function TurnRow({ turn }) {
         >
           YOU
         </span>
-        <div style={{ fontSize: 13.5, color: 'var(--text)', whiteSpace: 'pre-wrap' }}>
+        <div
+          style={{
+            fontSize: 13.5,
+            color: 'var(--text)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            overflowWrap: 'anywhere',
+          }}
+        >
           {turn.user}
         </div>
       </div>
@@ -768,7 +800,15 @@ function TurnRow({ turn }) {
           >
             GURNEY
           </span>
-          <div style={{ fontSize: 13.5, color: 'var(--text-2)', whiteSpace: 'pre-wrap' }}>
+          <div
+            style={{
+              fontSize: 13.5,
+              color: 'var(--text-2)',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              overflowWrap: 'anywhere',
+            }}
+          >
             {turn.assistant}
           </div>
           {turn.audioUrl && (
