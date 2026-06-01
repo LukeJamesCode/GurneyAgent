@@ -1,7 +1,10 @@
 # Gurney-Tudor — Guided Learning Studio
 
-**Status:** design only — not yet started. This document captures the agreed
-v1 direction after a brainstorm; it is the brief a contributor can pick up.
+**Status:** v1 implemented — shipped as the `gurney-tudor` extension (see
+[`extensions/gurney-tudor/`](../extensions/gurney-tudor/) and its README). This
+document captures the agreed v1 direction; phase 2 (voice-over narration) is
+still outstanding. The data model already reserves a per-segment `narration`
+field for it.
 
 **v1 shape (decided):**
 
@@ -42,10 +45,10 @@ then instant consumption.
 
 ## North Star alignment
 
-| North Star                   | How this design respects it                                                                                                                                            |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| North Star                   | How this design respects it                                                                                                                                             |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Runs on small devices        | Generation is a bounded background job, not a hot-path cost. Per-lesson prompts keep context small enough for a Pi-class model. Heavy work is opt-in (codex / 7B tier). |
-| Extensions are mods          | Ships as a `gurney-tudor` extension. The only core/other-extension touch is a small, generic "extension panel" hook added to `gurney-frontend` (itself an extension).  |
+| Extensions are mods          | Ships as a `gurney-tudor` extension. The only core/other-extension touch is a small, generic "extension panel" hook added to `gurney-frontend` (itself an extension).   |
 | Telegram is the chat surface | This is a **panel-only** feature and says so. It requires `gurney-frontend`; it adds nothing to the Telegram loop. Consistent with the web UI already being opt-in.     |
 | Terminal-only setup          | Install/enable/config via `gurney ext install gurney-tudor` / `gurney config gurney-tudor`. No browser-based admin.                                                     |
 | CPU-only, qwen3.5-native     | qwen is the default generator (`reason` profile if present, else `tools`). Codex is strictly opt-in and gated by its existing daily budget.                             |
@@ -77,7 +80,6 @@ Two pieces:
    that back it. The frontend server is currently a single monolith
    (`server.ts`) with hardcoded tabs in `web/app.jsx` (`NAV` array +
    conditional render). Two ways to wire the tab:
-
    - **Pragmatic (recommended for v1):** add the tab directly to
      `gurney-frontend` — a `web/learnhub.jsx` component, a `NAV` entry with
      `requiresExt: 'gurney-tudor'` (so it only appears when the extension is
@@ -175,18 +177,18 @@ generation_jobs                       -- one row per generate request
           "title": "From RNNs to attention",
           "est_minutes": 6,
           "segments": [
-            { "kind": "explain",   "body_md": "...", "narration": "..." },
-            { "kind": "analogy",   "body_md": "..." },
-            { "kind": "diagram",   "widget": { "type": "mermaid", "src": "graph LR; ..." } },
-            { "kind": "checkpoint","body_md": "..." }
+            { "kind": "explain", "body_md": "...", "narration": "..." },
+            { "kind": "analogy", "body_md": "..." },
+            { "kind": "diagram", "widget": { "type": "mermaid", "src": "graph LR; ..." } },
+            { "kind": "checkpoint", "body_md": "..." },
           ],
           "quiz": [
-            { "question": "...", "choices": ["...","..."], "answer_idx": 1, "explain_md": "..." }
-          ]
-        }
-      ]
-    }
-  ]
+            { "question": "...", "choices": ["...", "..."], "answer_idx": 1, "explain_md": "..." },
+          ],
+        },
+      ],
+    },
+  ],
 }
 ```
 
@@ -242,7 +244,7 @@ Small models are unreliable at emitting strict JSON. Mitigations, in order:
 2. **Validate + one repair pass.** Parse and schema-check each result; on
    failure, send the malformed output back with "return valid JSON only"
    (reuse the JSON-fence stripping already in `gurney-codex`'s
-   `model-provider.ts`). 
+   `model-provider.ts`).
 3. **Graceful fallback.** If a lesson still fails to parse, fall back to storing
    it as a single `explain` segment of plain markdown — the lesson is still
    usable, just not richly segmented. A lesson is marked `failed` only if even
@@ -307,7 +309,7 @@ All instant — reads persisted course data.
 | 1b    | Generation pipeline: outline call + per-lesson loop, JSON validation + repair + fallback, qwen routing, jobs. |
 | 1c    | `gurney-frontend` Learn tab: library, live generation experience, lesson player, checkpoint quizzes.          |
 | 1d    | Mastery map + progress persistence; codex-optional generator setting; polish + extension ability tests.       |
-| 2     | Voice-over: narration TTS pre-bake job + karaoke playback (requires `gurney-voice`).                           |
+| 2     | Voice-over: narration TTS pre-bake job + karaoke playback (requires `gurney-voice`).                          |
 
 ## Risks & open questions
 
@@ -333,5 +335,5 @@ All instant — reads persisted course data.
 - **Open:** Where do courses live for multi-user installs? v1 assumes the single
   owner chat (like `course_progress` mirroring `chat_prefs`); revisit if/when the
   panel grows real multi-user auth.
-</content>
-</invoke>
+  </content>
+  </invoke>

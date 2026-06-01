@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "default_generator": {
+      "type": "string",
+      "enum": ["local", "codex"],
+      "default": "local",
+      "description": "Which model builds new courses by default. 'local' uses your Ollama/qwen model (free, slower); 'codex' uses gurney-codex if it's enabled and authed (faster, spends your daily Codex budget). Codex falls back to local automatically if it's unavailable."
+    },
+    "default_depth": {
+      "type": "string",
+      "enum": ["quick", "standard", "deep"],
+      "default": "standard",
+      "description": "How many modules and lessons a new course aims for. 'quick' is fastest to generate; 'deep' is the most thorough but takes the longest on local models."
+    }
+  }
+}

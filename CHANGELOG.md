@@ -6,6 +6,17 @@ Format: `## [version] — YYYY-MM-DD`
 
 ---
 
+## [1.4.0] — 2026-06-01
+
+### Added
+
+- `gurney-tudor` extension: a guided-learning studio (NotebookLM-style, built for a CPU/qwen box). Give it a topic and it compiles a whole interactive course up front — modules → lessons → step-through slides, with checkpoint quizzes, on-demand "explain simpler / go deeper", a flashcard review mode, and a mastery map. The slow generation runs once as a background job; playback is then instant because nothing calls a model in real time, which is how the 40–60s local-inference latency is hidden from the learner.
+- `gurney-tudor`: builds locally on your Ollama/qwen model by default (free), with optional Codex (`default_generator: codex`) for speed — Codex falls back to local automatically if it's unavailable or its daily budget is spent mid-build. Reliability on small models comes from a flat, line-tagged generation format (not nested JSON) with deterministic parsers and graceful fallbacks.
+- `gurney-tudor`: `/learn <topic>` Telegram command to kick off a build from chat; generation is observable from the panel since both write to the shared DB. Two-stage generation (quick outline, then lessons one at a time) means lesson 1 is usable while the rest compile.
+- `gurney-frontend`: new **Learn** tab (shown only when `gurney-tudor` is enabled) with the course library, a live "course building" view, the lesson player, flashcard review, and mastery map. New `/api/tudor/*` routes back it, including a DB-polling progress stream that survives reconnects and resumes a build left mid-flight by a restart.
+
+---
+
 ## [1.3.0] — 2026-05-25
 
 ### Added

@@ -8,6 +8,7 @@ const { useState, useEffect, useCallback, useRef } = React;
 
 const NAV = [
   { id: 'chat', label: 'Chat Hub', icon: 'chat' },
+  { id: 'learn', label: 'Learn', icon: 'spark', requiresExt: 'gurney-tudor' },
   { id: 'voice', label: 'Voice Hub', icon: 'mic', requiresExt: 'gurney-voice' },
   { id: 'history', label: 'History', icon: 'doc' },
   { id: 'extensions', label: 'Extensions', icon: 'plug' },
@@ -94,6 +95,13 @@ function App() {
     if (route !== 'voice') return;
     const names = state && state.extensions && state.extensions.enabledNames;
     if (names && names.indexOf('gurney-voice') === -1) setRoute('chat');
+  }, [route, state]);
+
+  // Same for the Learn tab (gurney-tudor).
+  useEffect(() => {
+    if (route !== 'learn') return;
+    const names = state && state.extensions && state.extensions.enabledNames;
+    if (names && names.indexOf('gurney-tudor') === -1) setRoute('chat');
   }, [route, state]);
 
   const agentAction = useCallback(
@@ -224,6 +232,7 @@ function App() {
     ((state.extensions && state.extensions.enabled) || 0) - (panelEnabled ? 1 : 0),
   );
   const voiceEnabled = enabledExts.indexOf('gurney-voice') !== -1;
+  const learnEnabled = enabledExts.indexOf('gurney-tudor') !== -1;
 
   return (
     <div className="app-shell">
@@ -282,6 +291,9 @@ function App() {
               activeModel={models.chat || null}
               onLeave={() => setRoute('chat')}
             />
+          )}
+          {route === 'learn' && learnEnabled && (
+            <window.LearnHub agentRunning={agentStatus === 'running'} />
           )}
           {route === 'history' && <window.HistoryTab />}
           {route === 'extensions' && <window.ExtensionsTab />}

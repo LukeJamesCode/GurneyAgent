@@ -28,5 +28,11 @@
     "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
     "subpath": "extensions/gurney-frontend",
     "description": "Local web control panel: a friendly browser UI for setup, running the agent, chatting, managing extensions, editing settings, and watching logs/diagnostics — everything the CLI can do, without a terminal."
+  },
+  {
+    "name": "gurney-tudor",
+    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
+    "subpath": "extensions/gurney-tudor",
+    "description": "Guided-learning studio: turn any topic into a full interactive course in the web panel — modules, step-through lessons, checkpoints, quizzes, flashcard review, and a mastery map. Builds locally on qwen, with optional Codex."
   }
 ]

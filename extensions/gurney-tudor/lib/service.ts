@@ -1,0 +1,250 @@
+// High-level service: the API the frontend HTTP routes and the Telegram command
+// both call. Owns the generation job lifecycle (outline -> lessons), progress
+// persistence, and the on-demand rephrase. Generation runs as fire-and-forget
+// against the shared DB; the SSE progress stream polls that DB, so a job is
+// observable across processes and survives a client reconnect.
+
+import type { LLM, ProfileName } from '../../../src/core/llm.js';
+import type { Logger } from '../../../src/util/log.js';
+import type { DB } from '../../../src/storage/db.js';
+import type { CourseTree, CourseSummary } from './store.js';
+import type { Depth, Generator, ProgressState } from './types.js';
+import * as store from './store.js';
+import { chooseModel, generateLesson, generateOutline, labelFor, rephrase } from './generate.js';
+
+export interface TudorCtx {
+  db: DB;
+  llm: LLM;
+  log: Logger;
+}
+
+// Courses with a generation job live in THIS process. Used to avoid double-
+// running a job and to detect a course that was left mid-generation by a
+// process restart (so we can transparently resume it).
+const activeJobs = new Set<string>();
+
+function estMinutes(seed: number): number {
+  // Cheap deterministic-ish estimate; the UI just wants a rough "5 min" badge.
+  return 4 + (seed % 4);
+}
+
+export function startCourse(
+  ctx: TudorCtx,
+  args: { topic: string; depth: Depth; generator: Generator },
+): string {
+  const topic = args.topic.trim().slice(0, 300);
+  const choice = chooseModel(ctx.llm, args.generator);
+  const id = store.createCourse(ctx.db, { topic, depth: args.depth, model: choice.label });
+  // Fire-and-forget — the panel/daemon process keeps running, and progress is
+  // tracked in the DB so the UI can follow along and resume if needed.
+  void runJob(ctx, id, args.depth, choice).catch((e) => {
+    ctx.log.error('tudor: generation job crashed', {
+      courseId: id,
+      error: e instanceof Error ? e.message : String(e),
+    });
+  });
+  return id;
+}
+
+// Re-attach to a course that's still 'generating' but has no live job in this
+// process (e.g. the panel restarted mid-build). Skips the outline if modules
+// already exist and just finishes the pending lessons.
+export function resumeIfStale(ctx: TudorCtx, courseId: string): void {
+  if (activeJobs.has(courseId)) return;
+  const course = store.getCourse(ctx.db, courseId);
+  if (!course || course.status !== 'generating') return;
+  void runJob(ctx, courseId, course.depth, null).catch((e) => {
+    ctx.log.error('tudor: resume job crashed', {
+      courseId,
+      error: e instanceof Error ? e.message : String(e),
+    });
+  });
+}
+
+async function runJob(
+  ctx: TudorCtx,
+  courseId: string,
+  depth: Depth,
+  choice: ReturnType<typeof chooseModel> | null,
+): Promise<void> {
+  if (activeJobs.has(courseId)) return;
+  activeJobs.add(courseId);
+  const { db, llm, log } = ctx;
+  // On resume we don't have the original ModelChoice; rebuild a local one.
+  let ref: ProfileName | { model: string } = choice?.ref ?? chooseModel(llm, 'local').ref;
+  const fallback: ProfileName = choice?.fallback ?? chooseModel(llm, 'local').fallback;
+
+  // Run a generation step; if the primary model (codex) throws, downgrade to
+  // the local fallback for the rest of the course and retry the step once.
+  const withDowngrade = async <T>(step: () => Promise<T>): Promise<T> => {
+    try {
+      return await step();
+    } catch (e) {
+      if (typeof ref !== 'object') throw e; // already local — nothing to fall back to
+      log.warn('tudor: primary generator failed, falling back to local', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+      ref = fallback;
+      store.setCourseModel(db, courseId, labelFor(llm, ref));
+      return step();
+    }
+  };
+
+  try {
+    // --- Phase 1: outline (only if not already built) ---
+    let lessons = store.listPendingLessons(db, courseId);
+    const course = store.getCourse(db, courseId);
+    const hasModules = (store.getCourseTree(db, courseId)?.modules.length ?? 0) > 0;
+
+    if (!hasModules) {
+      store.updateJob(db, courseId, { phase: 'outline', done: 0, total: 0 });
+      const outline = await withDowngrade(() =>
+        generateOutline(llm, ref, course?.topic ?? '', depth, log),
+      );
+      store.persistOutline(db, courseId, outline);
+      lessons = store.listPendingLessons(db, courseId);
+    }
+
+    // --- Phase 2: lessons, one at a time, so the learner can start lesson 1
+    // while the rest keep compiling. ---
+    const total = lessons.length;
+    const title = store.getCourse(db, courseId)?.title ?? course?.topic ?? '';
+    store.updateJob(db, courseId, { phase: 'lessons', done: 0, total });
+
+    let done = 0;
+    for (const lesson of lessons) {
+      store.setLessonStatus(db, lesson.id, 'generating');
+      try {
+        const parsed = await withDowngrade(() =>
+          generateLesson(llm, ref, {
+            courseTitle: title,
+            moduleTitle: store.moduleTitle(db, lesson.module_id),
+            lessonTitle: lesson.title,
+            siblingTitles: store.moduleSiblingTitles(db, lesson.module_id),
+          }),
+        );
+        store.replaceLessonContent(db, lesson.id, parsed, estMinutes(lesson.title.length));
+      } catch (e) {
+        log.warn('tudor: lesson generation failed', {
+          courseId,
+          lesson: lesson.title,
+          error: e instanceof Error ? e.message : String(e),
+        });
+        store.setLessonStatus(db, lesson.id, 'failed');
+      }
+      done += 1;
+      store.updateJob(db, courseId, { done });
+    }
+
+    store.setCourseStatus(db, courseId, 'ready');
+    store.updateJob(db, courseId, { error: null });
+  } catch (e) {
+    log.error('tudor: course generation failed', {
+      courseId,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    store.setCourseStatus(db, courseId, 'failed');
+    store.updateJob(db, courseId, { error: e instanceof Error ? e.message : String(e) });
+  } finally {
+    activeJobs.delete(courseId);
+  }
+}
+
+// --- Reads & mutations the routes expose ---
+
+export function listCourses(ctx: TudorCtx): CourseSummary[] {
+  return store.listCourses(ctx.db);
+}
+
+export function getCourse(ctx: TudorCtx, id: string): CourseTree | null {
+  const tree = store.getCourseTree(ctx.db, id);
+  if (tree && tree.course.status === 'generating') resumeIfStale(ctx, id);
+  return tree;
+}
+
+export interface Snapshot {
+  status: string;
+  title: string | null;
+  phase: string;
+  done: number;
+  total: number;
+  error: string | null;
+  lessons: Array<{ id: string; status: string }>;
+  active: boolean;
+}
+
+export function snapshot(ctx: TudorCtx, id: string): Snapshot | null {
+  const course = store.getCourse(ctx.db, id);
+  if (!course) return null;
+  if (course.status === 'generating') resumeIfStale(ctx, id);
+  const job = store.getJob(ctx.db, id);
+  const tree = store.getCourseTree(ctx.db, id);
+  const lessonStates =
+    tree?.modules.flatMap((m) => m.lessons.map((l) => ({ id: l.id, status: l.status }))) ?? [];
+  return {
+    status: course.status,
+    title: course.title,
+    phase: job?.phase ?? 'outline',
+    done: job?.done ?? 0,
+    total: job?.total ?? 0,
+    error: job?.error ?? null,
+    lessons: lessonStates,
+    active: activeJobs.has(id),
+  };
+}
+
+export function recordProgress(
+  ctx: TudorCtx,
+  courseId: string,
+  lessonId: string,
+  state: ProgressState,
+  confidence: number,
+): void {
+  store.upsertProgress(ctx.db, courseId, lessonId, state, confidence);
+}
+
+export function deleteCourse(ctx: TudorCtx, id: string): void {
+  store.deleteCourse(ctx.db, id);
+}
+
+// On-demand "explain simpler / go deeper". Caches the result on the segment so
+// a repeat is instant and costs no further model time.
+export async function rephraseSegment(
+  ctx: TudorCtx,
+  segmentId: string,
+  mode: 'simpler' | 'deeper',
+): Promise<{ text: string; cached: boolean }> {
+  const seg = store.getSegment(ctx.db, segmentId);
+  if (!seg) throw new Error('segment not found');
+  const cache: Record<string, string> = seg.variants_json ? JSON.parse(seg.variants_json) : {};
+  if (cache[mode]) return { text: cache[mode]!, cached: true };
+
+  const ref = chooseModel(ctx.llm, 'local').ref; // rephrase always uses local (cheap, no budget)
+  const lessonTitle = store.lessonTitleForSegment(ctx.db, segmentId);
+  const text = await rephrase(ctx.llm, ref, mode, seg.body_md, lessonTitle);
+  cache[mode] = text;
+  store.setSegmentVariants(ctx.db, segmentId, cache);
+  return { text, cached: false };
+}
+
+export interface TudorStatus {
+  ok: true;
+  defaults: { generator: Generator; depth: Depth };
+  localModel: string;
+  codexAvailable: boolean;
+}
+
+export function status(ctx: TudorCtx): TudorStatus {
+  const generator =
+    (store.readExtSetting(ctx.db, 'default_generator', 'local') as Generator) || 'local';
+  const depth = (store.readExtSetting(ctx.db, 'default_depth', 'standard') as Depth) || 'standard';
+  return {
+    ok: true,
+    defaults: {
+      generator: generator === 'codex' ? 'codex' : 'local',
+      depth: ['quick', 'standard', 'deep'].includes(depth) ? depth : 'standard',
+    },
+    localModel: labelFor(ctx.llm, chooseModel(ctx.llm, 'local').ref),
+    codexAvailable: store.isExtensionEnabled(ctx.db, 'gurney-codex'),
+  };
+}

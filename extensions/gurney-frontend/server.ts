@@ -80,6 +80,7 @@ import {
   readPid,
 } from '../../src/cli/daemon.js';
 import type { Manifest, SettingsSchema } from '../../src/core/extensions.js';
+import * as tudor from '../gurney-tudor/lib/service.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = join(HERE, 'web');
@@ -1724,6 +1725,81 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
 }
 
 // ---------------------------------------------------------------------------
+// Gurney-Tudor: guided-learning course generation + playback.
+//
+// The routes below call into the gurney-tudor extension's pure service layer
+// using this panel's already-built db/llm runtime (the same one direct chat
+// uses, which also runs gurney-tudor's migrations via loadAll). Generation runs
+// as a background job that writes to the shared DB; the progress stream just
+// polls that DB, so it survives a browser reconnect and reflects a build even
+// if it was kicked off from the /learn Telegram command in another process.
+// ---------------------------------------------------------------------------
+async function tudorCtx(): Promise<tudor.TudorCtx> {
+  const cfg = effectiveConfig(homeDir());
+  const rt = await getDirectChatRuntime(cfg);
+  return { db: rt.db, llm: rt.llm, log: rt.log };
+}
+
+function streamTudorEvents(req: IncomingMessage, res: ServerResponse, id: string): void {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-store',
+    connection: 'keep-alive',
+  });
+  let last = '';
+  let closed = false;
+  // Unnamed `data:` events carrying a `type` field — the panel's streamSSE
+  // helper only listens for the default message event, so this matches the
+  // same convention the ext enable-stream uses.
+  const send = (data: unknown): void => {
+    try {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    } catch {
+      /* client disconnected */
+    }
+  };
+  const cleanup = (): void => {
+    closed = true;
+    clearInterval(timer);
+    clearInterval(keepAlive);
+  };
+  const tick = async (): Promise<void> => {
+    if (closed) return;
+    try {
+      const snap = tudor.snapshot(await tudorCtx(), id);
+      if (!snap) {
+        send({ type: 'error', message: 'course not found' });
+        cleanup();
+        res.end();
+        return;
+      }
+      const json = JSON.stringify(snap);
+      if (json !== last) {
+        last = json;
+        send({ type: 'snapshot', ...snap });
+      }
+      if (snap.status !== 'generating') {
+        send({ type: 'done', status: snap.status });
+        cleanup();
+        res.end();
+      }
+    } catch (e) {
+      send({ type: 'error', message: e instanceof Error ? e.message : String(e) });
+    }
+  };
+  const timer = setInterval(() => void tick(), 1500);
+  const keepAlive = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      /* ignore */
+    }
+  }, 20_000);
+  req.on('close', cleanup);
+  void tick(); // emit an immediate snapshot rather than waiting for the first interval
+}
+
+// ---------------------------------------------------------------------------
 // Request router
 // ---------------------------------------------------------------------------
 function requestToken(req: IncomingMessage, url: URL): string {
@@ -2071,6 +2147,71 @@ async function handleApi(
         command: formatGurneyCommand(args),
         output: r.out + r.err,
       });
+    }
+
+    // --- Gurney-Tudor (guided learning) ---
+    if (path === '/api/tudor/status' && method === 'GET') {
+      return sendJson(res, 200, tudor.status(await tudorCtx()));
+    }
+    if (path === '/api/tudor/courses' && method === 'GET') {
+      return sendJson(res, 200, { courses: tudor.listCourses(await tudorCtx()) });
+    }
+    if (path === '/api/tudor/courses' && method === 'POST') {
+      const body = await readJson<{ topic?: string; depth?: string; generator?: string }>(req);
+      const topic = (body.topic ?? '').trim();
+      if (!topic) return sendJson(res, 400, { error: 'a topic is required' });
+      const depthRaw = body.depth ?? 'standard';
+      const depth = (['quick', 'standard', 'deep'].includes(depthRaw) ? depthRaw : 'standard') as
+        | 'quick'
+        | 'standard'
+        | 'deep';
+      const generator: 'local' | 'codex' = body.generator === 'codex' ? 'codex' : 'local';
+      const id = tudor.startCourse(await tudorCtx(), { topic, depth, generator });
+      return sendJson(res, 200, { ok: true, id });
+    }
+
+    const courseGet = /^\/api\/tudor\/courses\/([a-f0-9-]+)$/i.exec(path);
+    if (courseGet && method === 'GET') {
+      const tree = tudor.getCourse(await tudorCtx(), courseGet[1]!);
+      if (!tree) return sendJson(res, 404, { error: 'course not found' });
+      return sendJson(res, 200, tree);
+    }
+
+    const courseEvents = /^\/api\/tudor\/courses\/([a-f0-9-]+)\/events$/i.exec(path);
+    if (courseEvents && method === 'GET') {
+      return streamTudorEvents(req, res, courseEvents[1]!);
+    }
+
+    const courseDelete = /^\/api\/tudor\/courses\/([a-f0-9-]+)\/delete$/i.exec(path);
+    if (courseDelete && method === 'POST') {
+      tudor.deleteCourse(await tudorCtx(), courseDelete[1]!);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    const courseProgress = /^\/api\/tudor\/courses\/([a-f0-9-]+)\/progress$/i.exec(path);
+    if (courseProgress && method === 'POST') {
+      const b = await readJson<{ lessonId?: string; state?: string; confidence?: number }>(req);
+      if (!b.lessonId) return sendJson(res, 400, { error: 'lessonId is required' });
+      const stateRaw = b.state ?? 'in_progress';
+      const state = (
+        ['unseen', 'in_progress', 'done'].includes(stateRaw) ? stateRaw : 'in_progress'
+      ) as 'unseen' | 'in_progress' | 'done';
+      tudor.recordProgress(
+        await tudorCtx(),
+        courseProgress[1]!,
+        b.lessonId,
+        state,
+        typeof b.confidence === 'number' ? b.confidence : 0,
+      );
+      return sendJson(res, 200, { ok: true });
+    }
+
+    const segRephrase = /^\/api\/tudor\/segments\/([a-f0-9-]+)\/rephrase$/i.exec(path);
+    if (segRephrase && method === 'POST') {
+      const b = await readJson<{ mode?: string }>(req);
+      const mode: 'simpler' | 'deeper' = b.mode === 'deeper' ? 'deeper' : 'simpler';
+      const r = await tudor.rephraseSegment(await tudorCtx(), segRephrase[1]!, mode);
+      return sendJson(res, 200, { ok: true, ...r });
     }
 
     return sendJson(res, 404, { error: `no route for ${method} ${path}` });
