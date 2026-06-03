@@ -111,8 +111,16 @@ async function runJob(
       return await step();
     } catch (e) {
       if (typeof ref !== 'object') throw e; // already local — nothing to fall back to
+      const msg = e instanceof Error ? e.message : String(e);
+      if (
+        (e instanceof Error && e.name === 'CodexNotAuthedError') ||
+        msg.includes('Codex rejected the credentials') ||
+        msg.includes('Not logged in to Codex')
+      ) {
+        throw e;
+      }
       log.warn('tudor: primary generator failed, falling back to local', {
-        error: e instanceof Error ? e.message : String(e),
+        error: msg,
       });
       ref = fallback;
       store.setCourseModel(db, courseId, labelFor(llm, ref));

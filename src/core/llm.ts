@@ -30,6 +30,7 @@ export interface ChatMessage {
   content: string;
   tool_call_id?: string;
   tool_name?: string;
+  tool_calls?: ToolCall[];
 }
 
 export interface ToolSchema {
@@ -463,6 +464,7 @@ export function createOllama(opts: OllamaOptions): LLM {
         content: m.content,
         ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
         ...(m.tool_name ? { name: m.tool_name } : {}),
+        ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
       })),
       stream: true,
       keep_alive: target.cfg?.keepAlive ?? '5m',

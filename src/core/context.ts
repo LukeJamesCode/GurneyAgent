@@ -12,13 +12,14 @@
 // is a workable upper bound for qwen3-class models. The orchestrator tightens
 // this with the real prompt_tokens count Ollama returns after each turn.
 
-import type { ChatMessage, Role } from './llm.js';
+import type { ChatMessage, Role, ToolCall } from './llm.js';
 
 export interface HistoryMessage {
   role: Role;
   content: string;
   tool_call_id?: string;
   tool_name?: string;
+  tool_calls?: ToolCall[];
 }
 
 export interface BuildOptions {
@@ -103,6 +104,7 @@ export function build(opts: BuildOptions): BuiltPrompt {
     const m: ChatMessage = { role: h.role, content: h.content };
     if (h.tool_call_id) m.tool_call_id = h.tool_call_id;
     if (h.tool_name) m.tool_name = h.tool_name;
+    if (h.tool_calls) m.tool_calls = h.tool_calls;
     messages.push(m);
   }
 

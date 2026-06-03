@@ -82,12 +82,22 @@ export function createFastCache(opts: FastCacheOptions = {}): FastCache {
 // shared with the base — that's intentional: the metrics file reports a
 // single hit-rate for the whole process, not per-extension.
 export function namespacedCache(namespace: string, base: FastCache): FastCache {
+  const keys = new Set<string>();
   const p = (k: string): string => `${namespace}:${k}`;
   return {
     get: (k) => base.get(p(k)),
-    set: (k, v, ttl) => base.set(p(k), v, ttl),
-    delete: (k) => base.delete(p(k)),
-    clear: () => base.clear(),
+    set: (k, v, ttl) => {
+      keys.add(p(k));
+      base.set(p(k), v, ttl);
+    },
+    delete: (k) => {
+      keys.delete(p(k));
+      base.delete(p(k));
+    },
+    clear: () => {
+      for (const k of keys) base.delete(k);
+      keys.clear();
+    },
     stats: () => base.stats(),
   };
 }

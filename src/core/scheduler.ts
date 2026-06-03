@@ -425,11 +425,11 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     n: Nudge,
     jobLabel: string,
     dispatchOpts: DispatchOptions = {},
-  ): Promise<boolean> {
+  ): Promise<'sent' | 'deferred' | 'dropped'> {
     if (n.key && recentDedupHit(n.key)) {
       stats.nudgesDropped.dedup += 1;
       log.debug('nudge deduped', { key: n.key, job: jobLabel });
-      return false;
+      return 'dropped';
     }
     if (opts.prefs) {
       const q = opts.prefs.isQuiet(n.chatId, now());
@@ -447,7 +447,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
           reason: q.reason,
           job: jobLabel,
         });
-        return false;
+        return 'deferred';
       }
     }
     if (rateLimited(n.chatId)) {
@@ -460,19 +460,19 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         dispatchOpts.sourceDeferredId,
       );
       log.debug('nudge rate-limited', { chatId: n.chatId, job: jobLabel });
-      return false;
+      return 'deferred';
     }
     if (!opts.dispatch) {
       stats.nudgesDropped.no_dispatch += 1;
       log.warn('nudge dropped: no dispatch hook', { chatId: n.chatId, job: jobLabel });
-      return false;
+      return 'dropped';
     }
     pendingByChat.set(n.chatId, (pendingByChat.get(n.chatId) ?? 0) + 1);
     try {
       await opts.dispatch(n);
       recordSent(n, jobLabel);
       stats.nudgesSent += 1;
-      return true;
+      return 'sent';
     } catch (e) {
       log.warn('nudge dispatch failed', {
         job: jobLabel,
@@ -489,7 +489,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
           )
           .run(now().getTime() + DEFERRED_RETRY_BACKOFF_MS, dispatchOpts.sourceDeferredId);
       }
-      return false;
+      return 'dropped';
     } finally {
       const cur = pendingByChat.get(n.chatId) ?? 0;
       if (cur <= 1) pendingByChat.delete(n.chatId);
@@ -525,7 +525,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     // SQL already orders by priority DESC, created_at ASC, id ASC — re-sorting
     // in JS would discard the created_at tiebreaker.
     for (const row of rows) {
-      const delivered = await dispatchNudge(
+      const status = await dispatchNudge(
         {
           chatId: row.chat_id,
           text: row.text,
@@ -537,7 +537,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         `${row.extension}:${row.job}`,
         { sourceDeferredId: row.id },
       );
-      if (delivered) {
+      if (status === 'sent' || status === 'dropped') {
         opts.db
           .prepare(
             `UPDATE deferred_nudges SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL`,
@@ -646,12 +646,22 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
 // Inlined to avoid a circular import with fast-cache.ts (which knows nothing
 // about the scheduler).
 function namespacedView(namespace: string, base: FastCache): FastCache {
+  const keys = new Set<string>();
   const p = (k: string): string => `${namespace}:${k}`;
   return {
     get: (k) => base.get(p(k)),
-    set: (k, v, ttl) => base.set(p(k), v, ttl),
-    delete: (k) => base.delete(p(k)),
-    clear: () => base.clear(),
+    set: (k, v, ttl) => {
+      keys.add(p(k));
+      base.set(p(k), v, ttl);
+    },
+    delete: (k) => {
+      keys.delete(p(k));
+      base.delete(p(k));
+    },
+    clear: () => {
+      for (const k of keys) base.delete(k);
+      keys.clear();
+    },
     stats: () => base.stats(),
   };
 }

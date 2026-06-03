@@ -390,12 +390,12 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
       // millions of rows. Ordered DESC then reversed so we get the most
       // recent 500 messages, not the oldest 500.
       selectHistory: opts.db.prepare(
-        `SELECT role, content, tool_call_id, tool_name FROM messages
+        `SELECT role, content, tool_call_id, tool_name, tool_calls_json FROM messages
          WHERE conversation_id = ? ORDER BY id DESC LIMIT 500`,
       ),
       insertMessage: opts.db.prepare(
-        `INSERT INTO messages (conversation_id, role, content, tool_call_id, tool_name, tokens, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (conversation_id, role, content, tool_call_id, tool_name, tool_calls_json, tokens, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ),
       selectLastUserAt: opts.db.prepare(
         `SELECT created_at AS t FROM messages
@@ -422,12 +422,20 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
       content: string;
       tool_call_id: string | null;
       tool_name: string | null;
+      tool_calls_json: string | null;
     }>;
     rows.reverse();
     return rows.map((r) => {
       const m: HistoryMessage = { role: r.role, content: r.content };
       if (r.tool_call_id) m.tool_call_id = r.tool_call_id;
       if (r.tool_name) m.tool_name = r.tool_name;
+      if (r.tool_calls_json) {
+        try {
+          m.tool_calls = JSON.parse(r.tool_calls_json);
+        } catch {
+          // ignore malformed JSON
+        }
+      }
       return m;
     });
   }
@@ -436,7 +444,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     conversationId: number,
     role: HistoryMessage['role'],
     content: string,
-    extra: { tool_call_id?: string; tool_name?: string; tokens?: number } = {},
+    extra: { tool_call_id?: string; tool_name?: string; tokens?: number; tool_calls?: ToolCall[] } = {},
   ): void {
     getStmts().insertMessage.run(
       conversationId,
@@ -444,6 +452,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
       content,
       extra.tool_call_id ?? null,
       extra.tool_name ?? null,
+      extra.tool_calls ? JSON.stringify(extra.tool_calls) : null,
       extra.tokens ?? null,
       Date.now(),
     );
@@ -483,7 +492,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     type PendingWrite = {
       role: HistoryMessage['role'];
       content: string;
-      extra: { tool_call_id?: string; tool_name?: string; tokens?: number };
+      extra: { tool_call_id?: string; tool_name?: string; tokens?: number; tool_calls?: ToolCall[] };
     };
     let pendingRound: PendingWrite[] = [];
     const flushRound = (): void => {
@@ -497,12 +506,13 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     const trackingAppend = (
       role: HistoryMessage['role'],
       content: string,
-      extra: { tool_call_id?: string; tool_name?: string; tokens?: number } = {},
+      extra: { tool_call_id?: string; tool_name?: string; tokens?: number; tool_calls?: ToolCall[] } = {},
     ): void => {
       pendingRound.push({ role, content, extra });
       const entry: HistoryMessage = { role, content };
       if (extra.tool_call_id) entry.tool_call_id = extra.tool_call_id;
       if (extra.tool_name) entry.tool_name = extra.tool_name;
+      if (extra.tool_calls) entry.tool_calls = extra.tool_calls;
       history.push(entry);
     };
 
@@ -663,8 +673,18 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           n: lastChunk.toolCalls.length,
           names: lastChunk.toolCalls.map((c) => c.name),
         });
+        const allowedToolNames = new Set(toolSchemas.map((s) => s.function.name));
+        const willShortCircuit = lastChunk.toolCalls.every((call) => {
+          if (!allowedToolNames.has(call.name)) return false;
+          return opts.tools.get(call.name)?.selfReplying === true;
+        });
+
         // Persist the assistant turn that requested the tool calls.
-        if (assistantText) trackingAppend('assistant', assistantText);
+        if (!willShortCircuit) {
+          if (assistantText || lastChunk.toolCalls.length > 0) {
+            trackingAppend('assistant', assistantText || '', { tool_calls: lastChunk.toolCalls });
+          }
+        }
         // Track whether every tool in this round is self-replying. When all
         // are, the orchestrator can ship the concatenated tool outputs as
         // the final reply and skip the follow-up LLM round-trip — that round
@@ -678,7 +698,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         // pruning strategy and routes "Plan my day" to briefing_today,
         // "Cancel the camping event" to tasks_complete, etc. Enforce the
         // per-turn schema as the source of truth for what's callable.
-        const allowedToolNames = new Set(toolSchemas.map((s) => s.function.name));
+        // per-turn schema as the source of truth for what's callable.
         for (const call of lastChunk.toolCalls) {
           if (!allowedToolNames.has(call.name)) {
             const available = allowedToolNames.size
@@ -918,6 +938,9 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         ...(lastChunk?.completionTokens !== undefined
           ? { tokens: lastChunk.completionTokens }
           : {}),
+        ...(lastChunk?.toolCalls && lastChunk.toolCalls.length > 0
+          ? { tool_calls: lastChunk.toolCalls }
+          : {}),
       });
     }
     flushRound();
@@ -963,6 +986,13 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           lastErrors.set(chatId, m);
           log.error('orchestrator pump error', { chatId, error: m });
           next.reject(e);
+        }
+      }
+      if (shuttingDown) {
+        while (slot.queue.length > 0) {
+          const next = slot.queue.shift()!;
+          void next.send({ delta: 'Shutting down — try again later.', done: true });
+          next.resolve();
         }
       }
     } finally {

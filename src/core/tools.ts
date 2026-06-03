@@ -262,18 +262,29 @@ export function createToolRegistry(opts: RegistryOptions): ToolRegistry {
       let timer: NodeJS.Timeout | null = null;
       let timedOut = false;
       let signal: AbortSignal | undefined = ctx.signal;
+      
+      let timeoutReject: ((err: Error) => void) | undefined;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutReject = reject;
+      });
+
       if (toolTimeout > 0) {
         const tctl = new AbortController();
         timer = setTimeout(() => {
           timedOut = true;
-          tctl.abort(new ToolTimeoutError(toolTimeout));
+          const err = new ToolTimeoutError(toolTimeout);
+          tctl.abort(err);
+          timeoutReject?.(err);
         }, toolTimeout);
         signal = ctx.signal ? composeAbort(ctx.signal, tctl.signal) : tctl.signal;
       }
       const childCtx: ToolContext = { ...ctx, ...(signal ? { signal } : {}) };
 
       try {
-        const output = await h.invoke(call.arguments, childCtx);
+        const output = await Promise.race([
+          h.invoke(call.arguments, childCtx),
+          ...(toolTimeout > 0 ? [timeoutPromise] : [])
+        ]);
         const result: ToolResult = { call, ok: true, output };
         const listeners = afterExecute.get(call.name);
         if (listeners && listeners.length > 0) {
