@@ -40,5 +40,11 @@
     "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
     "subpath": "extensions/gurney-websearch",
     "description": "Safe, read-only web search as an LLM tool and /search command (DuckDuckGo or self-hosted SearXNG). SSRF-guarded, stripped to plain text, framed as untrusted data. Also powers Gurney-Tudor's optional research step."
+  },
+  {
+    "name": "gurney-discord",
+    "source": "https://github.com/LukeJamesCode/GurneyAgent.git",
+    "subpath": "extensions/gurney-discord",
+    "description": "Discord as a second chat surface alongside Telegram. Same model, memory, extensions, and confirm-tier UX. DM-allowlist or per-channel opt-in; confirm-tier prompts render as Discord buttons with the same single-use, time-boxed safety properties Telegram has."
   }
 ]
