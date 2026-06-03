@@ -1,7 +1,7 @@
 /* gurney-frontend API client.
  *
  * Thin wrapper around fetch that carries the panel token (read once from the
- * ?token= query param, then kept in sessionStorage) and exposes helpers for
+ * ?token= query param, then kept in localStorage) and exposes helpers for
  * JSON requests and Server-Sent Events. Every call resolves to { ok, data }
  * or { ok:false, error } so callers never have to try/catch network errors. */
 (function () {
@@ -9,9 +9,13 @@
   const fromUrl = params.get('token');
   if (fromUrl) {
     try {
-      sessionStorage.setItem('gurney_token', fromUrl);
+      // localStorage (not sessionStorage) so the token survives closing the
+      // tab. The token is stripped from the URL below, so the entry saved in
+      // browser history carries no token — without a persistent store,
+      // reopening from history would 401.
+      localStorage.setItem('gurney_token', fromUrl);
     } catch (e) {
-      /* sessionStorage may be unavailable; header still set below */
+      /* localStorage may be unavailable; header still set below */
     }
     // Strip the token from the visible URL bar without reloading.
     params.delete('token');
@@ -20,7 +24,7 @@
   }
   let token = fromUrl || '';
   try {
-    token = token || sessionStorage.getItem('gurney_token') || '';
+    token = token || localStorage.getItem('gurney_token') || '';
   } catch (e) {
     /* ignore */
   }
