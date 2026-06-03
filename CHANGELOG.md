@@ -6,6 +6,14 @@ Format: `## [version] — YYYY-MM-DD`
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- `gurney-frontend`: **the panel token now survives closing the tab.** The token was stripped from the URL on load (so it isn't saved in browser history) but only kept in `sessionStorage`, which is cleared when the tab closes — so reopening the panel from browser history hit a 401 "token invalid" because neither the URL nor the store had it. The token is now persisted in `localStorage`, so reopening from history works without re-running `gurney start`.
+
+---
+
 ## [1.6.0] — 2026-06-01
 
 ### Added

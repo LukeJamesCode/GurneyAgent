@@ -24,6 +24,19 @@ async function collect(it: AsyncIterable<ChatChunk>): Promise<ChatChunk[]> {
   return out;
 }
 
+// Mirror the orchestrator's drain loop, which breaks out of the iterator as
+// soon as it sees the done chunk instead of running it to EOF. Consuming the
+// stream this way is what exposed the breaker bug where recordSuccess() never
+// ran on the real pipeline.
+async function drainBreakingOnDone(it: AsyncIterable<ChatChunk>): Promise<ChatChunk[]> {
+  const out: ChatChunk[] = [];
+  for await (const c of it) {
+    out.push(c);
+    if (c.done) break;
+  }
+  return out;
+}
+
 test('chat() streams ndjson chunks and records prompt/completion tokens', async () => {
   const calls: Array<{ url: string; body: unknown }> = [];
   const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
@@ -107,6 +120,68 @@ test('circuit breaker trips after threshold failures and fails fast', async () =
   const before = n;
   await assert.rejects(collect(llm.chat({ profile: 'chat', messages: [] })), CircuitOpenError);
   assert.equal(n, before);
+  llm.stopIdleEviction();
+});
+
+test('records success when the consumer breaks on the done chunk (orchestrator drain)', async () => {
+  let mode: 'fail' | 'ok' = 'fail';
+  const fetchImpl = async () => {
+    if (mode === 'fail') return new Response('boom', { status: 500 });
+    return streamingResponse([
+      JSON.stringify({ model: 'm', message: { content: 'ok' }, done: true }),
+    ]);
+  };
+  const llm = createOllama({
+    baseUrl: 'http://x',
+    log: silentLogger(),
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    profiles: { chat: { model: 'm', contextTokens: 1024, heavy: false } },
+    failureThreshold: 3,
+    cooldownMs: 60_000,
+    now: () => 0,
+  });
+  // One real failure leaves the breaker counting.
+  await assert.rejects(collect(llm.chat({ profile: 'chat', messages: [] })), LLMHttpError);
+  assert.equal(llm.breakerSnapshot().failures, 1);
+  // A success consumed the way the orchestrator consumes it (break on the done
+  // chunk) must still reset the failure counter. Before the fix, the early
+  // break ran the generator's return() and skipped recordSuccess() entirely.
+  mode = 'ok';
+  await drainBreakingOnDone(llm.chat({ profile: 'chat', messages: [] }));
+  assert.equal(llm.breakerSnapshot().failures, 0);
+  llm.stopIdleEviction();
+});
+
+test('half-open breaker closes via the break-on-done consumer path', async () => {
+  let mode: 'fail' | 'ok' = 'fail';
+  const fetchImpl = async () => {
+    if (mode === 'fail') return new Response('boom', { status: 500 });
+    return streamingResponse([
+      JSON.stringify({ model: 'm', message: { content: 'ok' }, done: true }),
+    ]);
+  };
+  let nowVal = 0;
+  const llm = createOllama({
+    baseUrl: 'http://x',
+    log: silentLogger(),
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    profiles: { chat: { model: 'm', contextTokens: 1024, heavy: false } },
+    failureThreshold: 2,
+    cooldownMs: 1000,
+    halfOpenGrace: 2,
+    now: () => nowVal,
+  });
+  await assert.rejects(collect(llm.chat({ profile: 'chat', messages: [] })), LLMHttpError);
+  await assert.rejects(collect(llm.chat({ profile: 'chat', messages: [] })), LLMHttpError);
+  assert.equal(llm.breakerSnapshot().state, 'open');
+  // Cooldown elapses; both half-open probe successes are consumed with the
+  // early-break loop, which previously never closed the breaker.
+  nowVal = 2000;
+  mode = 'ok';
+  await drainBreakingOnDone(llm.chat({ profile: 'chat', messages: [] }));
+  assert.equal(llm.breakerSnapshot().state, 'half-open');
+  await drainBreakingOnDone(llm.chat({ profile: 'chat', messages: [] }));
+  assert.equal(llm.breakerSnapshot().state, 'closed');
   llm.stopIdleEviction();
 });
 

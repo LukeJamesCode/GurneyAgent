@@ -130,6 +130,14 @@ export function setupFollowups(opts: FollowupsOptions): Followups {
         // Stable dedup key in case a sweep runs twice in the same minute (it
         // shouldn't, but a process restart mid-tick could).
         key: `followup:${r.id}`,
+        // The row is marked fired the moment it's swept, so without deferral a
+        // followup that comes due during quiet hours / a rate-limit window — or
+        // hits a transient dispatch error — would be silently dropped and never
+        // re-emitted. Defer lets the scheduler persist and retry it; expiresAt
+        // bounds that retry so a permanently-undeliverable chat can't accrete
+        // rows forever.
+        defer: true,
+        expiresAt: new Date(t + 24 * 60 * 60_000),
       });
     }
     log.info('followups fired', { n: nudges.length });

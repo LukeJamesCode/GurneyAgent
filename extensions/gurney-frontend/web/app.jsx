@@ -133,7 +133,7 @@ function App() {
     const is401 = loadError.status === 401;
     const forgetToken = () => {
       try {
-        sessionStorage.removeItem('gurney_token');
+        localStorage.removeItem('gurney_token');
       } catch (e) {
         /* ignore */
       }

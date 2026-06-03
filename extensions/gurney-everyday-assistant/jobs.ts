@@ -138,6 +138,7 @@ export function register(host: Host): void {
         source: 'gurney-everyday-assistant',
         createdAt: firedAt,
         defer: true,
+        expiresAt: new Date(now + 24 * 60 * 60_000),
       });
       log.debug('reminder fired', { id: row.id, chatId: row.chat_id });
     }

@@ -14,7 +14,7 @@ const TELEGRAM_TOKEN_RE = /\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/g;
 const BEARER_RE = /\bBearer\s+[A-Za-z0-9._\-+/=]{8,}/gi;
 // Generic name=value where name looks secret-y.
 const ASSIGN_RE =
-  /\b(token|secret|key|password|passwd|authorization|bearer|api[_-]?key)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;)}\]]+)/gi;
+  /\b(token|secret|key|password|passwd|authorization|bearer|api[_-]?key)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;)}\]]+)/gi;
 // Common vendor token shapes. These leak through `ASSIGN_RE` when they appear
 // as bare values (e.g. inside an error message body), so we redact the literal
 // token shape too. Patterns are intentionally narrow to avoid false-positives.
@@ -31,7 +31,7 @@ export function redactString(input: string): string {
   let out = input
     .replace(TELEGRAM_TOKEN_RE, PLACEHOLDER)
     .replace(BEARER_RE, `Bearer ${PLACEHOLDER}`)
-    .replace(ASSIGN_RE, (_, name: string) => `${name}=${PLACEHOLDER}`);
+    .replace(ASSIGN_RE, (_, name: string, sep: string) => `${name}${sep}${PLACEHOLDER}`);
   for (const re of VENDOR_TOKEN_RES) out = out.replace(re, PLACEHOLDER);
   return out;
 }

@@ -63,6 +63,8 @@ export function readPid(home: string = homeDir()): number | null {
   const file = pidFilePath(home);
   if (!existsSync(file)) return null;
   const raw = readFileSync(file, 'utf8').trim();
+  // Reject partial garbage (e.g. "12abc") that parseInt would truncate to 12.
+  if (!/^\d+$/.test(raw)) return null;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) ? n : null;
 }

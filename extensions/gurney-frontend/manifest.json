@@ -6,7 +6,10 @@
   "deps": [],
   "capabilities": ["network", "storage"],
   "entrypoints": {
-    "setup": "./setup.ts"
+    "setup": "./setup.ts",
+    "commands": "./commands.ts"
   },
-  "telegram_commands": []
+  "telegram_commands": [
+    { "command": "web", "description": "Get the link to the web control panel" }
+  ]
 }
