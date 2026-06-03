@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "properties": {
+    "endpoints": {
+      "type": "string",
+      "default": "[]",
+      "description": "JSON array of endpoint objects. Each object needs alias, baseURL, apiKeySecret, models, and supports. See README for examples."
+    },
+    "allowed_base_urls": {
+      "type": "string",
+      "default": "",
+      "description": "JSON array snapshot of base URLs this install may call. If empty at load, Gurney snapshots the currently configured endpoints. Add new domains by updating this setting intentionally."
+    },
+    "time_zone": {
+      "type": "string",
+      "description": "IANA timezone used to bucket daily endpoint budgets. Defaults to system local timezone."
+    }
+  },
+  "required": []
+}
