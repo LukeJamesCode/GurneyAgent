@@ -238,6 +238,44 @@ test('reasoning field is normalized into streamed text', async () => {
   }
 });
 
+test('success usage is recorded before consumers break on the done chunk', async () => {
+  const host = freshHost();
+  try {
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        sse(
+          { choices: [{ delta: { content: 'hello' } }] },
+          { choices: [], usage: { prompt_tokens: 3, completion_tokens: 2 } },
+          '[DONE]',
+        ),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    const provider = createOpenAICompatibleProvider(host, endpoint, settings, {
+      fetchImpl,
+      now: () => Date.UTC(2026, 4, 28, 12),
+    });
+    for await (const chunk of provider.chat({
+      model: 'deepseek:deepseek-chat',
+      profile: { model: 'deepseek:deepseek-chat' },
+      messages: [{ role: 'user', content: 'hello' }],
+    })) {
+      if (chunk.done) break;
+    }
+    const row = host.db
+      .prepare(
+        `SELECT COUNT(*) AS n,
+                COALESCE(SUM(prompt_tokens), 0) AS pt,
+                COALESCE(SUM(completion_tokens), 0) AS ct
+           FROM openai_compat_usage
+          WHERE status = 'ok'`,
+      )
+      .get() as { n: number; pt: number; ct: number };
+    assert.deepEqual(row, { n: 1, pt: 3, ct: 2 });
+  } finally {
+    host.cleanup();
+  }
+});
+
 test('budget cap refuses loudly and records a denied row', async () => {
   const host = freshHost();
   try {

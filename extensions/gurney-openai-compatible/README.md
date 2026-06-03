@@ -56,8 +56,9 @@ Endpoint objects must use `secret://...` handles. Raw API keys do not belong in
 the `endpoints` JSON.
 
 This Gurney host does not yet expose `host.secrets`, so this extension mirrors
-the existing Codex pattern: the secret value is stored in the extension settings
-table under a derived key.
+the existing Codex pattern: secret values are stored in the extension settings
+table. The easiest path is the masked `secrets` setting, a JSON object whose
+keys are `secret://...` handles and whose values are raw API keys.
 
 For:
 
@@ -65,7 +66,16 @@ For:
 "apiKeySecret": "secret://openai-compatible/deepseek"
 ```
 
-store the raw key in:
+set `secrets` to:
+
+```json
+{
+  "secret://openai-compatible/deepseek": "sk-your-key"
+}
+```
+
+For compatibility with older manual setups, the extension also checks a derived
+setting key before the JSON map. The same handle above maps to:
 
 ```text
 secret_openai-compatible_deepseek

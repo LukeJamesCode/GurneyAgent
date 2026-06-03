@@ -11,6 +11,12 @@
       "default": "",
       "description": "JSON array snapshot of base URLs this install may call. If empty at load, Gurney snapshots the currently configured endpoints. Add new domains by updating this setting intentionally."
     },
+    "secrets": {
+      "type": "string",
+      "default": "{}",
+      "secret": true,
+      "description": "Secret JSON object mapping apiKeySecret handles to raw API keys, e.g. {\"secret://openai-compatible/deepseek\":\"sk-...\"}. Prefer this over putting keys in endpoints."
+    },
     "time_zone": {
       "type": "string",
       "description": "IANA timezone used to bucket daily endpoint budgets. Defaults to system local timezone."

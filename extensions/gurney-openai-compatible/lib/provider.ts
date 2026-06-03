@@ -316,9 +316,10 @@ export function createOpenAICompatibleProvider(
       }
 
       let toolCalls = materializeToolCalls(toolAcc);
+      let finalChunk: ChatChunk;
       if (fallbackTools) {
         toolCalls = parseJsonEnvelopeToolCalls(buffered, opts.tools);
-        yield {
+        finalChunk = {
           delta: toolCalls ? '' : buffered,
           done: true,
           model: `${endpoint.alias}:${model}`,
@@ -327,7 +328,7 @@ export function createOpenAICompatibleProvider(
           ...(completionTokens !== undefined ? { completionTokens } : {}),
         };
       } else {
-        yield {
+        finalChunk = {
           delta: '',
           done: true,
           model: `${endpoint.alias}:${model}`,
@@ -347,6 +348,7 @@ export function createOpenAICompatibleProvider(
         ...(promptTokens !== undefined ? { promptTokens } : {}),
         ...(completionTokens !== undefined ? { completionTokens } : {}),
       });
+      yield finalChunk;
     } catch (e) {
       if (!(e instanceof Error && e.name === 'AbortError')) {
         recordCall(host.db, {
