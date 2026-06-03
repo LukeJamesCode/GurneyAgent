@@ -348,8 +348,54 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   dispatchNudge = (nudge) => telegram.sendNudge(nudge);
   // And the voice-note path now that the adapter exists.
   sendVoiceImpl = (chatId, voice) => telegram.sendVoice(chatId, voice);
-  // Point the tool registry's confirm hook at the live Telegram prompt.
-  confirmToolCall = (handler, args, ctx) => telegram.confirmToolCall(handler, args, ctx);
+  // Point the tool registry's confirm hook at a surface router. Extensions
+  // that own a chat surface (e.g. gurney-discord) register a renderer via
+  // host.chat.registerConfirm, scoped to their own chatId namespace; the
+  // router picks the first matching surface for the originating chatId and
+  // falls back to the Telegram adapter when nothing claims the chat. The
+  // tool-engine contract is unchanged — confirm is still a single async
+  // hook returning a boolean per call.
+  confirmToolCall = async (handler, args, ctx) => {
+    if (ctx.chatId !== undefined) {
+      for (const surface of loader.chatSurfaces()) {
+        let owns = false;
+        try {
+          owns = surface.ownsChat(ctx.chatId);
+        } catch (e) {
+          log.warn('chat surface ownsChat threw — skipping', {
+            ext: surface.extension,
+            error: e instanceof Error ? e.message : String(e),
+          });
+          continue;
+        }
+        if (!owns) continue;
+        let preview: string;
+        try {
+          preview = handler.confirmPrompt ? handler.confirmPrompt(args) : `Run \`${handler.name}\`?`;
+        } catch {
+          preview = `Run \`${handler.name}\`?`;
+        }
+        try {
+          return await surface.confirm({
+            chatId: ctx.chatId,
+            toolName: handler.name,
+            preview,
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          });
+        } catch (e) {
+          // Fail closed on a renderer crash. A confirm-tier tool must never
+          // run when its prompt couldn't be delivered.
+          log.warn('chat surface confirm threw — failing closed', {
+            ext: surface.extension,
+            tool: handler.name,
+            error: e instanceof Error ? e.message : String(e),
+          });
+          return false;
+        }
+      }
+    }
+    return telegram.confirmToolCall(handler, args, ctx);
+  };
   let lastSetupIssueSignature = '';
   notifySetupIssues = async () => {
     const issues = setupIssuesForNudge(collectExtensionReadiness(extensionsRoots, db));

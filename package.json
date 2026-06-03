@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "tsc && node scripts/copy-migrations.mjs",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p extensions/gurney-everyday-assistant && tsc --noEmit -p extensions/gurney-voice && tsc --noEmit -p extensions/gurney-instant-responses && tsc --noEmit -p extensions/gurney-abilitytest && tsc --noEmit -p extensions/gurney-codex && tsc --noEmit -p extensions/gurney-tudor && tsc --noEmit -p extensions/gurney-websearch && tsc --noEmit -p extensions/gurney-frontend",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p extensions/gurney-everyday-assistant && tsc --noEmit -p extensions/gurney-voice && tsc --noEmit -p extensions/gurney-instant-responses && tsc --noEmit -p extensions/gurney-abilitytest && tsc --noEmit -p extensions/gurney-codex && tsc --noEmit -p extensions/gurney-tudor && tsc --noEmit -p extensions/gurney-websearch && tsc --noEmit -p extensions/gurney-frontend && tsc --noEmit -p extensions/gurney-discord",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -36,6 +36,7 @@
     "@inquirer/prompts": "^8.4.2",
     "better-sqlite3": "^12.9.0",
     "commander": "^14.0.3",
+    "discord.js": "^14.26.4",
     "grammy": "^1.42.0",
     "tsx": "^4.19.2",
     "ws": "^8.21.0"
