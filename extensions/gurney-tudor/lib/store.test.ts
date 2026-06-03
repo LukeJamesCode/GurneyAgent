@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,19 +10,37 @@ import type { ParsedLesson, ParsedOutline } from './types.js';
 import * as store from './store.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const MIGRATIONS_DIR = join(HERE, '..', 'migrations');
 
 function freshDb(): DB {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   // Apply every migration in order so the test schema matches production.
-  const dir = join(HERE, '..', 'migrations');
-  for (const f of readdirSync(dir)
+  for (const f of readdirSync(MIGRATIONS_DIR)
     .filter((n) => n.endsWith('.sql'))
     .sort()) {
-    db.exec(readFileSync(join(dir, f), 'utf8'));
+    db.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf8'));
   }
   return db as unknown as DB;
 }
+
+test('legacy 0003 image migration stays immutable before visualization migration', () => {
+  const files = readdirSync(MIGRATIONS_DIR)
+    .filter((n) => n.endsWith('.sql'))
+    .sort();
+  assert.deepEqual(files.slice(0, 4), [
+    '0001_tudor.sql',
+    '0002_tudor_sources.sql',
+    '0003_tudor_segment_images.sql',
+    '0004_tudor_visualization.sql',
+  ]);
+
+  const sql = readFileSync(join(MIGRATIONS_DIR, '0003_tudor_segment_images.sql'), 'utf8');
+  assert.equal(
+    createHash('sha256').update(sql).digest('hex'),
+    '30b5d240d6e08f23cd9f52445b709cd95bc543a5d05b1477f5b6bc6f02f36747',
+  );
+});
 
 const OUTLINE: ParsedOutline = {
   title: 'Understanding Tides',
