@@ -163,8 +163,10 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   }
 
   if (options.detach) {
-    detach(home);
-    if (!options.agentOnly && frontendExtensionEnabled(home)) startPanel(home);
+    // The child runs `gurney start` in the foreground and owns the panel
+    // itself (it hits the startPanel path below), so the parent must not also
+    // spawn one — that would double-spawn. Forward --agent-only to the child.
+    detach(home, options.agentOnly ?? false);
     return;
   }
 
@@ -471,14 +473,15 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
 
 // Spawn ourselves as a detached child running `gurney start` (without
 // --detach) and exit. The child writes its PID once it's fully wired up.
-function detach(home: string): void {
+function detach(home: string, agentOnly: boolean): void {
   // Re-exec the *same* entry script this process was launched with. Hardcoding
   // ./index.js broke `src`-via-tsx runs (only index.ts exists there) and any
   // install whose bin lives elsewhere; argv[1] is always the real entrypoint.
   // Fall back to the sibling index.js for the built layout if argv[1] is absent.
   const here = dirname(fileURLToPath(import.meta.url));
   const cliEntry = process.argv[1] ?? join(here, 'index.js');
-  const child = spawn(process.execPath, [...process.execArgv, cliEntry, 'start'], {
+  const args = ['start', ...(agentOnly ? ['--agent-only'] : [])];
+  const child = spawn(process.execPath, [...process.execArgv, cliEntry, ...args], {
     detached: true,
     stdio: 'ignore',
     env: process.env,

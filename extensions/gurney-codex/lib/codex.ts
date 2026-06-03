@@ -256,19 +256,28 @@ export async function readResponsesStream(
     }
   };
 
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let nl: number;
-    while ((nl = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, nl).trim();
-      buffer = buffer.slice(nl + 1);
-      if (line.startsWith('data:')) handleEvent(line.slice(5).trim());
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (line.startsWith('data:')) handleEvent(line.slice(5).trim());
+      }
     }
+    const tail = buffer.trim();
+    if (tail.startsWith('data:')) handleEvent(tail.slice(5).trim());
+  } catch (err) {
+    // On error (e.g. response.failed thrown out of handleEvent), cancel the
+    // body so the underlying connection is released, then re-throw.
+    await reader.cancel().catch(() => {});
+    throw err;
+  } finally {
+    reader.releaseLock();
   }
-  const tail = buffer.trim();
-  if (tail.startsWith('data:')) handleEvent(tail.slice(5).trim());
 
   const text = deltaText || finalText;
   if (!text) throw new CodexApiError(200, 'Codex returned an empty response');

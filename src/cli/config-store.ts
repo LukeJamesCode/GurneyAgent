@@ -35,6 +35,17 @@ export interface GurneyConfig {
   logLevel?: 'debug' | 'info' | 'warn' | 'error';
 }
 
+// Whitelist of accepted hardware tiers. An unknown value (from env or disk)
+// would make profilesForTier → TUNING[tier] undefined and crash boot, so we
+// normalize to `undefined` (treated downstream as 'small') instead of throwing.
+const VALID_TIERS = ['small', 'standard', 'heavy'] as const;
+
+function normalizeTier(v: string | undefined): GurneyConfig['tier'] | undefined {
+  return (VALID_TIERS as readonly string[]).includes(v ?? '')
+    ? (v as GurneyConfig['tier'])
+    : undefined;
+}
+
 export const CONFIG_VERSION = 3;
 
 interface ConfigOnDisk extends GurneyConfig {
@@ -106,12 +117,10 @@ export function effectiveConfig(home: string = homeDir()): GurneyConfig {
         ? { tools: env['GURNEY_TOOLS_MODEL']?.trim() || file.models.tools }
         : {}),
     },
-    ...(env['GURNEY_TIER']?.trim() || file.tier
-      ? {
-          tier: ((env['GURNEY_TIER']?.trim() as GurneyConfig['tier']) ||
-            file.tier) as GurneyConfig['tier'],
-        }
-      : {}),
+    ...(() => {
+      const tier = normalizeTier(env['GURNEY_TIER']?.trim()) ?? normalizeTier(file.tier);
+      return tier ? { tier } : {};
+    })(),
     logLevel: ((env['GURNEY_LOG_LEVEL']?.trim() as GurneyConfig['logLevel']) ||
       file.logLevel) as GurneyConfig['logLevel'],
   };
@@ -179,6 +188,9 @@ export function parseAllowedIds(raw: string): number[] {
     .map((s) => s.trim())
     .filter(Boolean)
     .map((s) => {
+      // Telegram user IDs are positive integers; reject partial garbage like
+      // "12abc" that Number.parseInt would silently truncate to 12.
+      if (!/^\d+$/.test(s)) throw new Error(`invalid Telegram user id: ${s}`);
       const n = Number.parseInt(s, 10);
       if (!Number.isFinite(n)) throw new Error(`invalid Telegram user id: ${s}`);
       return n;
@@ -199,7 +211,8 @@ function mergeWithDefaults(input: Partial<ConfigOnDisk>): GurneyConfig {
   if (input.models?.chat) base.models.chat = input.models.chat;
   if (input.models?.reason) base.models.reason = input.models.reason;
   if (input.models?.tools) base.models.tools = input.models.tools;
-  if (input.tier) base.tier = input.tier;
+  const tier = normalizeTier(input.tier);
+  if (tier) base.tier = tier;
   if (input.logLevel) base.logLevel = input.logLevel;
   return base;
 }

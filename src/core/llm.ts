@@ -514,20 +514,36 @@ export function createOllama(opts: OllamaOptions): LLM {
 
     let sawContent = false;
     let sawToolCall = false;
-    try {
-      for await (const chunk of parseNdjsonStream(res.body, target.model, log)) {
-        if (chunk.delta) sawContent = true;
-        if (chunk.toolCalls && chunk.toolCalls.length > 0) sawToolCall = true;
-        yield chunk;
-      }
-      // Empty-response guard: a successful stream that produced neither text
-      // nor a tool call is almost always a model misfire (truncated, stuck on
-      // /think). Surfacing it as an error lets the orchestrator say something
-      // useful instead of streaming silent "(no reply)".
+    // Whether we've already run the terminal success/empty-response accounting.
+    let settled = false;
+    // Empty-response guard: a successful stream that produced neither text nor a
+    // tool call is almost always a model misfire (truncated, stuck on /think).
+    // Surfacing it as an error lets the orchestrator say something useful
+    // instead of streaming silent "(no reply)".
+    const settleTerminal = (): void => {
+      if (settled) return;
+      settled = true;
       if (!sawContent && !sawToolCall) {
         throw new LLMEmptyResponseError();
       }
       recordSuccess();
+    };
+    try {
+      for await (const chunk of parseNdjsonStream(res.body, target.model, log)) {
+        if (chunk.delta) sawContent = true;
+        if (chunk.toolCalls && chunk.toolCalls.length > 0) sawToolCall = true;
+        // Run the success/empty accounting *before* yielding the done chunk.
+        // The orchestrator's drain loop breaks as soon as it sees done=true,
+        // which runs this generator's return() and skips any code after the
+        // for-await. Doing it here means recordSuccess() (which resets the
+        // breaker's failure counter and is the only path that closes a
+        // half-open breaker) and the empty-response guard still fire on the
+        // normal production path, not just when a consumer drains to EOF.
+        if (chunk.done) settleTerminal();
+        yield chunk;
+      }
+      // Fallback for a stream that ended without an explicit done chunk.
+      settleTerminal();
     } catch (e) {
       // AbortError isn't a backend failure — don't trip the breaker for it.
       // LLMEmptyResponseError is the model's fault, not the transport's.

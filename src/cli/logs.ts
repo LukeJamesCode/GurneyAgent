@@ -38,9 +38,13 @@ async function streamWholeFile(file: string): Promise<void> {
 }
 
 async function streamTailThenFollow(file: string, tailBytes: number): Promise<void> {
-  let pos = Math.max(0, statSync(file).size - tailBytes);
-  await streamFrom(file, pos);
-  pos = statSync(file).size;
+  // Snapshot the end BEFORE reading and read only up to it, then advance `pos`
+  // by exactly that span. Re-statting after the read would skip any bytes the
+  // daemon appended between EOF and the stat.
+  const initialEnd = statSync(file).size;
+  let pos = Math.max(0, initialEnd - tailBytes);
+  await streamFrom(file, pos, initialEnd);
+  pos = initialEnd;
 
   // Two timer ticks during a noisy log burst can both pass the size guard and
   // both call streamFrom() from the same `pos`, duplicating output. The lock
@@ -55,9 +59,12 @@ async function streamTailThenFollow(file: string, tailBytes: number): Promise<vo
     if (reading) return;
     if (curr.size > pos) {
       reading = true;
-      streamFrom(file, pos)
+      // Bound the read to the size from this watch event. Anything appended
+      // after will fire another watch tick and be picked up from the new `pos`.
+      const end = curr.size;
+      streamFrom(file, pos, end)
         .then(() => {
-          pos = statSync(file).size;
+          pos = end;
         })
         .catch(() => {
           /* ignore transient read errors during rotation */
@@ -77,11 +84,11 @@ async function streamTailThenFollow(file: string, tailBytes: number): Promise<vo
   });
 }
 
-async function streamFrom(file: string, start: number): Promise<void> {
-  const size = statSync(file).size;
-  if (size <= start) return;
+async function streamFrom(file: string, start: number, end: number): Promise<void> {
+  // `end` is an exclusive byte offset; createReadStream's `end` is inclusive.
+  if (end <= start) return;
   await new Promise<void>((resolveP, reject) => {
-    const s = createReadStream(file, { encoding: 'utf8', start });
+    const s = createReadStream(file, { encoding: 'utf8', start, end: end - 1 });
     s.on('data', (c) => process.stdout.write(c));
     s.on('error', reject);
     s.on('end', () => resolveP());

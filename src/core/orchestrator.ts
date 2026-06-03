@@ -41,7 +41,11 @@ export function looksLikeFakeToolCall(text: string, allowedTools: ReadonlySet<st
   const head = t.slice(0, 120);
   const refMatch =
     /^[\s*_>]*[[`]\s*([a-z_][a-z0-9_]*)\s*[\]`]/i.exec(head) ??
-    /^[\s*_>]*`?([a-z_][a-z0-9_]*)`?\s*\(/i.exec(head);
+    // Require the parenthesis to actually look like a call — an empty arg list,
+    // a quoted/braced literal, or a `key=`/`key:` argument — so a tool named
+    // like a common word doesn't blank a reply that merely opens a prose
+    // parenthetical (e.g. "weather (in Celsius) is mild").
+    /^[\s*_>]*`?([a-z_][a-z0-9_]*)`?\s*\(\s*(?:\)|["'{]|[a-z_]\w*\s*[:=])/i.exec(head);
   if (refMatch && allowedTools.has(refMatch[1]!)) return true;
   return false;
 }
@@ -253,11 +257,15 @@ function dailyContext(now: Date = new Date(), lastUserAt?: number): string {
   const weekday = rounded.toLocaleDateString('en-US', { weekday: 'long' });
   const hh = String(rounded.getHours()).padStart(2, '0');
   const mm = String(rounded.getMinutes()).padStart(2, '0');
-  const tomorrow = new Date(now.getTime());
+  // Derive tomorrow/yesterday from `rounded`, not the raw clock: within the
+  // first few minutes after local midnight the 5-minute floor can land on the
+  // previous calendar day, and mixing the two bases would emit an inconsistent
+  // anchor block (e.g. "Today: Monday … Tomorrow: Wednesday").
+  const tomorrow = new Date(rounded.getTime());
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowIso = isoDay(tomorrow);
   const tomorrowWeekday = tomorrow.toLocaleDateString('en-US', { weekday: 'long' });
-  const yesterday = new Date(now.getTime());
+  const yesterday = new Date(rounded.getTime());
   yesterday.setDate(yesterday.getDate() - 1);
   const yesterdayIso = isoDay(yesterday);
   const yesterdayWeekday = yesterday.toLocaleDateString('en-US', { weekday: 'long' });

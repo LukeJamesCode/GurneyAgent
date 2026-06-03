@@ -376,21 +376,32 @@ async function checkPorts(ollamaUrl: string): Promise<CheckResult> {
     return { name: 'ports', ok: true, msg: `ollama is remote (${host}); local port check skipped` };
   }
   const free = await probePortFree(host, port);
-  if (free) {
+  if (free === 'free') {
     return {
       name: 'ports',
       ok: false,
       msg: `port ${port} on ${host} is FREE — Ollama is not listening (start it)`,
     };
   }
+  if (free === 'unknown') {
+    return {
+      name: 'ports',
+      ok: true,
+      msg: `port ${port} on ${host} could not be probed in time — Ollama status undetermined`,
+    };
+  }
   return { name: 'ports', ok: true, msg: `port ${port} is held (likely Ollama)` };
 }
 
-function probePortFree(host: string, port: number): Promise<boolean> {
+// 'free' = we bound the port (nothing listening), 'held' = bind refused
+// (something — likely Ollama — owns it), 'unknown' = the bind neither
+// succeeded nor failed in time. We must NOT claim 'free' on timeout: a slow
+// bind would then produce a spurious "Ollama is not listening" failure.
+function probePortFree(host: string, port: number): Promise<'free' | 'held' | 'unknown'> {
   return new Promise((resolveP) => {
     const srv = createServer();
     let settled = false;
-    const finish = (free: boolean): void => {
+    const finish = (result: 'free' | 'held' | 'unknown'): void => {
       if (settled) return;
       settled = true;
       try {
@@ -398,11 +409,11 @@ function probePortFree(host: string, port: number): Promise<boolean> {
       } catch {
         /* ignore */
       }
-      resolveP(free);
+      resolveP(result);
     };
-    srv.once('error', () => finish(false));
-    srv.listen(port, host, () => finish(true));
-    setTimeout(() => finish(false), 1500);
+    srv.once('error', () => finish('held'));
+    srv.listen(port, host, () => finish('free'));
+    setTimeout(() => finish('unknown'), 1500);
   });
 }
 

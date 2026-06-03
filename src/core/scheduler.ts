@@ -488,6 +488,14 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
             `UPDATE deferred_nudges SET not_before = ? WHERE id = ? AND delivered_at IS NULL`,
           )
           .run(now().getTime() + DEFERRED_RETRY_BACKOFF_MS, dispatchOpts.sourceDeferredId);
+      } else if (n.defer) {
+        // A *fresh* deferrable nudge whose first dispatch attempt threw (a
+        // transient Telegram error, not quiet hours / rate limit — those are
+        // handled above before we ever dispatch). Persist it so the deferred
+        // sweep retries delivery instead of dropping it. Without this a one-off
+        // network blip silently loses reminders that the job already marked
+        // fired and will never re-emit.
+        deferIfRequested(n, jobLabel, 'rate_limit', now().getTime() + DEFERRED_RETRY_BACKOFF_MS);
       }
       return false;
     } finally {

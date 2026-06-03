@@ -14,7 +14,7 @@
 // install (start/stop, ext install/enable/disable/uninstall).
 
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   chmodSync,
   copyFileSync,
@@ -28,7 +28,7 @@ import {
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { freemem, networkInterfaces, tmpdir, totalmem } from 'node:os';
-import { dirname, extname, join, normalize, resolve } from 'node:path';
+import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { open as openDb, type DB } from '../../src/storage/db.js';
@@ -1702,7 +1702,7 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
   let rel = decodeURIComponent(pathname);
   if (rel === '/' || rel === '') rel = '/index.html';
   const full = normalize(join(WEB_DIR, rel));
-  if (!full.startsWith(WEB_DIR)) {
+  if (full !== WEB_DIR && !full.startsWith(WEB_DIR + sep)) {
     res.writeHead(403);
     res.end('forbidden');
     return;
@@ -1711,7 +1711,7 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
     // SPA fallback to index.html for unknown non-asset routes.
     const index = join(WEB_DIR, 'index.html');
     if (existsSync(index)) {
-      res.writeHead(200, { 'content-type': MIME['.html']! });
+      res.writeHead(200, { 'content-type': MIME['.html']!, 'referrer-policy': 'no-referrer' });
       createReadStream(index).pipe(res);
       return;
     }
@@ -1720,7 +1720,9 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
     return;
   }
   const type = MIME[extname(full).toLowerCase()] ?? 'application/octet-stream';
-  res.writeHead(200, { 'content-type': type });
+  const headers: Record<string, string> = { 'content-type': type };
+  if (type === MIME['.html']) headers['referrer-policy'] = 'no-referrer';
+  res.writeHead(200, headers);
   createReadStream(full).pipe(res);
 }
 
@@ -1804,6 +1806,14 @@ function streamTudorEvents(req: IncomingMessage, res: ServerResponse, id: string
 // ---------------------------------------------------------------------------
 function requestToken(req: IncomingMessage, url: URL): string {
   return (req.headers['x-gurney-token'] as string) ?? url.searchParams.get('token') ?? '';
+}
+
+// Constant-time token comparison to avoid leaking the secret via timing.
+function tokensMatch(a: string | undefined, b: string): boolean {
+  if (!a) return false;
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
 
 async function handleApi(
@@ -2458,8 +2468,10 @@ function saveExtSettings(res: ServerResponse, name: string, body: Record<string,
     for (const [key, decl] of Object.entries(schema.properties)) {
       if (!(key in body)) continue;
       const raw = body[key];
-      // Never overwrite a stored secret with its masked placeholder.
-      if (decl.secret && typeof raw === 'string' && raw.includes('•')) continue;
+      // Never overwrite a stored secret with its masked placeholder or with an
+      // empty/whitespace-only value (a blank field means "leave unchanged").
+      if (decl.secret && typeof raw === 'string' && (raw.includes('•') || raw.trim() === ''))
+        continue;
       let value: string;
       if (decl.type === 'boolean') value = raw ? 'true' : 'false';
       else value = String(raw ?? '');
@@ -2588,7 +2600,7 @@ export async function run(opts: FrontendRunOptions = {}): Promise<Server> {
     if (url.pathname.startsWith('/api/')) {
       // Auth gate: when a token is configured, require it for the API unless
       // the request comes from loopback (the operator on this machine).
-      if (authToken && !isLoopback(req) && requestToken(req, url) !== authToken) {
+      if (authToken && !isLoopback(req) && !tokensMatch(requestToken(req, url), authToken)) {
         return sendJson(res, 401, { error: 'unauthorized' });
       }
       void handleApi(opts, req, res, url);

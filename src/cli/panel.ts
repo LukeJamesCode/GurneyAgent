@@ -73,7 +73,7 @@ export function panelUrl(home: string): string | null {
   const s = readPanelSettings(home);
   const shownHost = s.host === '0.0.0.0' ? (firstLanAddress() ?? 'localhost') : s.host;
   const scheme = s.httpsEnabled ? 'https' : 'http';
-  const tokenQs = s.token ? `?token=${s.token}` : '';
+  const tokenQs = s.token ? `?token=${encodeURIComponent(s.token)}` : '';
   return `${scheme}://${shownHost}:${s.port}/${tokenQs}`;
 }
 
@@ -88,6 +88,8 @@ function readPanelPid(home: string): number | null {
   if (!existsSync(file)) return null;
   try {
     const raw = readFileSync(file, 'utf8').trim();
+    // Reject partial garbage (e.g. "12abc") that parseInt would truncate to 12.
+    if (!/^\d+$/.test(raw)) return null;
     const n = Number.parseInt(raw, 10);
     return Number.isFinite(n) ? n : null;
   } catch {
@@ -179,10 +181,22 @@ export function killPanel(home: string): boolean {
 // panel runner (`gurney __panel`) before importing the server module.
 export function acquirePanelPid(home: string): boolean {
   const file = frontendPidFilePath(home);
+  // Mirror daemon.tryAcquirePidLock: the 'wx' open flag makes the create-or-fail
+  // atomic, closing the read-then-write race where two panels both see an empty
+  // pidfile and both claim it.
+  try {
+    writeFileSync(file, String(process.pid), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') return false;
+  }
+  // The file already exists. If it names a live process we lost the race; if
+  // it's stale (dead pid), clear it and retry the exclusive write once.
   const existing = readPanelPid(home);
   if (existing !== null && isAlive(existing)) return false;
+  clearPanelPid(home);
   try {
-    writeFileSync(file, String(process.pid), { encoding: 'utf8', mode: 0o600 });
+    writeFileSync(file, String(process.pid), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     return true;
   } catch {
     return false;
