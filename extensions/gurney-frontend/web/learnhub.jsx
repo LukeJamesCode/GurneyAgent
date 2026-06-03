@@ -317,6 +317,7 @@ function Library({ onOpen }) {
   const [depth, setDepth] = useState('standard');
   const [generator, setGenerator] = useState('local');
   const [modelTag, setModelTag] = useState(''); // exact local model for this build
+  const [cloudModelTag, setCloudModelTag] = useState(''); // exact cloud alias:model
   const [websearch, setWebsearch] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
@@ -345,6 +346,9 @@ function Library({ onOpen }) {
           ? s.data.localModel
           : list[0] || '';
       setModelTag(def);
+      // Default the cloud picker to the first configured alias:model, if any.
+      const cloudList = Array.isArray(s.data.cloudModels) ? s.data.cloudModels : [];
+      setCloudModelTag(cloudList[0] || '');
     }
     if (c.ok) setCourses(c.data.courses);
   }, []);
@@ -366,6 +370,7 @@ function Library({ onOpen }) {
       setErr(null);
       const body = { topic: t, depth, generator, useWebsearch: websearch };
       if (generator === 'local' && modelTag) body.localModel = modelTag;
+      if (generator === 'cloud' && cloudModelTag) body.cloudModel = cloudModelTag;
       if (approvedSources !== undefined) body.approvedSources = approvedSources;
       const r = await window.api.post('/api/tudor/courses', body);
       setBusy(false);
@@ -376,7 +381,7 @@ function Library({ onOpen }) {
         setErr((r.data && r.data.error) || r.error || 'Could not start the course.');
       }
     },
-    [topic, depth, generator, websearch, modelTag, busy, onOpen],
+    [topic, depth, generator, websearch, modelTag, cloudModelTag, busy, onOpen],
   );
 
   // Build click: if this course will touch the web and the gate is on, run the
@@ -433,7 +438,13 @@ function Library({ onOpen }) {
   );
 
   const codex = status && status.codexAvailable;
+  const cloudAvail = !!(status && status.cloudAvailable);
+  const cloudModels = (status && status.cloudModels) || [];
   const localLabel = modelTag || (status && status.localModel) || 'local model';
+  const builtByOptions = [{ value: 'local', label: 'Local' }];
+  if (cloudAvail && cloudModels.length > 0)
+    builtByOptions.push({ value: 'cloud', label: 'Cloud' });
+  if (codex) builtByOptions.push({ value: 'codex', label: 'Codex' });
 
   return (
     <div>
@@ -647,15 +658,12 @@ function Library({ onOpen }) {
             <span style={{ fontSize: 12.5, color: 'var(--text-3)', fontWeight: 600 }}>
               Built by
             </span>
-            {codex ? (
+            {builtByOptions.length > 1 ? (
               <window.Segmented
                 size="sm"
                 value={generator}
                 onChange={setGenerator}
-                options={[
-                  { value: 'local', label: 'Local' },
-                  { value: 'codex', label: 'Codex' },
-                ]}
+                options={builtByOptions}
               />
             ) : (
               <window.Badge tone="neutral">Local</window.Badge>
@@ -670,6 +678,22 @@ function Library({ onOpen }) {
                 style={{ minWidth: 170 }}
               >
                 {models.map((mTag) => (
+                  <option key={mTag} value={mTag}>
+                    {mTag}
+                  </option>
+                ))}
+              </window.Select>
+            </div>
+          )}
+          {generator === 'cloud' && cloudModels.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+              <span style={{ fontSize: 12.5, color: 'var(--text-3)', fontWeight: 600 }}>Model</span>
+              <window.Select
+                value={cloudModelTag}
+                onChange={(e) => setCloudModelTag(e.target.value)}
+                style={{ minWidth: 220 }}
+              >
+                {cloudModels.map((mTag) => (
                   <option key={mTag} value={mTag}>
                     {mTag}
                   </option>
@@ -701,7 +725,9 @@ function Library({ onOpen }) {
         <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-3)' }}>
           {generator === 'codex'
             ? 'Codex is faster but uses your daily budget. Falls back to local automatically.'
-            : `Built locally on ${localLabel} — free, and a few minutes on a small box.`}
+            : generator === 'cloud'
+              ? `Built on ${cloudModelTag || 'a cloud endpoint'} via gurney-openai-compatible — uses that endpoint’s daily budget. Falls back to local automatically.`
+              : `Built locally on ${localLabel} — free, and a few minutes on a small box.`}
           {websearch && webAvail ? ' · You’ll approve which websites it uses first.' : ''}
         </div>
         {err && (

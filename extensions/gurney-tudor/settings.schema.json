@@ -3,9 +3,9 @@
   "properties": {
     "default_generator": {
       "type": "string",
-      "enum": ["local", "codex"],
+      "enum": ["local", "codex", "cloud"],
       "default": "local",
-      "description": "Which model builds new courses by default. 'local' uses your Ollama/qwen model (free, slower); 'codex' uses gurney-codex if it's enabled and authed (faster, spends your daily Codex budget). Codex falls back to local automatically if it's unavailable."
+      "description": "Which model builds new courses by default. 'local' uses your Ollama/qwen model (free, slower); 'codex' uses gurney-codex if it's enabled and authed (faster, spends your daily Codex budget); 'cloud' uses an OpenAI-compatible endpoint configured in gurney-openai-compatible. Codex/cloud fall back to local automatically if unavailable."
     },
     "default_depth": {
       "type": "string",
