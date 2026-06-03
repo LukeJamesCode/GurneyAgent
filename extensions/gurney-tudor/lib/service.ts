@@ -44,12 +44,17 @@ export function startCourse(
     depth: Depth;
     generator: Generator;
     localModel?: string;
+    cloudModel?: string;
     useWebsearch?: boolean;
     approvedSources?: Source[];
   },
 ): string {
   const topic = args.topic.trim().slice(0, 300);
-  const choice = chooseModel(ctx.llm, args.generator, args.localModel);
+  // For 'cloud' the learner picks an alias:model from the openai-compatible
+  // endpoints; for 'local' they pick a local Ollama tag. Both flow into the
+  // same modelTag slot, the generator decides which side of the picker won.
+  const modelTag = args.generator === 'cloud' ? args.cloudModel : args.localModel;
+  const choice = chooseModel(ctx.llm, args.generator, modelTag);
   const id = store.createCourse(ctx.db, { topic, depth: args.depth, model: choice.label });
   // Fire-and-forget — the panel/daemon process keeps running, and progress is
   // tracked in the DB so the UI can follow along and resume if needed.
@@ -382,9 +387,41 @@ export interface TudorStatus {
   defaults: { generator: Generator; depth: Depth; useWebsearch: boolean };
   localModel: string;
   codexAvailable: boolean;
+  cloudAvailable: boolean;
+  // Configured cloud aliases as "alias:model" strings (e.g. "openai:gpt-4.1-mini"),
+  // ready to feed straight into the gurney-openai-compatible provider. Empty when
+  // the extension isn't enabled or no endpoints are configured.
+  cloudModels: string[];
   websearchAvailable: boolean;
   // Whether the Learn tab should confirm before building a researched course.
   confirmBeforeSearch: boolean;
+}
+
+// Read the openai-compatible extension's `endpoints` JSON straight from the
+// shared extension_settings table and project it into a flat list of
+// "alias:model" strings the Learn picker can render. Kept defensive: any parse
+// error or shape mismatch just returns an empty list (cloud quietly disappears).
+function listCloudModels(ctx: TudorCtx): string[] {
+  const raw = store.readExtSettingFor(ctx.db, 'gurney-openai-compatible', 'endpoints', '[]');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: string[] = [];
+  for (const ep of parsed) {
+    if (!ep || typeof ep !== 'object') continue;
+    const obj = ep as Record<string, unknown>;
+    const alias = typeof obj['alias'] === 'string' ? obj['alias'] : null;
+    const models = Array.isArray(obj['models']) ? obj['models'] : [];
+    if (!alias) continue;
+    for (const m of models) {
+      if (typeof m === 'string' && m) out.push(`${alias}:${m}`);
+    }
+  }
+  return out;
 }
 
 export function status(ctx: TudorCtx): TudorStatus {
@@ -392,17 +429,28 @@ export function status(ctx: TudorCtx): TudorStatus {
     (store.readExtSetting(ctx.db, 'default_generator', 'local') as Generator) || 'local';
   const depth = (store.readExtSetting(ctx.db, 'default_depth', 'standard') as Depth) || 'standard';
   const websearchAvailable = store.isExtensionEnabled(ctx.db, 'gurney-websearch');
+  const codexAvailable = store.isExtensionEnabled(ctx.db, 'gurney-codex');
+  const cloudAvailable = store.isExtensionEnabled(ctx.db, 'gurney-openai-compatible');
+  const cloudModels = cloudAvailable ? listCloudModels(ctx) : [];
+  const defaultGenerator: Generator =
+    generator === 'codex' && codexAvailable
+      ? 'codex'
+      : generator === 'cloud' && cloudAvailable && cloudModels.length > 0
+        ? 'cloud'
+        : 'local';
   return {
     ok: true,
     defaults: {
-      generator: generator === 'codex' ? 'codex' : 'local',
+      generator: defaultGenerator,
       depth: ['quick', 'standard', 'deep'].includes(depth) ? depth : 'standard',
       // Only default the toggle on when the extension is actually available.
       useWebsearch:
         websearchAvailable && store.readExtSetting(ctx.db, 'use_websearch', 'false') === 'true',
     },
     localModel: labelFor(ctx.llm, chooseModel(ctx.llm, 'local').ref),
-    codexAvailable: store.isExtensionEnabled(ctx.db, 'gurney-codex'),
+    codexAvailable,
+    cloudAvailable,
+    cloudModels,
     websearchAvailable,
     confirmBeforeSearch:
       store.readExtSettingFor(ctx.db, 'gurney-websearch', 'confirm_before_search', 'true') !==

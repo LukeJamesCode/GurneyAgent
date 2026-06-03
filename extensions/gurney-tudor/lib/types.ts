@@ -6,7 +6,7 @@ export type CourseStatus = 'generating' | 'ready' | 'failed';
 export type LessonStatus = 'pending' | 'generating' | 'ready' | 'failed';
 export type ProgressState = 'unseen' | 'in_progress' | 'done';
 export type Depth = 'quick' | 'standard' | 'deep';
-export type Generator = 'local' | 'codex';
+export type Generator = 'local' | 'codex' | 'cloud';
 
 // Segment kinds drive how the player themes each slide. Unknown kinds from the
 // model are normalised to 'explain' by the parser, so this set is closed.

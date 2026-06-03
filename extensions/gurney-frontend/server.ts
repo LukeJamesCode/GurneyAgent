@@ -2180,6 +2180,7 @@ async function handleApi(
         depth?: string;
         generator?: string;
         localModel?: string;
+        cloudModel?: string;
         useWebsearch?: boolean;
         approvedSources?: Array<{
           title?: string;
@@ -2195,7 +2196,12 @@ async function handleApi(
         | 'quick'
         | 'standard'
         | 'deep';
-      const generator: 'local' | 'codex' = body.generator === 'codex' ? 'codex' : 'local';
+      const generator: 'local' | 'codex' | 'cloud' =
+        body.generator === 'codex'
+          ? 'codex'
+          : body.generator === 'cloud'
+            ? 'cloud'
+            : 'local';
       // Keep only well-formed http(s) sources the client sent back as approved.
       const approvedSources = Array.isArray(body.approvedSources)
         ? body.approvedSources
@@ -2220,6 +2226,9 @@ async function handleApi(
         generator,
         ...(typeof body.localModel === 'string' && body.localModel.trim()
           ? { localModel: body.localModel.trim() }
+          : {}),
+        ...(typeof body.cloudModel === 'string' && body.cloudModel.trim()
+          ? { cloudModel: body.cloudModel.trim() }
           : {}),
         useWebsearch: body.useWebsearch === true,
         ...(approvedSources ? { approvedSources } : {}),
