@@ -53,6 +53,9 @@ export interface LessonRow {
   title: string;
   status: LessonStatus;
   est_minutes: number | null;
+  // Cached on-demand HTML visualization for the lesson, NULL until the learner
+  // clicks "Visualize" in the panel. See migration 0003.
+  visualization_html: string | null;
 }
 
 export interface SegmentRow {

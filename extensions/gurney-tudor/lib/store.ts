@@ -82,6 +82,7 @@ export function persistOutline(db: DB, courseId: string, outline: ParsedOutline)
           title,
           status: 'pending',
           est_minutes: null,
+          visualization_html: null,
         });
       });
     });
@@ -191,10 +192,11 @@ export function replaceLessonContent(
         q.why || null,
       );
     });
-    db.prepare(`UPDATE tudor_lessons SET status = 'ready', est_minutes = ? WHERE id = ?`).run(
-      estMinutes,
-      lessonId,
-    );
+    // Drop any cached visualization — the lesson body changed, so the old
+    // HTML is now stale and must be regenerated next time the learner asks.
+    db.prepare(
+      `UPDATE tudor_lessons SET status = 'ready', est_minutes = ?, visualization_html = NULL WHERE id = ?`,
+    ).run(estMinutes, lessonId);
   })();
 }
 
@@ -365,6 +367,22 @@ export function listSources(db: DB, courseId: string): SourceRow[] {
   return db
     .prepare(`SELECT * FROM tudor_sources WHERE course_id = ? ORDER BY idx`)
     .all(courseId) as SourceRow[];
+}
+
+export function getLesson(db: DB, lessonId: string): LessonRow | null {
+  return (
+    (db.prepare(`SELECT * FROM tudor_lessons WHERE id = ?`).get(lessonId) as LessonRow) ?? null
+  );
+}
+
+export function listSegmentsForLesson(db: DB, lessonId: string): SegmentRow[] {
+  return db
+    .prepare(`SELECT * FROM tudor_segments WHERE lesson_id = ? ORDER BY idx`)
+    .all(lessonId) as SegmentRow[];
+}
+
+export function setLessonVisualization(db: DB, lessonId: string, html: string | null): void {
+  db.prepare(`UPDATE tudor_lessons SET visualization_html = ? WHERE id = ?`).run(html, lessonId);
 }
 
 export function getSegment(db: DB, segmentId: string): SegmentRow | null {

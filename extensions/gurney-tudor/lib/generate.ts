@@ -16,9 +16,11 @@ import {
   LESSON_SYSTEM,
   OUTLINE_SYSTEM,
   REPHRASE_SYSTEM,
+  VISUALIZATION_SYSTEM,
   lessonUser,
   outlineUser,
   rephraseUser,
+  visualizationUser,
 } from './prompts.js';
 
 // Process-wide lock so all Tudor inference runs strictly one call at a time.
@@ -67,13 +69,16 @@ export function labelFor(llm: LLM, ref: ProfileName | { model: string }): string
 }
 
 // Run one chat completion to a single string. Concatenates streamed deltas,
-// strips reasoning chatter, and bounds output length defensively.
+// strips reasoning chatter, and bounds output length defensively. `maxChars` is
+// the safety valve; visualisation needs more headroom than text generation, the
+// other callers stick with the default.
 async function complete(
   llm: LLM,
   ref: ProfileName | { model: string },
   system: string,
   user: string,
   maxTokens: number,
+  maxChars = 24_000,
 ): Promise<string> {
   return withLock(async () => {
     const messages: ChatMessage[] = [
@@ -83,7 +88,7 @@ async function complete(
     let out = '';
     for await (const chunk of llm.chat({ profile: ref, messages, maxTokens, timeoutMs: 10 * 60_000 })) {
       if (chunk.delta) out += chunk.delta;
-      if (out.length > 24_000) break; // safety valve against a runaway stream
+      if (out.length > maxChars) break; // safety valve against a runaway stream
     }
     return stripThink(out).trim();
   });
@@ -132,6 +137,41 @@ export async function generateLesson(
   // parseLesson never throws on non-empty input (it falls back to one segment),
   // so no repair pass is needed here — a usable lesson always comes back.
   return parseLesson(text);
+}
+
+// Strip a leading/trailing markdown code fence if the model wrapped its HTML
+// in one (small local models love to do this despite the instruction).
+function stripCodeFences(s: string): string {
+  let t = s.trim();
+  const open = /^```(?:html|HTML)?\s*\n/;
+  if (open.test(t)) {
+    t = t.replace(open, '');
+    const close = t.lastIndexOf('```');
+    if (close !== -1) t = t.slice(0, close).trimEnd();
+  }
+  // If there's preamble before <!DOCTYPE or <html, drop it.
+  const docStart = t.search(/<!DOCTYPE\s+html|<html[\s>]/i);
+  if (docStart > 0) t = t.slice(docStart);
+  return t.trim();
+}
+
+export async function generateVisualization(
+  llm: LLM,
+  ref: ProfileName | { model: string },
+  args: {
+    courseTitle: string;
+    moduleTitle: string;
+    lessonTitle: string;
+    lessonBody: string;
+  },
+): Promise<string> {
+  const user = visualizationUser(args);
+  const html = await complete(llm, ref, VISUALIZATION_SYSTEM, user, 4000, 80_000);
+  const cleaned = stripCodeFences(html);
+  if (!/<html|<!DOCTYPE/i.test(cleaned)) {
+    throw new Error('visualization model returned no HTML document');
+  }
+  return cleaned;
 }
 
 export async function rephrase(

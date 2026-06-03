@@ -1416,6 +1416,123 @@ function FailedLessonView({ lesson, onRetry }) {
   );
 }
 
+/* ---------------------------------------------------------------- visualization
+   On-demand HTML visualization for a lesson. The model returns a full
+   self-contained document; we render it inside a sandboxed iframe (srcDoc +
+   sandbox="allow-scripts", null origin) so any JS in there can't reach the
+   panel. The first build is slow (one local model call); the result is cached
+   server-side, so a reopen is instant. "Regenerate" forces a fresh call. */
+function VisualizationModal({ lessonId, lessonTitle, cachedHtml, onClose, onCached }) {
+  const [html, setHtml] = useState(cachedHtml || null);
+  const [busy, setBusy] = useState(!cachedHtml);
+  const [err, setErr] = useState(null);
+
+  const fetchViz = useCallback(
+    async (force) => {
+      setBusy(true);
+      setErr(null);
+      const r = await window.api.post(`/api/tudor/lessons/${lessonId}/visualize`, {
+        force: !!force,
+      });
+      setBusy(false);
+      if (r.ok && r.data && r.data.html) {
+        setHtml(r.data.html);
+        onCached(r.data.html);
+      } else {
+        setErr((r.data && r.data.error) || r.error || 'Could not build the visualization.');
+      }
+    },
+    [lessonId, onCached],
+  );
+
+  useEffect(() => {
+    if (!cachedHtml) fetchViz(false);
+    // Only fire once on open; cachedHtml is captured at mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const openInTab = useCallback(() => {
+    if (!html) return;
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank', 'noopener,noreferrer');
+    // Tab can't be revoked instantly without breaking it; bounded leak.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }, [html]);
+
+  return (
+    <window.Modal
+      open
+      onClose={onClose}
+      title={`Visualization · ${lessonTitle}`}
+      width={980}
+      footer={
+        <>
+          <window.Button variant="ghost" onClick={onClose}>
+            Close
+          </window.Button>
+          {html && (
+            <window.Button variant="subtle" icon="link" onClick={openInTab}>
+              Open in tab
+            </window.Button>
+          )}
+          <window.Button
+            variant={html ? 'subtle' : 'primary'}
+            icon="refresh"
+            onClick={() => fetchViz(true)}
+            disabled={busy}
+          >
+            {html ? 'Regenerate' : 'Try again'}
+          </window.Button>
+        </>
+      }
+    >
+      {busy && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '14px 0',
+            color: 'var(--text-2)',
+          }}
+        >
+          <window.StatusDot state="starting" size={10} pulse />
+          <span>
+            Building the visualization on the local model — this can take a minute the first time.
+          </span>
+        </div>
+      )}
+      {err && !busy && (
+        <div style={{ color: 'var(--err)', fontSize: 13, padding: '10px 0' }}>
+          <window.Icon name="alert" size={14} style={{ verticalAlign: -2, marginRight: 6 }} />
+          {err}
+        </div>
+      )}
+      {html && (
+        <div
+          style={{
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            overflow: 'hidden',
+            background: '#0f1115',
+          }}
+        >
+          <iframe
+            title={`Visualization for ${lessonTitle}`}
+            srcDoc={html}
+            sandbox="allow-scripts"
+            style={{ width: '100%', height: 600, border: 'none', display: 'block' }}
+          />
+        </div>
+      )}
+      <div style={{ marginTop: 10, fontSize: 11.5, color: 'var(--text-3)' }}>
+        Rendered in a sandboxed frame — its scripts can't reach the panel.
+      </div>
+    </window.Modal>
+  );
+}
+
 /* ---------------------------------------------------------------- lesson view */
 function LessonView({ lesson, hasNext, onProgress, onNext }) {
   const segs = lesson.segments || [];
@@ -1423,6 +1540,13 @@ function LessonView({ lesson, hasNext, onProgress, onNext }) {
   const [step, setStep] = useState(0);
   const atQuiz = step >= segs.length;
   const containerRef = useRef(null);
+  const [vizOpen, setVizOpen] = useState(false);
+  // Local mirror of the cached HTML so a regenerate inside the modal sticks
+  // for this lesson view without forcing a full course refetch.
+  const [cachedViz, setCachedViz] = useState(lesson.visualization_html || null);
+  useEffect(() => {
+    setCachedViz(lesson.visualization_html || null);
+  }, [lesson.id, lesson.visualization_html]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -1451,7 +1575,39 @@ function LessonView({ lesson, hasNext, onProgress, onNext }) {
           <window.Badge tone="neutral">{lesson.est_minutes} min</window.Badge>
         ) : null}
       </div>
-      <h3 style={{ fontSize: 19, marginBottom: 14 }}>{lesson.title}</h3>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          marginBottom: 14,
+        }}
+      >
+        <h3 style={{ fontSize: 19, flex: 1, minWidth: 0 }}>{lesson.title}</h3>
+        <window.Button
+          size="sm"
+          variant={cachedViz ? 'primary' : 'subtle'}
+          icon="spark"
+          onClick={() => setVizOpen(true)}
+          title={
+            cachedViz
+              ? 'Open the visualization for this lesson'
+              : 'Build an HTML visualization for this lesson'
+          }
+        >
+          Visualize
+        </window.Button>
+      </div>
+
+      {vizOpen && (
+        <VisualizationModal
+          lessonId={lesson.id}
+          lessonTitle={lesson.title}
+          cachedHtml={cachedViz}
+          onClose={() => setVizOpen(false)}
+          onCached={setCachedViz}
+        />
+      )}
 
       {segs.length > 0 && (
         <div style={{ display: 'flex', gap: 5, marginBottom: 16 }}>

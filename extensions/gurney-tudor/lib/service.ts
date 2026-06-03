@@ -10,7 +10,14 @@ import type { DB } from '../../../src/storage/db.js';
 import type { CourseTree, CourseSummary } from './store.js';
 import type { Depth, Generator, ParsedLesson, ProgressState, Source } from './types.js';
 import * as store from './store.js';
-import { chooseModel, generateLesson, generateOutline, labelFor, rephrase } from './generate.js';
+import {
+  chooseModel,
+  generateLesson,
+  generateOutline,
+  generateVisualization,
+  labelFor,
+  rephrase,
+} from './generate.js';
 import { previewSourcesForTopic, referenceFromSources, researchForCourse } from './research.js';
 
 export interface TudorCtx {
@@ -321,6 +328,45 @@ export async function rephraseSegment(
   cache[mode] = text;
   store.setSegmentVariants(ctx.db, segmentId, cache);
   return { text, cached: false };
+}
+
+// Build an on-demand HTML visualization for a lesson. Cached on the lesson row
+// so a repeat view is instant and costs no further model time. Always uses the
+// local model — visualization is a "nice to have" extra, never worth a Codex
+// budget hit. The `force` flag bypasses the cache for a deliberate regenerate.
+export async function visualizeLesson(
+  ctx: TudorCtx,
+  lessonId: string,
+  opts: { force?: boolean } = {},
+): Promise<{ html: string; cached: boolean }> {
+  const lesson = store.getLesson(ctx.db, lessonId);
+  if (!lesson) throw new Error('lesson not found');
+  if (!opts.force && lesson.visualization_html) {
+    return { html: lesson.visualization_html, cached: true };
+  }
+  if (lesson.status !== 'ready') {
+    throw new Error('lesson is not ready yet');
+  }
+  const c = store.lessonContext(ctx.db, lessonId);
+  if (!c) throw new Error('lesson context missing');
+  // Feed the model the lesson's actual segments, joined and tagged, so the
+  // visualization grounds in the same content the learner is reading. No
+  // extra LLM call to summarise — the segment bodies are already on disk.
+  const segments = store.listSegmentsForLesson(ctx.db, lessonId);
+  const lessonBody = segments.map((s) => `[${s.kind}]\n${s.body_md}`).join('\n\n');
+  const ref = chooseModel(ctx.llm, 'local').ref;
+  const html = await generateVisualization(ctx.llm, ref, {
+    courseTitle: c.courseTitle,
+    moduleTitle: c.moduleTitle,
+    lessonTitle: c.lessonTitle,
+    lessonBody,
+  });
+  store.setLessonVisualization(ctx.db, lessonId, html);
+  return { html, cached: false };
+}
+
+export function clearLessonVisualization(ctx: TudorCtx, lessonId: string): void {
+  store.setLessonVisualization(ctx.db, lessonId, null);
 }
 
 export interface TudorStatus {

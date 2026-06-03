@@ -2265,6 +2265,23 @@ async function handleApi(
       return sendJson(res, 200, r);
     }
 
+    const lessonVisualize = /^\/api\/tudor\/lessons\/([a-f0-9-]+)\/visualize$/i.exec(path);
+    if (lessonVisualize && method === 'POST') {
+      const b = await readJson<{ force?: boolean }>(req);
+      const r = await tudor.visualizeLesson(await tudorCtx(), lessonVisualize[1]!, {
+        force: b.force === true,
+      });
+      return sendJson(res, 200, { ok: true, ...r });
+    }
+
+    const lessonVisualizeClear = /^\/api\/tudor\/lessons\/([a-f0-9-]+)\/visualize\/clear$/i.exec(
+      path,
+    );
+    if (lessonVisualizeClear && method === 'POST') {
+      tudor.clearLessonVisualization(await tudorCtx(), lessonVisualizeClear[1]!);
+      return sendJson(res, 200, { ok: true });
+    }
+
     const segRephrase = /^\/api\/tudor\/segments\/([a-f0-9-]+)\/rephrase$/i.exec(path);
     if (segRephrase && method === 'POST') {
       const b = await readJson<{ mode?: string }>(req);

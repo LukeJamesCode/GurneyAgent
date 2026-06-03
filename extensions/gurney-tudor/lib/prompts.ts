@@ -107,6 +107,55 @@ export function lessonUser(args: {
   );
 }
 
+// --- Visualization (on-demand, per lesson) ---
+//
+// The model returns a complete self-contained HTML document that the panel
+// renders inside a sandboxed iframe (srcdoc + sandbox="allow-scripts", null
+// origin). That means it can't read the panel's cookies, storage, or DOM — so
+// the prompt can lean into JS/SVG/canvas freely. The format constraints keep
+// the output a single document with everything inlined, which is what the
+// iframe needs: external <script src>/<link href> won't load in a srcdoc
+// frame with no network identity.
+export const VISUALIZATION_SYSTEM =
+  'You are Tudor, an expert at turning ideas into visuals that make them click. ' +
+  'You write a single self-contained HTML document (one <!DOCTYPE html> page) that ' +
+  'visualizes the lesson. All CSS and JS are inline; do NOT use external scripts, ' +
+  'stylesheets, fonts, or images. Output ONLY the raw HTML — no preamble, no ' +
+  'commentary, no markdown fences.';
+
+export function visualizationUser(args: {
+  courseTitle: string;
+  moduleTitle: string;
+  lessonTitle: string;
+  lessonBody: string;
+}): string {
+  return [
+    `Course: "${args.courseTitle}". Module: "${args.moduleTitle}".`,
+    `Build a visual for the lesson: "${args.lessonTitle}".`,
+    '',
+    'The lesson content (for grounding — visualize what is here, do not invent new facts):',
+    '"""',
+    args.lessonBody,
+    '"""',
+    '',
+    'Design the visualization for the single most important idea or structure in this lesson.',
+    'Pick the form that best fits the content — a diagram, a labelled illustration, a flow,',
+    'a small interactive demo, a step-through, or an animated SVG. Use whichever helps a',
+    'learner see the idea fastest.',
+    '',
+    'Hard rules for the HTML:',
+    '- One complete document starting with <!DOCTYPE html>.',
+    '- All CSS in a single <style> tag in <head>. All JS in a single <script> tag.',
+    '- No external resources: no <link>, no <script src>, no remote fonts, no remote images.',
+    '  If you need icons or images, use inline SVG.',
+    '- Use a dark, calm background (around #0f1115) with high-contrast text. The whole',
+    '  document must fit in a viewport ~960x600 without horizontal scrolling.',
+    '- Keep it under ~3000 lines of HTML. Prefer clarity over visual maximalism.',
+    '- Label every part of the diagram clearly. Add a short caption explaining what the',
+    '  learner is looking at.',
+  ].join('\n');
+}
+
 export const REPHRASE_SYSTEM =
   'You are Tudor, a patient tutor. You rewrite a passage on request, keeping it accurate ' +
   'and self-contained. Output ONLY the rewritten passage in markdown — no preamble.';
