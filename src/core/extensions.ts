@@ -279,6 +279,44 @@ export interface HostUserMessage {
   send: (chunk: HostReplyChunk) => void | Promise<void>;
 }
 
+// Confirm-tier dispatch for non-Telegram chat surfaces. An extension that
+// owns its own chat surface (Discord, Matrix, …) feeds user turns through
+// host.orchestrator and registers a renderer here so confirm-tier tools can
+// surface a Yes/No prompt in the originating chat. The renderer is
+// responsible for delivering the prompt to the user and resolving the
+// returned promise with the user's tap. Core enforces single-use,
+// abort-on-cancel, and timeout semantics around this hook — the renderer
+// only owns the UI delivery and the user-tap → boolean mapping.
+//
+// ownsChat() lets core route a given orchestrator chatId to the correct
+// surface. It must return true for chats the extension actually delivered;
+// returning true for an unfamiliar chatId would steal Yes/No prompts that
+// belong to another surface. Falsy or absent return means "not mine".
+//
+// Surfaces are checked in registration order; the first match wins. The
+// Telegram adapter remains the fallback when no registered surface owns the
+// chat, so existing behaviour is unchanged for Telegram-originated turns.
+export interface ChatConfirmRequest {
+  chatId: number;
+  toolName: string;
+  // Human-readable preview built from ToolHandler.confirmPrompt. Pre-rendered
+  // by core so surfaces don't reach back into the tool registry.
+  preview: string;
+  // The originating turn's abort signal. Surfaces must observe this and
+  // resolve false if it fires (e.g. /stop, transport disconnect) so a
+  // long-pending confirm can't fire after the turn has been cancelled.
+  signal?: AbortSignal;
+}
+
+export type ChatConfirmHandler = (req: ChatConfirmRequest) => Promise<boolean>;
+
+export interface ChatSurfaceRegistration {
+  // Predicate used to claim a chatId for this surface. Implementations
+  // should be cheap — this runs on every confirm-tier dispatch.
+  ownsChat: (chatId: number) => boolean;
+  confirm: ChatConfirmHandler;
+}
+
 // Subset of the core Orchestrator exposed to extensions. Gives non-Telegram
 // surfaces a way to inject a user turn into the same conversation history
 // Telegram uses, with tools and the hallucination guard intact. Each
@@ -368,6 +406,12 @@ export interface Host {
   auth: {
     flow: (flow: AuthFlow) => void;
   };
+  // Chat-surface plumbing for non-Telegram surfaces. Extensions that own
+  // a chat surface register a confirm renderer here so confirm-tier tools
+  // route to the right place. Telegram remains wired by the adapter itself.
+  chat: {
+    registerConfirm: (registration: ChatSurfaceRegistration) => void;
+  };
 }
 
 export interface EntrypointModule {
@@ -415,6 +459,12 @@ export interface ExtensionVoiceMessageRecord {
 export interface ExtensionAuthRecord {
   extension: string;
   flow: AuthFlow;
+}
+
+export interface ExtensionChatSurfaceRecord {
+  extension: string;
+  ownsChat: (chatId: number) => boolean;
+  confirm: ChatConfirmHandler;
 }
 
 export interface LoadedExtension {
@@ -487,6 +537,10 @@ export interface ExtensionLoader {
   callbacks(): ExtensionCallbackRecord[];
   voiceMessages(): ExtensionVoiceMessageRecord[];
   authFlows(): ExtensionAuthRecord[];
+  // Chat-surface confirm renderers contributed by extensions. The CLI's
+  // confirm router walks these and falls back to Telegram when no surface
+  // claims the chatId. Returned in registration order so first-match wins.
+  chatSurfaces(): ExtensionChatSurfaceRecord[];
   // Concatenated prompt fragments, in stable order (alpha by extension name).
   // Pass a filter set to include only those extensions' fragments — pairs
   // with `relevantExtensions` so the orchestrator can prune system-prompt
@@ -512,6 +566,12 @@ const KNOWN_CAPABILITIES = new Set([
   'auth:oauth',
   'auth:token',
   'llm',
+  // Declared by extensions that own a chat surface other than Telegram
+  // (Discord, Matrix, …). Such an extension feeds user turns into
+  // host.orchestrator and registers a confirm renderer via
+  // host.chat.registerConfirm so confirm-tier tools can pop a per-surface
+  // approval prompt instead of routing back to Telegram.
+  'chat_surface',
 ]);
 
 interface RegistrationsForExtension {
@@ -522,6 +582,7 @@ interface RegistrationsForExtension {
   afterTurns: ExtensionAfterTurnRecord[];
   callbacks: ExtensionCallbackRecord[];
   voiceMessages: ExtensionVoiceMessageRecord[];
+  chatSurfaces: ExtensionChatSurfaceRecord[];
   jobsRegistered: number;
   authFlow?: AuthFlow;
   promptFragment?: string;
@@ -789,6 +850,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
       afterTurns: [],
       callbacks: [],
       voiceMessages: [],
+      chatSurfaces: [],
       jobsRegistered: 0,
       promptFragment: promptFragment ?? '',
       ...(intentPattern ? { intentPattern } : {}),
@@ -953,6 +1015,20 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
           reg.authFlow = flow;
           reg.disposers.push(() => {
             reg.authFlow = before;
+          });
+        },
+      },
+      chat: {
+        registerConfirm: (registration) => {
+          const record: ExtensionChatSurfaceRecord = {
+            extension: manifest.name,
+            ownsChat: registration.ownsChat,
+            confirm: registration.confirm,
+          };
+          reg.chatSurfaces.push(record);
+          reg.disposers.push(() => {
+            const idx = reg.chatSurfaces.indexOf(record);
+            if (idx >= 0) reg.chatSurfaces.splice(idx, 1);
           });
         },
       },
@@ -1365,6 +1441,11 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
     }
     return out;
   }
+  function chatSurfaces(): ExtensionChatSurfaceRecord[] {
+    const out: ExtensionChatSurfaceRecord[] = [];
+    for (const r of registrations.values()) out.push(...r.chatSurfaces);
+    return out;
+  }
 
   function promptFragment(extensionFilter?: ReadonlySet<string>): string {
     const parts: string[] = [];
@@ -1460,6 +1541,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
     callbacks,
     voiceMessages,
     authFlows,
+    chatSurfaces,
     promptFragment,
     relevantExtensions,
     shutdown,

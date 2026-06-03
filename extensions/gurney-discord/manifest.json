@@ -1,0 +1,19 @@
+{
+  "name": "gurney-discord",
+  "version": "0.1.0",
+  "description": "Discord as a second chat surface alongside Telegram. One Gurney process, two surfaces — same model, memory, extensions, and confirm-tier UX. Gateway WebSocket (no inbound webhook), DM-allowlist or per-channel opt-in, button-based confirm-tier prompts.",
+  "gurney": ">=0.1.0",
+  "deps": [],
+  "capabilities": ["network", "storage", "chat_surface"],
+  "entrypoints": {
+    "jobs": "./jobs.ts",
+    "auth": "./auth.ts",
+    "commands": "./commands.ts"
+  },
+  "telegram_commands": [
+    {
+      "command": "discord",
+      "description": "Show Discord bridge status (linked chats, last seen)"
+    }
+  ]
+}

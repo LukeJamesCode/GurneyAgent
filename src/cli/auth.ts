@@ -119,6 +119,12 @@ export async function runAuthForExt(
         captured = f;
       },
     },
+    chat: {
+      // `gurney auth` only imports auth.ts to capture the AuthFlow; no
+      // chat surface should register itself here. A no-op keeps the Host
+      // structurally complete without ever delivering a fake confirm prompt.
+      registerConfirm: () => {},
+    },
   };
 
   const abs = resolve(ext.folder, authEntry);
