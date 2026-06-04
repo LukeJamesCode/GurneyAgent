@@ -116,6 +116,10 @@ async function runJob(
   let ref: ProfileName | { model: string } = choice?.ref ?? chooseModel(llm, 'local').ref;
   const fallback: ProfileName = choice?.fallback ?? chooseModel(llm, 'local').fallback;
 
+  // Once-per-job guard so a broken primary generator (e.g. auth errors that
+  // re-throw on every lesson attempt instead of flipping `ref`) logs a single
+  // clear error rather than one per lesson × retry.
+  let generatorFailureLogged = false;
   // Run a generation step; if the primary model (codex) throws, downgrade to
   // the local fallback for the rest of the course and retry the step once.
   const withDowngrade = async <T>(step: () => Promise<T>): Promise<T> => {
@@ -124,16 +128,37 @@ async function runJob(
     } catch (e) {
       if (typeof ref !== 'object') throw e; // already local — nothing to fall back to
       const msg = e instanceof Error ? e.message : String(e);
+      const from = labelFor(llm, ref);
+      // Shared diagnostic fields so the gurney start logs say exactly what
+      // failed and where, letting us tell an auth problem from a network/code
+      // one without reproducing.
+      const detail = {
+        courseId,
+        from,
+        to: llm.resolveModel(fallback),
+        phase: store.getJob(db, courseId)?.phase ?? 'unknown',
+        errorName: e instanceof Error ? e.name : 'unknown',
+        error: msg,
+        ...(e instanceof Error && e.stack ? { stack: e.stack } : {}),
+      };
       if (
         (e instanceof Error && e.name === 'CodexNotAuthedError') ||
         msg.includes('Codex rejected the credentials') ||
         msg.includes('Not logged in to Codex')
       ) {
+        // Auth failures fail the course rather than downgrade — log loudly so
+        // the cause is visible (re-auth needed), then re-throw to the job's
+        // crash handler.
+        if (!generatorFailureLogged) {
+          generatorFailureLogged = true;
+          log.error(`tudor: ${from} auth failed — course will not fall back to local`, detail);
+        }
         throw e;
       }
-      log.warn('tudor: primary generator failed, falling back to local', {
-        error: msg,
-      });
+      if (!generatorFailureLogged) {
+        generatorFailureLogged = true;
+        log.error(`tudor: ${from} generation failed, falling back to local for the rest`, detail);
+      }
       ref = fallback;
       store.setCourseModel(db, courseId, labelFor(llm, ref));
       return step();
