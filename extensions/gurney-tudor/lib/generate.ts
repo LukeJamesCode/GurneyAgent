@@ -76,6 +76,25 @@ export function labelFor(llm: LLM, ref: ProfileName | { model: string }): string
   return typeof ref === 'object' ? ref.model : llm.resolveModel(ref);
 }
 
+// Rebuild a ModelChoice from the model label persisted on a course
+// (tudor_courses.model). A resumed job — process restart, or the panel/main
+// process picking up a build started by the other — has no in-memory
+// ModelChoice, so without this it silently dropped to the default local model
+// even when the learner picked Codex or a cloud endpoint. The persisted label
+// is routable as-is: 'codex' hits the codex provider, 'alias:model' the
+// openai-compatible provider, a bare Ollama tag goes straight to Ollama. When
+// the label is missing or already names the default local model, we hand back
+// the local profile ref so its tuning (num_ctx, keep_alive, heavy eviction) is
+// preserved rather than bypassed by a literal model tag.
+export function chooseModelFromLabel(llm: LLM, label?: string | null): ModelChoice {
+  const fallback = bestLocalProfile(llm);
+  const tag = (label ?? '').trim();
+  if (!tag || tag === llm.resolveModel(fallback)) {
+    return { ref: fallback, label: llm.resolveModel(fallback), fallback };
+  }
+  return { ref: { model: tag }, label: tag, fallback };
+}
+
 // Run one chat completion to a single string. Concatenates streamed deltas,
 // strips reasoning chatter, and bounds output length defensively. `maxChars` is
 // the safety valve; visualisation needs more headroom than text generation, the

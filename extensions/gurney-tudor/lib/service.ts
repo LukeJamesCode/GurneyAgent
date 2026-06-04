@@ -12,6 +12,7 @@ import type { Depth, Generator, ParsedLesson, ProgressState, Source } from './ty
 import * as store from './store.js';
 import {
   chooseModel,
+  chooseModelFromLabel,
   generateLesson,
   generateOutline,
   generateVisualization,
@@ -84,7 +85,11 @@ export function resumeIfStale(ctx: TudorCtx, courseId: string): void {
   if (activeJobs.has(courseId)) return;
   const course = store.getCourse(ctx.db, courseId);
   if (!course || course.status !== 'generating') return;
-  void runJob(ctx, courseId, course.depth, null).catch((e) => {
+  // Rebuild the original generator choice from the label persisted on the
+  // course so a resumed/cross-process build keeps using Codex (or the chosen
+  // cloud endpoint) instead of silently falling back to the local model.
+  const choice = chooseModelFromLabel(ctx.llm, course.model);
+  void runJob(ctx, courseId, course.depth, choice).catch((e) => {
     ctx.log.error('tudor: resume job crashed', {
       courseId,
       error: e instanceof Error ? e.message : String(e),
@@ -105,7 +110,9 @@ async function runJob(
   activeAborts.set(courseId, ac);
   const { signal } = ac;
   const { db, llm, log } = ctx;
-  // On resume we don't have the original ModelChoice; rebuild a local one.
+  // Callers always pass a ModelChoice (fresh builds from startCourse, resumes
+  // rebuilt from the persisted label via chooseModelFromLabel); the local
+  // default here is a defensive fallback only.
   let ref: ProfileName | { model: string } = choice?.ref ?? chooseModel(llm, 'local').ref;
   const fallback: ProfileName = choice?.fallback ?? chooseModel(llm, 'local').fallback;
 
