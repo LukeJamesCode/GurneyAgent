@@ -32,10 +32,15 @@ export interface TudorCtx {
 // process restart (so we can transparently resume it).
 const activeJobs = new Set<string>();
 const activeAborts = new Map<string, AbortController>();
+const STOPPED_MESSAGE = 'Generation stopped by user.';
 
 function estMinutes(seed: number): number {
   // Cheap deterministic-ish estimate; the UI just wants a rough "5 min" badge.
   return 4 + (seed % 4);
+}
+
+function abortJobIfStopped(signal: AbortSignal): void {
+  signal.throwIfAborted();
 }
 
 export function startCourse(
@@ -126,6 +131,7 @@ async function runJob(
     try {
       return await step();
     } catch (e) {
+      if (signal.aborted) throw e;
       if (typeof ref !== 'object') throw e; // already local — nothing to fall back to
       const msg = e instanceof Error ? e.message : String(e);
       const from = labelFor(llm, ref);
@@ -192,12 +198,15 @@ async function runJob(
     // --- Phase 1: outline (only if not already built) ---
     if (!hasModules) {
       store.updateJob(db, courseId, { phase: 'outline', done: 0, total: 0 });
+      abortJobIfStopped(signal);
       const outline = await withDowngrade(() =>
-        generateOutline(llm, ref, course?.topic ?? '', depth, log, reference || undefined),
+        generateOutline(llm, ref, course?.topic ?? '', depth, log, reference || undefined, signal),
       );
+      abortJobIfStopped(signal);
       store.persistOutline(db, courseId, outline);
       lessons = store.listPendingLessons(db, courseId);
     }
+    abortJobIfStopped(signal);
 
     // --- Phase 2: lessons, one at a time, so the learner can start lesson 1
     // while the rest keep compiling. ---
@@ -207,7 +216,7 @@ async function runJob(
 
     let done = 0;
     for (const lesson of lessons) {
-      if (signal.aborted) break;
+      abortJobIfStopped(signal);
       store.setLessonStatus(db, lesson.id, 'generating');
       const lessonArgs = {
         courseTitle: title,
@@ -223,8 +232,10 @@ async function runJob(
       let parsed: ParsedLesson | null = null;
       for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
         try {
-          parsed = await withDowngrade(() => generateLesson(llm, ref, lessonArgs));
+          parsed = await withDowngrade(() => generateLesson(llm, ref, lessonArgs, signal));
+          abortJobIfStopped(signal);
         } catch (e) {
+          if (signal.aborted) throw e;
           if (attempt === 1) {
             log.warn('tudor: lesson generation failed after retry', {
               courseId,
@@ -241,9 +252,15 @@ async function runJob(
       store.updateJob(db, courseId, { done });
     }
 
+    abortJobIfStopped(signal);
     store.setCourseStatus(db, courseId, 'ready');
     store.updateJob(db, courseId, { error: null });
   } catch (e) {
+    if (signal.aborted) {
+      store.setCourseStatus(db, courseId, 'failed');
+      store.updateJob(db, courseId, { error: STOPPED_MESSAGE });
+      return;
+    }
     log.error('tudor: course generation failed', {
       courseId,
       error: e instanceof Error ? e.message : String(e),
@@ -258,9 +275,9 @@ async function runJob(
 
 export function cancelCourse(ctx: TudorCtx, id: string): void {
   const ac = activeAborts.get(id);
-  if (ac) ac.abort();
+  if (ac) ac.abort(new Error(STOPPED_MESSAGE));
   store.setCourseStatus(ctx.db, id, 'failed');
-  store.updateJob(ctx.db, id, { error: 'Generation stopped by user.' });
+  store.updateJob(ctx.db, id, { error: STOPPED_MESSAGE });
 }
 
 // --- Reads & mutations the routes expose ---
@@ -317,6 +334,8 @@ export function recordProgress(
 }
 
 export function deleteCourse(ctx: TudorCtx, id: string): void {
+  const ac = activeAborts.get(id);
+  if (ac) ac.abort(new Error(STOPPED_MESSAGE));
   store.deleteCourse(ctx.db, id);
 }
 

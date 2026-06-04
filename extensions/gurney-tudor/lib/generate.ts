@@ -106,14 +106,22 @@ async function complete(
   user: string,
   maxTokens: number,
   maxChars = 24_000,
+  signal?: AbortSignal,
 ): Promise<string> {
   return withLock(async () => {
+    signal?.throwIfAborted();
     const messages: ChatMessage[] = [
       { role: 'system', content: system },
       { role: 'user', content: user },
     ];
     let out = '';
-    for await (const chunk of llm.chat({ profile: ref, messages, maxTokens, timeoutMs: 10 * 60_000 })) {
+    for await (const chunk of llm.chat({
+      profile: ref,
+      messages,
+      maxTokens,
+      signal,
+      timeoutMs: 10 * 60_000,
+    })) {
       if (chunk.delta) out += chunk.delta;
       if (out.length > maxChars) break; // safety valve against a runaway stream
     }
@@ -128,9 +136,10 @@ export async function generateOutline(
   depth: Depth,
   log: Logger,
   reference?: string,
+  signal?: AbortSignal,
 ): Promise<ParsedOutline> {
   const user = outlineUser(topic, depth, reference);
-  const first = await complete(llm, ref, OUTLINE_SYSTEM, user, 700);
+  const first = await complete(llm, ref, OUTLINE_SYSTEM, user, 700, 24_000, signal);
   try {
     return parseOutline(first);
   } catch (e) {
@@ -143,6 +152,8 @@ export async function generateOutline(
       OUTLINE_SYSTEM,
       `${user}\n\nYour previous answer did not follow the format. Output ONLY the TITLE/MODULE/SUMMARY/- lines, nothing else.`,
       700,
+      24_000,
+      signal,
     );
     return parseOutline(repaired); // throws if still unparseable — caller fails the course
   }
@@ -158,9 +169,10 @@ export async function generateLesson(
     siblingTitles: string[];
     reference?: string;
   },
+  signal?: AbortSignal,
 ): Promise<ParsedLesson> {
   const user = lessonUser(args);
-  const text = await complete(llm, ref, LESSON_SYSTEM, user, 1100);
+  const text = await complete(llm, ref, LESSON_SYSTEM, user, 1100, 24_000, signal);
   // parseLesson never throws on non-empty input (it falls back to one segment),
   // so no repair pass is needed here — a usable lesson always comes back.
   return parseLesson(text);
@@ -191,9 +203,10 @@ export async function generateVisualization(
     lessonTitle: string;
     lessonBody: string;
   },
+  signal?: AbortSignal,
 ): Promise<string> {
   const user = visualizationUser(args);
-  const html = await complete(llm, ref, VISUALIZATION_SYSTEM, user, 4000, 80_000);
+  const html = await complete(llm, ref, VISUALIZATION_SYSTEM, user, 4000, 80_000, signal);
   const cleaned = stripCodeFences(html);
   if (!/<html|<!DOCTYPE/i.test(cleaned)) {
     throw new Error('visualization model returned no HTML document');
@@ -207,6 +220,7 @@ export async function rephrase(
   mode: 'simpler' | 'deeper',
   body: string,
   lessonTitle: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const text = await complete(
     llm,
@@ -214,6 +228,8 @@ export async function rephrase(
     REPHRASE_SYSTEM,
     rephraseUser(mode, body, lessonTitle),
     600,
+    24_000,
+    signal,
   );
   return text || body;
 }
