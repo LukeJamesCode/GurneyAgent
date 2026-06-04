@@ -14,3 +14,4 @@ CREATE TABLE IF NOT EXISTS tudor_segment_images (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tudor_segment_images_segment
   ON tudor_segment_images (segment_id);
+
