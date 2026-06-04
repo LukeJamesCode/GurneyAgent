@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "tsc && node scripts/copy-migrations.mjs",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p extensions/gurney-everyday-assistant && tsc --noEmit -p extensions/gurney-voice && tsc --noEmit -p extensions/gurney-instant-responses && tsc --noEmit -p extensions/gurney-abilitytest && tsc --noEmit -p extensions/gurney-codex && tsc --noEmit -p extensions/gurney-openai-compatible && tsc --noEmit -p extensions/gurney-tudor && tsc --noEmit -p extensions/gurney-websearch && tsc --noEmit -p extensions/gurney-frontend && tsc --noEmit -p extensions/gurney-discord",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p extensions/gurney-everyday-assistant && tsc --noEmit -p extensions/gurney-voice && tsc --noEmit -p extensions/gurney-instant-responses && tsc --noEmit -p extensions/gurney-abilitytest && tsc --noEmit -p extensions/gurney-codex && tsc --noEmit -p extensions/gurney-openai-compatible && tsc --noEmit -p extensions/gurney-minimax && tsc --noEmit -p extensions/gurney-tudor && tsc --noEmit -p extensions/gurney-websearch && tsc --noEmit -p extensions/gurney-frontend && tsc --noEmit -p extensions/gurney-discord",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

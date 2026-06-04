@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import Database from 'better-sqlite3';
-import { localDay, countToday, usageToday, recordCall } from './budget.js';
+import { localDay, usageToday, recordCall } from './budget.js';
 
 test('localDay formats consistently', () => {
   const d = localDay(1704067200000, 'UTC'); // 2024-01-01T00:00:00Z

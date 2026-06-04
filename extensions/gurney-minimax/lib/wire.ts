@@ -70,7 +70,7 @@ export function parseMinimaxToolCalls(
     if (tc.function.arguments) {
       try {
         parsedArgs = JSON.parse(tc.function.arguments);
-      } catch (e) {
+      } catch {
         // Fallback to empty object if unparseable
       }
     }

@@ -57,7 +57,7 @@ test('parseSSEStream throws on base_resp error', async () => {
   
   let threw = false;
   try {
-    for await (const chunk of parseSSEStream(stream, 'model-test', createMockLog())) {
+    for await (const _chunk of parseSSEStream(stream, 'model-test', createMockLog())) {
       // should throw
     }
   } catch (e) {

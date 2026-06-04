@@ -142,7 +142,6 @@ export function createConfirmRenderer(opts: ConfirmRendererOptions): ConfirmRend
         () => finish(false, `${promptText}\n\n⌛ Timed out — not run.`),
         timeoutMs,
       );
-      timer.unref?.();
       req.signal?.addEventListener('abort', onAbort, { once: true });
 
       // Register the pending entry BEFORE awaiting the send so that a

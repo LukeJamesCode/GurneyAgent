@@ -36,7 +36,7 @@ export function register(host: Host): void {
         lines.push(`Total Tokens: ${usage.promptTokens + usage.completionTokens}`);
       }
 
-      await ctx.reply(lines.join('\\n'));
+      await ctx.reply(lines.join('\n'));
     },
     "Check today's MiniMax token budget and usage",
   );
@@ -56,9 +56,10 @@ export function register(host: Host): void {
       try {
         let fullReply = '';
         const stream = provider.chat({
+          profile: { model: defaultModel },
           model: `minimax:${defaultModel}`,
           messages: [{ role: 'user', content: text }],
-          context: { chatId: ctx.chatId, conversationId: ctx.conversationId },
+          context: { chatId: ctx.chatId },
         });
 
         for await (const chunk of stream) {
