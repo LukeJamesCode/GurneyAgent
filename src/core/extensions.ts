@@ -39,9 +39,10 @@ import { migrate as runMigrations } from '../storage/db.js';
 import type { Logger } from '../util/log.js';
 import type { LLM } from './llm.js';
 import type { AfterExecuteListener, ToolHandler, ToolRegistry } from './tools.js';
-import type { Scheduler, JobHandler, ScheduledJob, NudgeAction } from './scheduler.js';
+import type { Scheduler, JobHandler, ScheduledJob, NudgeAction, Nudge } from './scheduler.js';
 import type { FastCache } from './fast-cache.js';
 import { namespacedCache } from './fast-cache.js';
+import { createChatDispatcher, type ChatDispatcher, type InboundMessage } from './chat-dispatch.js';
 
 // ---------------------------------------------------------------------------
 // Manifest + Host API
@@ -315,6 +316,12 @@ export interface ChatSurfaceRegistration {
   // should be cheap — this runs on every confirm-tier dispatch.
   ownsChat: (chatId: number) => boolean;
   confirm: ChatConfirmHandler;
+  // Optional proactive sink. When present, the core scheduler's nudge
+  // dispatcher mirrors every proactive nudge/briefing to this surface in
+  // addition to Telegram, so a surface like Discord receives the same morning
+  // brief / event reminder. Receives the same Nudge the Telegram path gets;
+  // the surface decides where to deliver it (e.g. DM the allowlisted user).
+  deliverProactive?: (nudge: Nudge) => Promise<void>;
 }
 
 // Subset of the core Orchestrator exposed to extensions. Gives non-Telegram
@@ -411,6 +418,13 @@ export interface Host {
   // route to the right place. Telegram remains wired by the adapter itself.
   chat: {
     registerConfirm: (registration: ChatSurfaceRegistration) => void;
+    // Run a user turn through the full shared pipeline — extension commands,
+    // message intercepts, the orchestrator turn, and the afterReply/afterTurn
+    // hooks — exactly as the Telegram adapter does. A chat-surface extension
+    // (Discord, future Matrix/Slack) calls this instead of host.orchestrator so
+    // it inherits commands and intercepts for free, not just raw model turns.
+    // The surface provides `reply` to render/length-cap output its own way.
+    dispatchInbound: (msg: InboundMessage) => Promise<void>;
   };
 }
 
@@ -465,6 +479,7 @@ export interface ExtensionChatSurfaceRecord {
   extension: string;
   ownsChat: (chatId: number) => boolean;
   confirm: ChatConfirmHandler;
+  deliverProactive?: (nudge: Nudge) => Promise<void>;
 }
 
 export interface LoadedExtension {
@@ -1024,12 +1039,23 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
             extension: manifest.name,
             ownsChat: registration.ownsChat,
             confirm: registration.confirm,
+            ...(registration.deliverProactive
+              ? { deliverProactive: registration.deliverProactive }
+              : {}),
           };
           reg.chatSurfaces.push(record);
           reg.disposers.push(() => {
             const idx = reg.chatSurfaces.indexOf(record);
             if (idx >= 0) reg.chatSurfaces.splice(idx, 1);
           });
+        },
+        dispatchInbound: async (msg) => {
+          const d = getChatDispatcher();
+          if (!d) {
+            cl.warn('host.chat.dispatchInbound called but host.orchestrator is unavailable');
+            return;
+          }
+          await d.dispatchInbound(msg);
         },
       },
     };
@@ -1445,6 +1471,27 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
     const out: ExtensionChatSurfaceRecord[] = [];
     for (const r of registrations.values()) out.push(...r.chatSurfaces);
     return out;
+  }
+
+  // The shared inbound pipeline handed to chat-surface extensions via
+  // host.chat.dispatchInbound. Built lazily and memoized: it closes over the
+  // live registry accessors above so hot-reloaded commands/intercepts are
+  // picked up without rebuilding it. Null until an orchestrator is wired (tests
+  // commonly leave opts.orchestrator unset).
+  let sharedChatDispatcher: ChatDispatcher | null = null;
+  function getChatDispatcher(): ChatDispatcher | null {
+    if (!opts.orchestrator) return null;
+    if (!sharedChatDispatcher) {
+      sharedChatDispatcher = createChatDispatcher({
+        orchestrator: opts.orchestrator,
+        commands,
+        intercepts,
+        afterReplies,
+        afterTurns,
+        log,
+      });
+    }
+    return sharedChatDispatcher;
   }
 
   function promptFragment(extensionFilter?: ReadonlySet<string>): string {

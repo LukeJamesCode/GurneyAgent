@@ -8,10 +8,7 @@ import {
   DISCORD_MESSAGE_MAX,
   type OutboundTransport,
 } from './bridge.js';
-import type {
-  HostOrchestrator,
-  HostUserMessage,
-} from '../../../src/core/extensions.js';
+import type { InboundMessage } from '../../../src/core/chat-dispatch.js';
 
 const SILENT_LOG = {
   info: () => {},
@@ -54,6 +51,20 @@ function fakeTransport(): OutboundTransport & { sent: CapturedSend[] } {
   };
 }
 
+// A stand-in for host.chat.dispatchInbound. Records every inbound turn and, when
+// given reply content, drives the surface `reply` callback the way the real
+// shared pipeline does on a finished turn.
+function fakeDispatch(replyWith?: string | string[]) {
+  const calls: InboundMessage[] = [];
+  const fn = async (msg: InboundMessage): Promise<void> => {
+    calls.push(msg);
+    if (replyWith === undefined) return;
+    const parts = Array.isArray(replyWith) ? replyWith : [replyWith];
+    for (const p of parts) await msg.reply(p);
+  };
+  return { calls, fn };
+}
+
 test('stripBotMention: removes <@id> and <@!id> forms', () => {
   assert.equal(stripBotMention('<@123> hello', '123'), 'hello');
   assert.equal(stripBotMention('<@!123> hi there', '123'), 'hi there');
@@ -83,16 +94,11 @@ test('splitForDiscord: handles messages with no break points by hard-slicing', (
   assert.equal(parts.join(''), text);
 });
 
-test('bridge: empty mention reply, no LLM round-trip', async () => {
-  let called = false;
-  const orchestrator: HostOrchestrator = {
-    handleUserMessage: async () => {
-      called = true;
-    },
-  };
+test('bridge: empty mention replies without invoking the pipeline', async () => {
+  const dispatch = fakeDispatch();
   const transport = fakeTransport();
   const bridge = createBridge({
-    orchestrator,
+    dispatch: dispatch.fn,
     identity: fakeIdentity(),
     transport,
     rateLimiter: createRateLimiter(0),
@@ -100,28 +106,18 @@ test('bridge: empty mention reply, no LLM round-trip', async () => {
     botUserId: 'bot-1',
   });
 
-  await bridge.handle({
-    userId: 'u-1',
-    channelId: 'c-1',
-    guildId: 'g-1',
-    rawContent: '<@bot-1>',
-  });
+  await bridge.handle({ userId: 'u-1', channelId: 'c-1', guildId: 'g-1', rawContent: '<@bot-1>' });
 
-  assert.equal(called, false);
+  assert.equal(dispatch.calls.length, 0);
   assert.equal(transport.sent.length, 1);
   assert.match(transport.sent[0]!.text, /send a message/i);
 });
 
-test('bridge: rate-limited turn returns a friendly nudge', async () => {
-  let called = 0;
-  const orchestrator: HostOrchestrator = {
-    handleUserMessage: async () => {
-      called += 1;
-    },
-  };
+test('bridge: rate-limited turn returns a friendly nudge and does not dispatch', async () => {
+  const dispatch = fakeDispatch('ok');
   const transport = fakeTransport();
   const bridge = createBridge({
-    orchestrator,
+    dispatch: dispatch.fn,
     identity: fakeIdentity(),
     transport,
     rateLimiter: createRateLimiter(1), // budget of 1/minute
@@ -129,36 +125,19 @@ test('bridge: rate-limited turn returns a friendly nudge', async () => {
     botUserId: 'bot-1',
   });
 
-  await bridge.handle({
-    userId: 'u-1',
-    channelId: 'c-1',
-    guildId: 'g-1',
-    rawContent: '<@bot-1> first',
-  });
-  await bridge.handle({
-    userId: 'u-1',
-    channelId: 'c-1',
-    guildId: 'g-1',
-    rawContent: '<@bot-1> second',
-  });
+  await bridge.handle({ userId: 'u-1', channelId: 'c-1', guildId: 'g-1', rawContent: '<@bot-1> first' });
+  await bridge.handle({ userId: 'u-1', channelId: 'c-1', guildId: 'g-1', rawContent: '<@bot-1> second' });
 
-  assert.equal(called, 1);
+  assert.equal(dispatch.calls.length, 1);
   const last = transport.sent.at(-1)!;
   assert.match(last.text, /per-minute limit/i);
 });
 
-test('bridge: streams orchestrator deltas as a single send on done', async () => {
-  const captured: HostUserMessage[] = [];
-  const orchestrator: HostOrchestrator = {
-    handleUserMessage: async (msg) => {
-      captured.push(msg);
-      await msg.send({ delta: 'Hello' });
-      await msg.send({ delta: ', world!', done: true });
-    },
-  };
+test('bridge: forwards stripped text to the pipeline and renders the reply', async () => {
+  const dispatch = fakeDispatch('Hello, world!');
   const transport = fakeTransport();
   const bridge = createBridge({
-    orchestrator,
+    dispatch: dispatch.fn,
     identity: fakeIdentity(),
     transport,
     rateLimiter: createRateLimiter(0),
@@ -166,29 +145,20 @@ test('bridge: streams orchestrator deltas as a single send on done', async () =>
     botUserId: 'bot-1',
   });
 
-  await bridge.handle({
-    userId: 'u-1',
-    channelId: 'c-1',
-    guildId: null,
-    rawContent: 'hi there',
-  });
+  await bridge.handle({ userId: 'u-1', channelId: 'c-1', guildId: null, rawContent: 'hi there' });
 
-  assert.equal(captured.length, 1);
-  assert.equal(captured[0]!.text, 'hi there');
+  assert.equal(dispatch.calls.length, 1);
+  assert.equal(dispatch.calls[0]!.text, 'hi there');
   assert.equal(transport.sent.length, 1);
   assert.equal(transport.sent[0]!.text, 'Hello, world!');
 });
 
-test('bridge: replace chunk overrides buffered delta', async () => {
-  const orchestrator: HostOrchestrator = {
-    handleUserMessage: async (msg) => {
-      await msg.send({ delta: 'thinking…' });
-      await msg.send({ delta: '', done: true, replace: 'Final answer.' });
-    },
-  };
+test('bridge: a long reply is split across multiple sends under the char cap', async () => {
+  const long = 'y'.repeat(DISCORD_MESSAGE_MAX + 500);
+  const dispatch = fakeDispatch(long);
   const transport = fakeTransport();
   const bridge = createBridge({
-    orchestrator,
+    dispatch: dispatch.fn,
     identity: fakeIdentity(),
     transport,
     rateLimiter: createRateLimiter(0),
@@ -196,30 +166,18 @@ test('bridge: replace chunk overrides buffered delta', async () => {
     botUserId: 'bot-1',
   });
 
-  await bridge.handle({
-    userId: 'u-1',
-    channelId: 'c-1',
-    guildId: null,
-    rawContent: 'hello',
-  });
+  await bridge.handle({ userId: 'u-1', channelId: 'c-1', guildId: null, rawContent: 'hi' });
 
-  assert.equal(transport.sent.length, 1);
-  assert.equal(transport.sent[0]!.text, 'Final answer.');
+  assert.ok(transport.sent.length >= 2, 'long reply should split');
+  for (const s of transport.sent) assert.ok(s.text.length <= DISCORD_MESSAGE_MAX);
 });
 
-test('bridge: identity adapter assigns stable chatId per (user, channel)', async () => {
-  const seenChatIds: number[] = [];
-  const orchestrator: HostOrchestrator = {
-    handleUserMessage: async (msg) => {
-      seenChatIds.push(msg.chatId);
-      await msg.send({ delta: 'ok', done: true });
-    },
-  };
-  const identity = fakeIdentity();
+test('bridge: identity assigns a stable chatId per (user, channel)', async () => {
+  const dispatch = fakeDispatch('ok');
   const transport = fakeTransport();
   const bridge = createBridge({
-    orchestrator,
-    identity,
+    dispatch: dispatch.fn,
+    identity: fakeIdentity(),
     transport,
     rateLimiter: createRateLimiter(0),
     log: SILENT_LOG,
@@ -227,12 +185,30 @@ test('bridge: identity adapter assigns stable chatId per (user, channel)', async
   });
 
   for (let i = 0; i < 3; i++) {
-    await bridge.handle({
-      userId: 'u-1',
-      channelId: 'c-1',
-      guildId: null,
-      rawContent: 'hi',
-    });
+    await bridge.handle({ userId: 'u-1', channelId: 'c-1', guildId: null, rawContent: 'hi' });
   }
-  assert.equal(new Set(seenChatIds).size, 1, 'same pair must collapse to one chatId');
+  const ids = new Set(dispatch.calls.map((c) => c.chatId));
+  assert.equal(ids.size, 1, 'same pair must collapse to one chatId');
+});
+
+test('bridge: shared identity maps a DM onto the configured Telegram chat id', async () => {
+  const dispatch = fakeDispatch('ok');
+  const transport = fakeTransport();
+  const bridge = createBridge({
+    dispatch: dispatch.fn,
+    identity: fakeIdentity(),
+    transport,
+    rateLimiter: createRateLimiter(0),
+    log: SILENT_LOG,
+    botUserId: 'bot-1',
+    sharedTelegramChatId: () => 42,
+  });
+
+  // DM shares the Telegram thread…
+  await bridge.handle({ userId: 'u-1', channelId: 'c-1', guildId: null, rawContent: 'hi' });
+  assert.equal(dispatch.calls.at(-1)!.chatId, 42);
+
+  // …but a guild channel stays on its own synthetic (negative) id.
+  await bridge.handle({ userId: 'u-1', channelId: 'c-2', guildId: 'g-1', rawContent: '<@bot-1> yo' });
+  assert.ok(dispatch.calls.at(-1)!.chatId < 0, 'guild channel must not use the shared id');
 });

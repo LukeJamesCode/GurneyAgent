@@ -21,7 +21,8 @@ import { pipeline as streamPipeline } from 'node:stream/promises';
 import { Bot, InlineKeyboard, InputFile, type Context } from 'grammy';
 import { collectDoctorReply } from './telegram-maintenance.js';
 import type { Logger } from '../util/log.js';
-import type { Orchestrator, ReplyChunk } from '../core/orchestrator.js';
+import type { Orchestrator } from '../core/orchestrator.js';
+import { createChatDispatcher } from '../core/chat-dispatch.js';
 import type { LLM } from '../core/llm.js';
 import type { ToolRegistry, ToolHandler, ToolContext } from '../core/tools.js';
 import type { DB } from '../storage/db.js';
@@ -34,7 +35,6 @@ import {
   type ExtensionReadiness,
 } from '../core/extension-readiness.js';
 import type {
-  AfterTurnContext,
   ExtensionAfterReplyRecord,
   ExtensionAfterTurnRecord,
   ExtensionCallbackRecord,
@@ -44,7 +44,6 @@ import type {
   ExtensionInterceptRecord,
   TelegramCallbackContext,
   TelegramCommandContext,
-  TelegramInterceptContext,
   VoicePayload,
 } from '../core/extensions.js';
 
@@ -762,112 +761,20 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
     await next();
   });
 
-  const runAfterReplies = async (chatId: number, userId: number, reply: string): Promise<void> => {
-    if (!reply || reply === '(no reply)') return;
-    const hooks = opts.extensionAfterReplies?.() ?? [];
-    for (const h of hooks) {
-      try {
-        await h.handler({
-          chatId,
-          userId,
-          text: reply,
-          log: log.child({ ext: h.extension, hook: 'afterReply' }),
-        });
-      } catch (e) {
-        log.warn('afterReply hook failed', {
-          ext: h.extension,
-          error: e instanceof Error ? e.message : String(e),
-        });
-      }
-    }
-  };
-
-  const runAfterTurns = async (turn: AfterTurnContext): Promise<void> => {
-    if (!turn.assistantText || turn.assistantText === '(no reply)') return;
-    const hooks = opts.extensionAfterTurns?.() ?? [];
-    for (const h of hooks) {
-      try {
-        await h.handler(turn);
-      } catch (e) {
-        log.warn('afterTurn hook failed', {
-          ext: h.extension,
-          error: e instanceof Error ? e.message : String(e),
-        });
-      }
-    }
-  };
-
-  const dispatchOrchestratorTurn = (ctx: Context, text: string): void => {
-    if (!ctx.chat || !ctx.from) return;
-    let buffer = '';
-    const chatId = ctx.chat.id;
-    const userId = ctx.from.id;
-    const devmode = getDevmode(chatId);
-    void opts.orchestrator
-      .handleUserMessage({
-        chatId,
-        userId,
-        text,
-        send: async (chunk: ReplyChunk) => {
-          if (chunk.delta) buffer += chunk.delta;
-          if (chunk.done) {
-            // Hallucination guard (see orchestrator): orchestrator can replace
-            // the streamed buffer wholesale when the model claimed a delete
-            // that never ran.
-            if (chunk.replace !== undefined) buffer = chunk.replace;
-            const reply = buffer.length > 0 ? buffer : '(no reply)';
-            let display = reply;
-            if (devmode && chunk.meta) {
-              display += `\n\n— ${chunk.meta.model}, ${chunk.meta.elapsedMs}ms`;
-              if (chunk.meta.promptTokens !== undefined) {
-                display += `, ${chunk.meta.promptTokens} prompt`;
-              }
-              if (chunk.meta.completionTokens !== undefined) {
-                display += `, ${chunk.meta.completionTokens} completion`;
-              }
-              const toolCalls = chunk.meta.afterTurn?.toolCalls ?? [];
-              if (toolCalls.length > 0) {
-                display += `\ntools: ${toolCalls.map((c) => `${c.name}${c.ok ? '' : '✗'}`).join(', ')}`;
-              } else {
-                display += `\ntools: none`;
-              }
-            }
-            try {
-              // Telegram hard-caps a message at 4096 chars. A long reply
-              // (e.g. a Codex handoff answer) would otherwise be rejected by
-              // the API and silently dropped — the user would see nothing.
-              for (const part of splitForTelegram(display)) {
-                if (part.trim().length === 0) continue; // Telegram rejects empty text
-                await ctx.reply(part);
-              }
-            } catch (e) {
-              log.warn('reply failed', { error: e instanceof Error ? e.message : String(e) });
-            }
-            void runAfterReplies(chatId, userId, reply).catch((e) => {
-              log.warn('afterReply chain failed', {
-                error: e instanceof Error ? e.message : 'afterReply error',
-              });
-            });
-            if (chunk.meta?.afterTurn) {
-              void runAfterTurns({
-                ...chunk.meta.afterTurn,
-                assistantText: reply,
-                finishedAt: Date.now(),
-              }).catch((e) => {
-                log.warn('afterTurn chain failed', {
-                  error: e instanceof Error ? e.message : 'afterTurn error',
-                });
-              });
-            }
-          }
-        },
-      })
-      .catch((e) => {
-        log.warn('orchestrator message failed', {
-          error: e instanceof Error ? e.message : String(e),
-        });
-      });
-  };
+  // Surface-neutral inbound pipeline (commands → intercepts → orchestrator turn
+  // → afterReply/afterTurn hooks), shared with every other chat surface via
+  // src/core/chat-dispatch.ts. The Telegram-specific bits are injected here: the
+  // reply renderer (splitForTelegram), the core-command guard, and devmode.
+  const chatDispatcher = createChatDispatcher({
+    orchestrator: opts.orchestrator,
+    commands: () => opts.extensionCommands?.() ?? [],
+    intercepts: () => opts.extensionIntercepts?.() ?? [],
+    afterReplies: () => opts.extensionAfterReplies?.() ?? [],
+    afterTurns: () => opts.extensionAfterTurns?.() ?? [],
+    log,
+    isCoreCommand: (head) => CORE_COMMANDS.has(head),
+    getDevmode,
+  });
 
   bot.command('start', async (ctx) => {
     await replyWithButtons(ctx, startText(), 'home');
@@ -1147,71 +1054,20 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
 
   const dispatchTextMessage = async (ctx: Context, text: string): Promise<void> => {
     if (!ctx.chat || !ctx.from) return;
-
-    if (text.startsWith('/')) {
-      const space = text.indexOf(' ');
-      const head = (space === -1 ? text.slice(1) : text.slice(1, space)).split('@')[0]!;
-      if (CORE_COMMANDS.has(head)) return; // already handled by core dispatcher
-      const args = space === -1 ? '' : text.slice(space + 1).trim();
-      const handled = await invokeExtensionCommand(head, args, ctx.chat.id, ctx.from.id, (t) =>
-        ctx.reply(t),
-      );
-      if (handled) return;
-      // Unknown command — let it fall through silently.
-      return;
-    }
-
-    // Build the intercept chain. Each intercept can call next() to fall
-    // through to the orchestrator. Run intercepts in registration order.
-    const intercepts = opts.extensionIntercepts?.() ?? [];
-
-    let handed = false;
-    const runOrchestrator = async (): Promise<void> => {
-      if (handed) return;
-      handed = true;
-      dispatchOrchestratorTurn(ctx, text);
-    };
-
-    let i = 0;
-    const runNext = async (): Promise<void> => {
-      const item = intercepts[i++];
-      if (!item) {
-        await runOrchestrator();
-        return;
-      }
-      const ictx: TelegramInterceptContext = {
-        chatId: ctx.chat!.id,
-        userId: ctx.from!.id,
-        text,
-        args: text,
-        // reply() sends a message; it does NOT mark the turn as handled. Flow
-        // control belongs to next(): an intercept that wants to fully handle
-        // the message simply doesn't call next(). The instant-responses
-        // extension relies on this — it ships a quick "Checking." ack and then
-        // hands off to the orchestrator via next() so the real answer lands.
-        // Fire afterReply hooks too — that way /voice (and any other
-        // post-reply extension) covers instant replies and offload acks, not
-        // just orchestrator turns.
-        reply: async (t) => {
-          await ctx.reply(t);
-          void runAfterReplies(ctx.chat!.id, ctx.from!.id, t).catch((e) => {
-            log.warn('afterReply chain failed (intercept)', {
-              error: e instanceof Error ? e.message : 'afterReply error',
-            });
-          });
-        },
-        next: runNext,
-      };
-      try {
-        await item.handler(ictx);
-      } catch (e) {
-        log.warn('intercept failed', {
-          ext: item.extension,
-          error: e instanceof Error ? e.message : String(e),
-        });
-      }
-    };
-    await runNext();
+    await chatDispatcher.dispatchInbound({
+      chatId: ctx.chat.id,
+      userId: ctx.from.id,
+      text,
+      reply: async (t) => {
+        // Telegram hard-caps a message at 4096 chars. A long reply (e.g. a Codex
+        // handoff answer) would otherwise be rejected by the API and silently
+        // dropped — the user would see nothing.
+        for (const part of splitForTelegram(t)) {
+          if (part.trim().length === 0) continue; // Telegram rejects empty text
+          await ctx.reply(part);
+        }
+      },
+    });
   };
 
   // Free-form text + extension command dispatch + intercept chain.

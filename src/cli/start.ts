@@ -349,8 +349,27 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     extensionCallbacks: () => loader.callbacks(),
     extensionVoiceMessages: () => loader.voiceMessages(),
   });
-  // Wire the scheduler -> Telegram nudge path.
-  dispatchNudge = (nudge) => telegram.sendNudge(nudge);
+  // Mirror a proactive nudge to every registered chat surface other than
+  // Telegram (e.g. Discord) so briefings/nudges/reminders land wherever the
+  // user is. Best-effort: a surface failure must not break the Telegram path.
+  const mirrorNudgeToSurfaces = async (nudge: Nudge): Promise<void> => {
+    for (const surface of loader.chatSurfaces()) {
+      if (!surface.deliverProactive) continue;
+      try {
+        await surface.deliverProactive(nudge);
+      } catch (e) {
+        log.warn('chat surface deliverProactive failed', {
+          ext: surface.extension,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  };
+  // Wire the scheduler -> Telegram nudge path, then fan out to other surfaces.
+  dispatchNudge = async (nudge) => {
+    await telegram.sendNudge(nudge);
+    await mirrorNudgeToSurfaces(nudge);
+  };
   // And the voice-note path now that the adapter exists.
   sendVoiceImpl = (chatId, voice) => telegram.sendVoice(chatId, voice);
   // Point the tool registry's confirm hook at a surface router. Extensions
@@ -417,6 +436,13 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     lastSetupIssueSignature = signature;
     const text = formatSetupIssuesNudge(issues);
     for (const chatId of chats) await telegram.sendMessage(chatId, text);
+    // Mirror the alert to other chat surfaces (e.g. Discord) as a nudge.
+    await mirrorNudgeToSurfaces({
+      chatId: ownerId,
+      text,
+      key: 'setup-issues',
+      reason: 'Setup issues detected',
+    });
   };
 
   await telegram.start();

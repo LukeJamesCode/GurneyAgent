@@ -19,7 +19,7 @@
 
 import type { Host } from '../../src/core/extensions.js';
 import { createIdentityStore, isDiscordChatId } from './lib/identity.js';
-import { createBridge, createRateLimiter, type Bridge } from './lib/bridge.js';
+import { createBridge, createRateLimiter, splitForDiscord, type Bridge } from './lib/bridge.js';
 import { parseCsvSet, type AllowlistConfig } from './lib/allowlist.js';
 import { createConfirmRenderer, type ConfirmRenderer } from './lib/confirm.js';
 import { createDiscordClient, type SlashCommandSpec } from './lib/client.js';
@@ -43,6 +43,19 @@ export async function register(host: Host): Promise<void> {
   const identity = createIdentityStore(host.db);
   const ratePerMinute = Number(host.settings.get<number>('rate_limit_per_minute', 10)) || 10;
   const rateLimiter = createRateLimiter(ratePerMinute);
+
+  // Identity mode: 0 = isolated synthetic chatId per DM; non-zero shares the
+  // given Telegram chat thread for DMs so the two surfaces are one conversation.
+  const sharedTelegramChatId = (): number =>
+    Number(host.settings.get<number>('shared_telegram_chat_id', 0)) || 0;
+  // Where proactive briefings/nudges land on Discord: the configured user, else
+  // the first allowlisted DM user.
+  const resolveProactiveDmUserId = (): string | null => {
+    const explicit = String(host.settings.get<string>('proactive_dm_user_id', '')).trim();
+    if (explicit) return explicit;
+    for (const id of parseCsvSet(host.settings.get<string>('allowed_dm_user_ids', ''))) return id;
+    return null;
+  };
 
   // Forward refs for composition. The client wraps discord.js and needs a
   // bridge + a confirm-button handler; the bridge needs the client's
@@ -79,11 +92,12 @@ export async function register(host: Host): Promise<void> {
   });
 
   bridgeRef = createBridge({
-    orchestrator: host.orchestrator,
+    dispatch: host.chat.dispatchInbound,
     identity,
     transport: client.outbound,
     rateLimiter,
     log,
+    sharedTelegramChatId,
     // The bot's own id isn't known until `ready` fires; the bridge reads
     // this via the captured reference below. Pass an empty string here
     // (treated as "no mention to strip") so the initial value is harmless;
@@ -99,6 +113,19 @@ export async function register(host: Host): Promise<void> {
   host.chat.registerConfirm({
     ownsChat: (chatId) => isDiscordChatId(chatId),
     confirm: (req) => confirmRef!.handle(req),
+    // Mirror proactive briefings/nudges/reminders to Discord. Core fans these
+    // out to every surface (Telegram + here) so the user gets them wherever
+    // they are. We DM the configured/allowlisted user; split for the 2000-char
+    // cap. Best-effort — core swallows and logs any throw.
+    deliverProactive: async (nudge) => {
+      const userId = resolveProactiveDmUserId();
+      if (!userId || !client.outbound.sendDM) return;
+      const text = nudge.text.trim();
+      if (!text) return;
+      for (const part of splitForDiscord(text)) {
+        await client.outbound.sendDM(userId, part);
+      }
+    },
   });
 
   // Tiny opt-in slash surface. Task brief: only /gurney enable / disable,
@@ -149,11 +176,12 @@ export async function register(host: Host): Promise<void> {
       // client; nothing closes over `bridgeRef` directly except the
       // client's getter above, which sees the new reference next inbound.
       bridgeRef = createBridge({
-        orchestrator: host.orchestrator!,
+        dispatch: host.chat.dispatchInbound,
         identity,
         transport: client.outbound,
         rateLimiter,
         log,
+        sharedTelegramChatId,
         botUserId,
       });
       log.info('gurney-discord bridge online', {

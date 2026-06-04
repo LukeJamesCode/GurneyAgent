@@ -121,9 +121,11 @@ export async function runAuthForExt(
     },
     chat: {
       // `gurney auth` only imports auth.ts to capture the AuthFlow; no
-      // chat surface should register itself here. A no-op keeps the Host
-      // structurally complete without ever delivering a fake confirm prompt.
+      // chat surface should register itself here. No-ops keep the Host
+      // structurally complete without ever delivering a fake confirm prompt
+      // or running a real turn.
       registerConfirm: () => {},
+      dispatchInbound: async () => {},
     },
   };
 

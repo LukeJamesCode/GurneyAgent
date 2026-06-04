@@ -240,6 +240,14 @@ export function createDiscordClient(opts: DiscordClientOptions): DiscordClientHa
       if (!channel || !channel.isTextBased() || !('sendTyping' in channel)) return;
       await (channel as { sendTyping: () => Promise<unknown> }).sendTyping();
     },
+    sendDM: async (userId, text) => {
+      // Resolve the user and send to their DM channel (discord.js opens it as
+      // needed). Used by the proactive mirror — the user must share a guild
+      // with the bot or have DMs open, else Discord rejects the send.
+      const user = await client.users.fetch(userId).catch(() => null);
+      if (!user) throw new Error(`discord user ${userId} not found`);
+      await user.send(text);
+    },
   };
 
   // The send/edit halves of the confirm transport belong to discord.js

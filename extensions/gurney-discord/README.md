@@ -6,11 +6,22 @@ extensions, and confirm-tier UX.
 
 ## What this is
 
-A thin Discord bridge that talks to the same orchestrator Telegram talks
-to. The chat history, learned routines, scheduled jobs, and tools you see
-in Telegram are the same ones you see in Discord. The model doesn't know
-which surface it's talking through — it's all the same conversation per
-user.
+A Discord bridge that runs inbound messages through the **same shared
+pipeline** Telegram uses (`host.chat.dispatchInbound`), so Discord is a
+first-class surface, not a stripped-down one. You get the same:
+
+- **Extension commands** — `@Gurney /tasks`, `@Gurney /briefing`, etc. Any
+  command an extension registers works here (typed after the mention).
+- **Message intercepts** — instant replies and routing run the same way, so
+  trivial chatter ("hi", "thanks") is handled cleanly instead of being thrown
+  at the model raw.
+- **Proactive** — morning/night briefings, event reminders, and nudges are
+  **mirrored** to Discord (DM'd to you) alongside Telegram.
+- **Tools, memory, learned routines, scheduled jobs** — all shared.
+
+The model doesn't know which surface it's talking through. By default each
+Discord DM is its own conversation thread; set `shared_telegram_chat_id` to
+fuse it with your Telegram thread (see Settings).
 
 Discord is **opt-in by chat**:
 
@@ -120,7 +131,22 @@ safety doc bans "model-driven allowlist edits."
 | `allowed_dm_user_ids`     | csv      | `""`    | Discord user IDs allowed to DM.                                            |
 | `allowed_channel_keys`    | csv      | `""`    | `<guild_id>:<channel_id>` pairs the bot will reply in (on @-mention).      |
 | `rate_limit_per_minute`   | number   | `10`    | Max user-initiated turns per Discord user per minute.                      |
+| `shared_telegram_chat_id` | number   | `0`     | `0` = each Discord DM is its own thread. Set to your Telegram chat id to share one conversation/history across both surfaces (DMs only). See note below. |
+| `proactive_dm_user_id`    | string   | `""`    | Discord user id to DM proactive briefings/nudges to. Empty = first `allowed_dm_user_ids` entry. |
 | `idle_disconnect_minutes` | number   | `0`     | Reserved — disconnect after N idle minutes. `0` = stay connected.          |
+
+**Identity (`shared_telegram_chat_id`).** Default `0` keeps Discord DMs on an
+isolated conversation thread (long-term memory is still shared). Set it to your
+Telegram chat id and Discord DMs append to that same thread — one continuous
+conversation across both surfaces. Only DMs are shared; guild channels always
+stay isolated (they can't merge into a personal thread). Trade-off: in shared
+mode, confirm-tier prompts render in **Telegram**, not as Discord buttons,
+because the chat id is no longer a Discord id.
+
+**Proactive (`proactive_dm_user_id`).** Briefings, nudges, and reminders fire
+from the same scheduler jobs Telegram uses; core mirrors each one to every chat
+surface. Discord delivers them as a DM to this user. The bot must share a guild
+with the user (or the user must allow DMs) for the send to succeed.
 
 `bot_token` is plaintext in SQLite (`~/.gurney/state.db`,
 `extension_settings` table). Treat the file as you would a `.env`. The
@@ -167,7 +193,10 @@ Slack extensions would declare.
 ## What this isn't
 
 - No voice channels (out of scope for v1).
-- No Discord slash commands beyond `/gurney` (intentionally tiny surface).
+- Extension commands run as text after a mention (`@Gurney /tasks`), not as
+  **native** Discord slash commands. `/gurney` is the only registered native
+  slash command; mirroring every extension command into Discord's slash UI is a
+  later polish, not a v1 requirement.
 - No embed-based confirm prompts — buttons only.
 - No `/gurney auto-approve` or any auto-yes mode. Money/auth/destructive
   actions need a human tap, always.

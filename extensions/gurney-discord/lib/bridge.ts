@@ -15,7 +15,7 @@
 // on paragraph boundaries when possible, then on hard length otherwise.
 
 import type { Logger } from '../../../src/util/log.js';
-import type { HostOrchestrator, HostReplyChunk } from '../../../src/core/extensions.js';
+import type { InboundMessage } from '../../../src/core/chat-dispatch.js';
 import type { IdentityStore } from './identity.js';
 
 export const DISCORD_MESSAGE_MAX = 2_000;
@@ -57,17 +57,30 @@ export interface OutboundTransport {
   // Mark the channel as "typing" while a long reply is being produced.
   // No-op on failure.
   startTyping?: (channelId: string) => Promise<void>;
+  // Direct-message a Discord user (proactive briefings/nudges). Opens the DM
+  // channel as needed. Throws if the user can't be resolved or DMed.
+  sendDM?: (userId: string, text: string) => Promise<void>;
 }
 
 export interface BridgeOptions {
-  orchestrator: HostOrchestrator;
+  // Runs the inbound turn through the shared host pipeline — extension
+  // commands, message intercepts, the orchestrator turn, and the
+  // afterReply/afterTurn hooks. This is host.chat.dispatchInbound, so Discord
+  // gets the exact same surface behaviour Telegram does, not just raw model
+  // turns. Replies arrive via the `reply` callback we pass per turn.
+  dispatch: (msg: InboundMessage) => Promise<void>;
   identity: IdentityStore;
   transport: OutboundTransport;
   rateLimiter: RateLimiter;
   log: Logger;
   // The bot's own Discord user id. Used to strip the leading @-mention so
-  // the orchestrator doesn't see "<@123456789> hi" as the user message.
+  // the pipeline doesn't see "<@123456789> hi" as the user message.
   botUserId: string;
+  // Identity mode. When this returns a non-zero Telegram chat id, DMs are
+  // mapped onto it so Discord and Telegram share a single conversation thread
+  // (same history). Zero (default) keeps DMs on an isolated synthetic chatId.
+  // Only DMs are shared — a guild channel can't merge into a personal thread.
+  sharedTelegramChatId?: () => number;
 }
 
 export interface InboundTurn {
@@ -131,17 +144,25 @@ export function createBridge(opts: BridgeOptions): Bridge {
         return;
       }
 
-      const gurneyChatId = opts.identity.chatIdFor({
-        userId: turn.userId,
-        channelId: turn.channelId,
-        isDm: turn.guildId === null,
-      });
+      // Identity: DMs can optionally share the user's Telegram conversation
+      // thread; guild channels always use an isolated synthetic chatId (they
+      // can't merge into a personal Telegram thread).
+      const isDm = turn.guildId === null;
+      const sharedId = opts.sharedTelegramChatId?.() ?? 0;
+      const gurneyChatId =
+        isDm && sharedId !== 0
+          ? sharedId
+          : opts.identity.chatIdFor({
+              userId: turn.userId,
+              channelId: turn.channelId,
+              isDm,
+            });
 
-      // Number() the userId for HostUserMessage.userId. Discord ids exceed
-      // MAX_SAFE_INTEGER, but userId is only used by core for logging /
-      // attribution; precision loss in the bottom ~10 bits doesn't change
-      // any safety behaviour. The full string id is what we keep in the
-      // identity table for accurate lookups.
+      // Number() the userId for the pipeline's numeric userId. Discord ids
+      // exceed MAX_SAFE_INTEGER, but userId is only used by core for logging /
+      // attribution; precision loss in the bottom ~10 bits doesn't change any
+      // safety behaviour. The full string id is what we keep in the identity
+      // table for accurate lookups.
       const userIdNum = Number(turn.userId);
 
       // Best-effort typing indicator — gives users feedback during the
@@ -149,37 +170,30 @@ export function createBridge(opts: BridgeOptions): Bridge {
       // fire-and-forget.
       void opts.transport.startTyping?.(turn.channelId).catch(() => {});
 
-      let buffered = '';
-      const send = async (chunk: HostReplyChunk): Promise<void> => {
-        if (chunk.delta) buffered += chunk.delta;
-        if (chunk.done) {
-          if (chunk.replace !== undefined) buffered = chunk.replace;
-          const final = buffered.trim();
-          if (final.length === 0) return;
-          const parts = splitForDiscord(final);
-          for (const part of parts) {
-            try {
-              await opts.transport.send(turn.channelId, part);
-            } catch (e) {
-              opts.log.warn('discord outbound send failed', {
-                channelId: turn.channelId,
-                error: errStr(e),
-              });
-              break;
-            }
+      // Render a reply on this channel. The shared pipeline owns buffering /
+      // hallucination-guard replacement and calls this with assembled text
+      // (possibly more than once: an intercept ack then the model answer).
+      // We only own Discord's 2000-char split.
+      const reply = async (t: string): Promise<void> => {
+        const final = t.trim();
+        if (final.length === 0) return;
+        for (const part of splitForDiscord(final)) {
+          try {
+            await opts.transport.send(turn.channelId, part);
+          } catch (e) {
+            opts.log.warn('discord outbound send failed', {
+              channelId: turn.channelId,
+              error: errStr(e),
+            });
+            break;
           }
         }
       };
 
       try {
-        await opts.orchestrator.handleUserMessage({
-          chatId: gurneyChatId,
-          userId: userIdNum,
-          text,
-          send,
-        });
+        await opts.dispatch({ chatId: gurneyChatId, userId: userIdNum, text, reply });
       } catch (e) {
-        opts.log.warn('discord orchestrator handleUserMessage threw', {
+        opts.log.warn('discord dispatchInbound threw', {
           chatId: gurneyChatId,
           error: errStr(e),
         });

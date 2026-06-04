@@ -21,6 +21,16 @@
       "description": "Max user-initiated turns per minute per Discord user. Defends against runaway loops and noisy clients.",
       "default": 10
     },
+    "shared_telegram_chat_id": {
+      "type": "number",
+      "description": "Identity mode. 0 (default) = Discord DMs get their own isolated conversation thread. Set to your Telegram chat id to SHARE one continuous conversation/history across both surfaces (DMs only; guild channels always stay isolated). Note: in shared mode, confirm-tier prompts render in Telegram, not as Discord buttons.",
+      "default": 0
+    },
+    "proactive_dm_user_id": {
+      "type": "string",
+      "description": "Discord user id to DM proactive briefings/nudges/reminders to (mirrored from the same proactive jobs Telegram uses). Empty = the first id in allowed_dm_user_ids. The bot must share a guild with the user (or the user must allow DMs).",
+      "default": ""
+    },
     "idle_disconnect_minutes": {
       "type": "number",
       "description": "Disconnect the Discord gateway after this many minutes with no inbound messages (0 = stay connected). Useful on Pi targets.",
