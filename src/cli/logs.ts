@@ -1,22 +1,28 @@
-// `gurney logs [--follow]` — stream ~/.gurney/log/gurney.log.
+// `gurney logs [--follow] [--panel]` — stream ~/.gurney/log/gurney.log, or the
+// panel's ~/.gurney/log/frontend.log with --panel.
 //
 // One-shot mode prints the whole file. --follow keeps reading new bytes as
 // they're appended, like `tail -f` but without shelling out.
 
 import { existsSync, statSync, watchFile, createReadStream, unwatchFile } from 'node:fs';
 import { homeDir } from './config-store.js';
-import { logFilePath } from './daemon.js';
+import { frontendLogFilePath, logFilePath } from './daemon.js';
 
 export interface LogsOptions {
   follow?: boolean;
   // Number of bytes from the end to print first (--follow only). Default: 4 KB.
   tailBytes?: number;
+  // Tail the panel process's log instead of the agent daemon's. The Tudor
+  // course builder runs in the panel process, so its generator-fallback errors
+  // land here, not in gurney.log.
+  panel?: boolean;
 }
 
 export async function run(opts: LogsOptions = {}): Promise<void> {
-  const file = logFilePath(homeDir());
+  const file = opts.panel ? frontendLogFilePath(homeDir()) : logFilePath(homeDir());
   if (!existsSync(file)) {
-    process.stderr.write(`No log file at ${file}. Has gurney been started?\n`);
+    const what = opts.panel ? 'panel ' : '';
+    process.stderr.write(`No ${what}log file at ${file}. Has gurney been started?\n`);
     process.exit(1);
   }
 

@@ -6,13 +6,21 @@
 // + clean up orphans), and init.ts (web setup handoff).
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { open as openDb, type DB } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
-import { frontendPidFilePath, isAlive } from './daemon.js';
+import { frontendLogFilePath, frontendPidFilePath, isAlive } from './daemon.js';
 
 const EXT_NAME = 'gurney-frontend';
 
@@ -132,12 +140,35 @@ export function spawnPanel(home: string): void {
   const here = dirname(fileURLToPath(import.meta.url));
   const cliEntry = process.argv[1] ?? join(here, 'index.js');
   try {
+    // Capture the panel's stdout/stderr in a log file rather than discarding
+    // them. The panel runs detached, and the Tudor course builder runs inside
+    // it, so without this its logs (e.g. a generator falling back to local)
+    // would be invisible — `gurney start`'s terminal only sees the agent
+    // daemon. `gurney logs --panel` tails this file.
+    const logFile = frontendLogFilePath(home);
+    let outFd: number;
+    try {
+      mkdirSync(dirname(logFile), { recursive: true, mode: 0o700 });
+      outFd = openSync(logFile, 'a', 0o600);
+    } catch {
+      outFd = -1; // fall back to discarding if the log file can't be opened
+    }
+    const stdio: ['ignore', number | 'ignore', number | 'ignore'] =
+      outFd >= 0 ? ['ignore', outFd, outFd] : ['ignore', 'ignore', 'ignore'];
     const child = spawn(process.execPath, [...process.execArgv, cliEntry, '__panel'], {
       detached: true,
-      stdio: 'ignore',
+      stdio,
       env: process.env,
     });
     child.unref();
+    // The child inherited its own copy of the fd; close ours so we don't leak it.
+    if (outFd >= 0) {
+      try {
+        closeSync(outFd);
+      } catch {
+        /* ignore */
+      }
+    }
   } catch (e) {
     process.stderr.write(
       `gurney-frontend failed to start: ${e instanceof Error ? e.message : String(e)}\n`,

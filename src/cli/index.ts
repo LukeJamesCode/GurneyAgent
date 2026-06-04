@@ -104,10 +104,11 @@ program
 program
   .command('logs')
   .option('-f, --follow', 'Follow new log lines, like `tail -f`')
+  .option('--panel', "Stream the panel process's log (where Tudor course builds run)")
   .description('Stream the gurney log file')
-  .action(async (opts: { follow?: boolean }) => {
+  .action(async (opts: { follow?: boolean; panel?: boolean }) => {
     const { run } = await import('./logs.js');
-    await call('logs', run, { follow: !!opts.follow });
+    await call('logs', run, { follow: !!opts.follow, panel: !!opts.panel });
   });
 
 program

@@ -24,6 +24,14 @@ export function frontendPidFilePath(home: string = homeDir()): string {
   return join(home, 'frontend.pid');
 }
 
+// Log file for the gurney-frontend panel process. The panel is spawned
+// detached, so without capturing its stdio its logs (including Tudor course
+// generation, which runs in the panel process) would be lost. `gurney start`
+// points the panel's stdout/stderr here so `gurney logs --panel` can tail it.
+export function frontendLogFilePath(home: string = homeDir()): string {
+  return join(home, 'log', 'frontend.log');
+}
+
 // Snapshot of live counters written by the running daemon. `gurney status`
 // reads this so it can report fast-cache hit rate and nudge counts without
 // having to talk to the bot process.

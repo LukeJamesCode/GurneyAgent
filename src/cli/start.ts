@@ -91,7 +91,12 @@ function frontendExtensionEnabled(home: string): boolean {
 function startPanel(home: string): void {
   spawnPanel(home);
   const url = panelUrl(home);
-  if (url) process.stdout.write(`Panel: ${url}\n`);
+  if (url) {
+    process.stdout.write(`Panel: ${url}\n`);
+    // The panel runs as its own process; its logs (incl. Tudor course builds)
+    // go to a separate file, not this terminal. Point the user at it.
+    process.stdout.write(`Panel logs: gurney logs --panel\n`);
+  }
 }
 
 function defaultExtensionRoots(home: string): string[] {
