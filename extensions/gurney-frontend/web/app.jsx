@@ -7,14 +7,16 @@
 const { useState, useEffect, useCallback, useRef } = React;
 
 const NAV = [
-  { id: 'chat', label: 'Chat Hub', icon: 'chat' },
+  { id: 'dashboard', label: 'Dashboard', icon: 'home' },
+  { id: 'runs', label: 'Runs', icon: 'play-circle' },
+  { id: 'workflows', label: 'Workflows', icon: 'git-merge' },
   { id: 'agents', label: 'Agents', icon: 'spark' },
-  { id: 'learn', label: 'Learn', icon: 'spark', requiresExt: 'gurney-tudor' },
-  { id: 'voice', label: 'Voice Hub', icon: 'mic', requiresExt: 'gurney-voice' },
-  { id: 'history', label: 'History', icon: 'doc' },
-  { id: 'extensions', label: 'Extensions', icon: 'plug' },
-  { id: 'settings', label: 'Settings', icon: 'gear' },
-  { id: 'system', label: 'System', icon: 'pulse' },
+  { id: 'projects', label: 'Projects', icon: 'folder' },
+  { id: 'approvals', label: 'Approvals', icon: 'shield' },
+  { id: 'memory', label: 'Memory', icon: 'database' },
+  { id: 'tools', label: 'Tools', icon: 'tool' },
+  { id: 'logs', label: 'Logs', icon: 'list' },
+  { id: 'settings', label: 'Settings', icon: 'gear' }
 ];
 
 function useTheme() {
@@ -61,7 +63,7 @@ function App() {
   const [state, setState] = useState(null);
   const [offline, setOffline] = useState(false);
   const [loadError, setLoadError] = useState(null); // reachable but rejected (e.g. 401)
-  const [route, setRoute] = useState('chat');
+  const [route, setRoute] = useState('dashboard');
   const [busy, setBusy] = useState(null); // agent action in flight: start|stop|restart|null
   const [forcedView, setForcedView] = useState(null); // override configured-based view
   const pollRef = useRef(null);
@@ -255,9 +257,11 @@ function App() {
       />
 
       <main className="main-panel">
+        <Topbar />
         {offline && <OfflineBar onRetry={refresh} />}
         {state.cfgError && <ConfigErrorBar message={state.cfgError} />}
         <div className="content-shell">
+          {route === 'dashboard' && <window.DashboardTab />}
           {route === 'chat' && (
             <window.ChatHub
               agent={agentStatus}
@@ -307,6 +311,27 @@ function App() {
           )}
         </div>
       </main>
+    </div>
+  );
+}
+
+function Topbar() {
+  return (
+    <div className="topbar">
+      <div className="search-bar">
+        <window.Icon name="search" size={16} />
+        <span>Search or Cmd+K</span>
+        <span className="search-kbd">⌘K</span>
+      </div>
+      <div className="topbar-actions">
+        <button className="dash-btn green"><window.Icon name="play" size={14} /> New Run</button>
+        <div className="icon-action" style={{ position: 'relative' }}>
+          <window.Icon name="bell" size={18} />
+          <div className="badge">3</div>
+        </div>
+        <div className="icon-action"><window.Icon name="help-circle" size={18} /></div>
+        <div className="icon-action"><window.Icon name="settings" size={18} /></div>
+      </div>
     </div>
   );
 }
@@ -435,11 +460,11 @@ function Wordmark() {
         </span>
       </span>
       <div style={{ lineHeight: 1.05 }}>
-        <div className="display" style={{ fontSize: 16.5, fontWeight: 700, letterSpacing: 0 }}>
-          Gurney
+        <div className="display" style={{ fontSize: 15, fontWeight: 700, letterSpacing: 0 }}>
+          GURNEY
         </div>
-        <div style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 500 }}>
-          home control panel
+        <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.5 }}>
+          CONTROL CENTER
         </div>
       </div>
     </div>
@@ -606,45 +631,27 @@ function Sidebar({
       <div style={{ flex: 1 }} />
       <div
         style={{
-          padding: '10px',
-          background: 'var(--surface)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius)',
+          padding: '12px',
           display: 'flex',
-          flexDirection: 'column',
-          gap: 9,
+          alignItems: 'center',
+          gap: '10px',
+          marginTop: '10px',
+          background: 'var(--surface)',
+          borderRadius: '10px',
+          border: '1px solid var(--border)',
+          margin: '0 10px 10px 10px',
         }}
       >
-        <span
-          style={{
-            fontSize: 12,
-            color: 'var(--text-3)',
-            fontWeight: 600,
-            textTransform: 'uppercase',
-            letterSpacing: 0,
-          }}
-        >
-          Agent
-        </span>
-        <GlobalStatus agentStatus={agentStatus} onStart={onStart} onStop={onStop} busy={busy} />
-        <div className="density-control" aria-label="Layout density">
-          {[
-            { id: 'compact', icon: 'menu', label: 'Compact' },
-            { id: 'balanced', icon: 'pulse', label: 'Balanced' },
-            { id: 'roomy', icon: 'spark', label: 'Roomy' },
-          ].map((d) => (
-            <button
-              key={d.id}
-              className="density-button"
-              data-active={density === d.id}
-              title={`${d.label} density`}
-              aria-label={`${d.label} density`}
-              onClick={() => setDensity(d.id)}
-            >
-              <window.Icon name={d.icon} size={14} />
-            </button>
-          ))}
+        <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#448AFF', color: '#fff', display: 'grid', placeItems: 'center', fontWeight: 'bold', fontSize: '13px' }}>AB</div>
+        <div style={{ flex: 1, lineHeight: '1.2' }}>
+          <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text)' }}>Alec Brown</div>
+          <div style={{ fontSize: '11px', color: 'var(--text-3)' }}>Owner</div>
         </div>
+        <window.Icon name="chevron-down" size={14} style={{ color: 'var(--text-2)' }} />
+      </div>
+      <div style={{ padding: '0 12px 12px', fontSize: '10px', color: 'var(--text-3)', display: 'flex', flexDirection: 'column', gap: '4px', margin: '0 10px' }}>
+        <span>CONTROL CENTER v1.2.3</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><span className="dot green" style={{width: '6px', height: '6px'}}></span> All systems operational</span>
       </div>
     </aside>
   );
