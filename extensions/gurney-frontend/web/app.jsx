@@ -6,13 +6,13 @@
 // localStorage-backed light/dark toggle; dark is the default.
 const { useState, useEffect, useCallback, useRef } = React;
 
-// Combined runs/workflows/history live under one "Runs" tab (HistoryTab).
+// Combined runs/workflows/history live under one "History" tab (HistoryTab).
 // Learn and Voice Hub only appear when their extension is enabled.
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: 'home' },
   { id: 'chat', label: 'Chat Hub', icon: 'chat' },
   { id: 'agents', label: 'Agents', icon: 'spark' },
-  { id: 'runs', label: 'Runs', icon: 'play-circle' },
+  { id: 'history', label: 'History', icon: 'doc' },
   { id: 'learn', label: 'Learn', icon: 'spark', requiresExt: 'gurney-tudor' },
   { id: 'voice', label: 'Voice Hub', icon: 'mic', requiresExt: 'gurney-voice' },
   { id: 'extensions', label: 'Extensions', icon: 'plug' },
@@ -263,7 +263,7 @@ function App() {
         {state.cfgError && <ConfigErrorBar message={state.cfgError} />}
         <div className="content-shell">
           {route === 'dashboard' && <window.DashboardTab />}
-          {route === 'runs' && <window.HistoryTab />}
+          {route === 'history' && <window.HistoryTab />}
           {route === 'chat' && (
             <window.ChatHub
               agent={agentStatus}
