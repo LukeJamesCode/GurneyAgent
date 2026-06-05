@@ -6,15 +6,14 @@
 // localStorage-backed light/dark toggle; dark is the default.
 const { useState, useEffect, useCallback, useRef } = React;
 
-// Combined runs/workflows/history live under one "History" tab (HistoryTab).
-// Learn and Voice Hub only appear when their extension is enabled.
+// Chat and Voice Hub are folded into the Dashboard (a Chat/Voice toggle there),
+// so they have no standalone nav entries. Combined runs/workflows/history live
+// under "History". Learn only appears when its extension is enabled.
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: 'home' },
-  { id: 'chat', label: 'Chat Hub', icon: 'chat' },
   { id: 'agents', label: 'Agents', icon: 'spark' },
   { id: 'history', label: 'History', icon: 'doc' },
   { id: 'learn', label: 'Learn', icon: 'spark', requiresExt: 'gurney-tudor' },
-  { id: 'voice', label: 'Voice Hub', icon: 'mic', requiresExt: 'gurney-voice' },
   { id: 'extensions', label: 'Extensions', icon: 'plug' },
   { id: 'settings', label: 'Settings', icon: 'gear' },
   { id: 'system', label: 'System', icon: 'pulse' },
@@ -94,18 +93,11 @@ function App() {
     return () => clearInterval(pollRef.current);
   }, [refresh]);
 
-  // Bounce off the Voice Hub if its extension was disabled while open.
-  useEffect(() => {
-    if (route !== 'voice') return;
-    const names = state && state.extensions && state.extensions.enabledNames;
-    if (names && names.indexOf('gurney-voice') === -1) setRoute('chat');
-  }, [route, state]);
-
-  // Same for the Learn tab (gurney-tudor).
+  // Bounce off the Learn tab (gurney-tudor) if its extension was disabled.
   useEffect(() => {
     if (route !== 'learn') return;
     const names = state && state.extensions && state.extensions.enabledNames;
-    if (names && names.indexOf('gurney-tudor') === -1) setRoute('chat');
+    if (names && names.indexOf('gurney-tudor') === -1) setRoute('dashboard');
   }, [route, state]);
 
   const agentAction = useCallback(
@@ -263,11 +255,8 @@ function App() {
         {state.cfgError && <ConfigErrorBar message={state.cfgError} />}
         <div className="content-shell">
           {route === 'dashboard' && (
-            <window.DashboardTab state={state} onConfigureAgents={() => setRoute('agents')} />
-          )}
-          {route === 'history' && <window.HistoryTab />}
-          {route === 'chat' && (
-            <window.ChatHub
+            <window.DashboardTab
+              state={state}
               agent={agentStatus}
               busy={busy}
               onStart={() => agentAction('start')}
@@ -276,31 +265,17 @@ function App() {
               proactive={state.proactive}
               onProactive={setProactive}
               health={{ telegram: !!health.telegram, ollama: !!health.ollama }}
-              activeModel={[
-                models.chat,
-                models.tools ? `tools ${models.tools}` : null,
-                models.reason ? `reason ${models.reason}` : null,
-              ]
-                .filter(Boolean)
-                .join(' · ')}
+              models={models}
               lastError={state.lastError || null}
               scheduler={state.scheduler}
               activity={state.activity}
               extensions={state.extensions}
               tier={state.tier}
               allowlistCount={state.allowlistCount}
+              voiceEnabled={voiceEnabled}
             />
           )}
-          {route === 'voice' && voiceEnabled && (
-            <window.VoiceHub
-              agent={agentStatus}
-              onStart={() => agentAction('start')}
-              onStop={() => agentAction('stop')}
-              health={{ telegram: !!health.telegram, ollama: !!health.ollama }}
-              activeModel={models.chat || null}
-              onLeave={() => setRoute('chat')}
-            />
-          )}
+          {route === 'history' && <window.HistoryTab />}
           {route === 'learn' && learnEnabled && (
             <window.LearnHub agentRunning={agentStatus === 'running'} />
           )}

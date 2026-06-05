@@ -40,6 +40,235 @@ function textToList(text) {
     .filter(Boolean);
 }
 
+// ---------------------------------------------------------------------------
+// Active Workflows — a visual read of the task table. A "workflow" is a
+// top-level task (parentId == null); its pipeline is that task plus the
+// sub-agent tasks it delegated. Clicking a card shows that delegation tree.
+// ---------------------------------------------------------------------------
+
+const WF_STATUS = {
+  queued: { tone: 'yellow', label: 'Queued', node: 'pending', icon: 'clock', spin: false },
+  running: { tone: 'blue', label: 'Running', node: 'active', icon: 'loader', spin: true },
+  done: { tone: 'green', label: 'Done', node: 'done', icon: 'check-circle', spin: false },
+  error: { tone: 'red', label: 'Error', node: 'error', icon: 'alert-triangle', spin: false },
+  cancelled: { tone: 'gray', label: 'Cancelled', node: 'pending', icon: 'x', spin: false },
+};
+const WF_TAG_TONES = ['green', 'blue', 'purple', 'yellow', 'gray'];
+const wfTagTone = (id) =>
+  WF_TAG_TONES[((id % WF_TAG_TONES.length) + WF_TAG_TONES.length) % WF_TAG_TONES.length];
+const wfStatusOf = (s) => WF_STATUS[s] || WF_STATUS.queued;
+
+function wfRelTime(ms) {
+  if (!ms) return '';
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+function wfClip(text, n) {
+  const t = String(text || '');
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+}
+
+function buildWorkflows(tasks) {
+  const childrenByParent = new Map();
+  for (const t of tasks) {
+    if (t.parentId != null) {
+      const list = childrenByParent.get(t.parentId) || [];
+      list.push(t);
+      childrenByParent.set(t.parentId, list);
+    }
+  }
+  return tasks
+    .filter((t) => t.parentId == null)
+    .slice(0, 6)
+    .map((root) => {
+      const children = (childrenByParent.get(root.id) || []).sort((a, b) => a.id - b.id);
+      const doneKids = children.filter((c) => c.status === 'done').length;
+      const meta = wfStatusOf(root.status);
+      const percent = children.length
+        ? Math.round((doneKids / children.length) * 100)
+        : ({ queued: 5, running: 50, done: 100, error: 100, cancelled: 100 }[root.status] ?? 0);
+      const stepLabel = children.length
+        ? `${doneKids} / ${children.length} sub-agents`
+        : meta.label;
+      const seen = new Set();
+      const tags = [];
+      for (const t of [root, ...children]) {
+        if (t.agentName && !seen.has(t.agentName)) {
+          seen.add(t.agentName);
+          tags.push({ tone: wfTagTone(t.agentId), label: t.agentName });
+        }
+      }
+      return { root, children, percent, stepLabel, meta, tags };
+    });
+}
+
+function WorkflowCard({ wf, selected, onSelect }) {
+  const title = wf.root.agentName || `Task #${wf.root.id}`;
+  return (
+    <div
+      className={`dash-card clickable${selected ? ' selected' : ''}`}
+      onClick={() => onSelect(wf.root.id)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect(wf.root.id);
+        }
+      }}
+      aria-pressed={selected}
+    >
+      <div className="card-header">
+        <div className={`card-icon ${wf.meta.tone}`}>
+          <window.Icon name="spark" size={20} className={wf.meta.spin ? 'spin' : undefined} />
+        </div>
+        <div className="card-title">
+          <h3 title={wf.root.prompt}>{wfClip(title, 30)}</h3>
+          <span className={`status-label ${wf.meta.tone}`}>
+            <span className={`dot ${wf.meta.tone}`}></span> {wf.meta.label}
+          </span>
+        </div>
+      </div>
+      <div style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.4 }}>
+        {wfClip(wf.root.prompt, 88)}
+      </div>
+      <div className="progress-section">
+        <div className="progress-labels">
+          <span>{wf.stepLabel}</span>
+          <span>{wf.percent}%</span>
+        </div>
+        <div className="progress-bar">
+          <div
+            className={`progress-fill ${wf.meta.tone}`}
+            style={{ width: `${wf.percent}%` }}
+          ></div>
+        </div>
+      </div>
+      {wf.tags.length > 0 && (
+        <div className="agent-tags">
+          {wf.tags.slice(0, 3).map((tag, i) => (
+            <span key={i} className={`agent-tag ${tag.tone}`}>
+              <window.Icon name="spark" size={12} /> {tag.label}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="card-actions single">
+        <span style={{ fontSize: 11.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+          #{wf.root.id} · {wfRelTime(wf.root.createdAt)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function WorkflowDiagram({ wf }) {
+  const nodes = [
+    { icon: 'file-text', title: 'Input', desc: wfClip(wf.root.prompt, 36), state: 'source' },
+    {
+      icon: 'spark',
+      title: wf.root.agentName || `#${wf.root.id}`,
+      desc: 'Lead agent',
+      state: wfStatusOf(wf.root.status).node,
+    },
+    ...wf.children.map((c) => ({
+      icon: 'spark',
+      title: c.agentName || `#${c.id}`,
+      desc: wfClip(c.prompt, 36),
+      state: wfStatusOf(c.status).node,
+    })),
+  ];
+  return (
+    <div className="workflow-diagram" style={{ overflowX: 'auto' }}>
+      {nodes.map((n, i) => {
+        const arrowGreen = n.state === 'done' || n.state === 'active';
+        return (
+          <React.Fragment key={i}>
+            {i > 0 && <div className={`arrow${arrowGreen ? ' green' : ''}`}>→</div>}
+            <div className={`node${n.state === 'active' ? ' active' : ''}`}>
+              <window.Icon name={n.icon} size={20} />
+              <h4>{n.title}</h4>
+              <p>{n.desc}</p>
+              {n.state === 'done' && (
+                <div className="status-check green">
+                  <window.Icon name="check" size={12} />
+                </div>
+              )}
+              {n.state === 'active' && (
+                <div className="status-spinner">
+                  <window.Icon name="loader" size={12} className="spin" />
+                </div>
+              )}
+              {n.state === 'error' && (
+                <div className="status-check red">
+                  <window.Icon name="x" size={12} />
+                </div>
+              )}
+            </div>
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+function ActiveWorkflows({ tasks }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const workflows = buildWorkflows(tasks);
+  const selected = workflows.find((w) => w.root.id === selectedId) || workflows[0] || null;
+
+  if (workflows.length === 0) {
+    return (
+      <window.Card>
+        <div style={{ color: 'var(--text-3)', fontSize: 14, padding: '8px 2px' }}>
+          No active workflows yet. Dispatch a task to an agent below and it shows up here, with any
+          sub-agents it delegates to.
+        </div>
+      </window.Card>
+    );
+  }
+  return (
+    <div style={{ marginBottom: 26 }}>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+          gap: 14,
+          marginBottom: 14,
+        }}
+      >
+        {workflows.map((wf) => (
+          <WorkflowCard
+            key={wf.root.id}
+            wf={wf}
+            selected={selected && wf.root.id === selected.root.id}
+            onSelect={setSelectedId}
+          />
+        ))}
+      </div>
+      {selected && (
+        <div className="dash-section" style={{ marginBottom: 0 }}>
+          <div className="section-header">
+            <h3>
+              <window.Icon name="git-merge" size={16} className="green-text" /> Pipeline:{' '}
+              {selected.root.agentName || `Task #${selected.root.id}`}
+            </h3>
+            <span className={`status-label ${selected.meta.tone}`}>
+              <span className={`dot ${selected.meta.tone}`}></span> {selected.meta.label}
+            </span>
+          </div>
+          <WorkflowDiagram wf={selected} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AgentsTab() {
   const [agents, setAgents] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -147,6 +376,14 @@ function AgentsTab() {
         </div>
       )}
 
+      <window.SectionTitle sub="Live top-level tasks and the sub-agents they delegated to.">
+        Active Workflows
+      </window.SectionTitle>
+      <ActiveWorkflows tasks={tasks} />
+
+      <window.SectionTitle sub="Personas you can dispatch tasks to or schedule.">
+        Fleet
+      </window.SectionTitle>
       {agents.length === 0 ? (
         <window.Card>
           <div style={{ color: 'var(--text-3)', fontSize: 14, padding: '8px 2px' }}>
