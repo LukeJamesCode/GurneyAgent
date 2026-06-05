@@ -423,31 +423,29 @@ function GlobalStatus({ agentStatus, onStart, onStop, busy }) {
 
 function Wordmark() {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-      <span
-        style={{
-          width: 32,
-          height: 32,
-          borderRadius: 9,
-          background: 'var(--accent)',
-          display: 'grid',
-          placeItems: 'center',
-          flex: 'none',
-          boxShadow: 'var(--shadow-sm)',
-        }}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <svg
+        width="34"
+        height="34"
+        viewBox="0 0 100 100"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        style={{ flex: 'none' }}
       >
-        <span
-          className="display"
-          style={{ color: 'var(--on-accent)', fontWeight: 700, fontSize: 18, lineHeight: 1 }}
-        >
-          g
-        </span>
-      </span>
-      <div style={{ lineHeight: 1.05 }}>
-        <div className="display" style={{ fontSize: 15, fontWeight: 700, letterSpacing: 0 }}>
+        <path d="M 6.7 25 L 6.7 75 L 50 100 L 50 75 L 28.3 62.5 L 28.3 37.5 Z" fill="#22c55e" />
+        <path d="M 28.3 37.5 L 28.3 62.5 L 50 75 L 50 50 Z" fill="#14532d" />
+        <path d="M 50 0 L 50 25 L 28.3 37.5 L 6.7 25 Z" fill="#4ade80" />
+        <path d="M 93.3 50 L 93.3 75 L 50 100 L 50 75 L 71.7 62.5 L 71.7 50 Z" fill="#16a34a" />
+        <path d="M 71.7 50 L 71.7 62.5 L 50 50 L 50 37.5 Z" fill="#22c55e" />
+        <path d="M 93.3 50 L 71.7 50 L 50 37.5 L 71.7 37.5 Z" fill="#4ade80" />
+        <path d="M 28.3 62.5 L 50 75 L 71.7 62.5 L 50 50 Z" fill="#34d399" />
+        <path d="M 50 25 L 71.7 37.5 L 71.7 50 L 50 37.5 Z" fill="#14532d" />
+      </svg>
+      <div style={{ lineHeight: 1.05, marginTop: 2 }}>
+        <div className="display" style={{ fontSize: 20, fontWeight: 800, letterSpacing: 0, color: 'var(--text)' }}>
           GURNEY
         </div>
-        <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.5 }}>
+        <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 700, letterSpacing: 0.5 }}>
           CONTROL CENTER
         </div>
       </div>
