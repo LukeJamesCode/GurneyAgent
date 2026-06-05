@@ -32,6 +32,12 @@ import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { open as openDb, type DB } from '../../src/storage/db.js';
+import {
+  createAgentRegistry,
+  type AgentExecutionMode,
+  type CreateAgentInput,
+} from '../../src/core/agents.js';
+import type { ProfileName } from '../../src/core/llm.js';
 import { createLogger } from '../../src/util/log.js';
 import { createOllama } from '../../src/core/llm.js';
 import { createRoutedLLM } from '../../src/core/llm-router.js';
@@ -152,6 +158,51 @@ function readExtSettings(db: DB, ext: string): Map<string, string> {
 function frontendSettings(): Record<string, string> {
   const out = withDb((db) => Object.fromEntries(readExtSettings(db, EXT_NAME)));
   return out ?? {};
+}
+
+// ---------------------------------------------------------------------------
+// Agent command center — request normalization
+// ---------------------------------------------------------------------------
+const AGENT_PROFILES: readonly ProfileName[] = ['chat', 'reason', 'tools'];
+
+function clampInt(v: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof v === 'number' ? v : Number.parseInt(String(v ?? ''), 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
+// Map an untrusted JSON body from the panel into a validated CreateAgentInput.
+// toolAllowlist === null means "all tools"; an array is an explicit allowlist
+// of extension and/or tool names.
+function normalizeAgentInput(body: Record<string, unknown>): CreateAgentInput {
+  const profile = AGENT_PROFILES.includes(body['profile'] as ProfileName)
+    ? (body['profile'] as ProfileName)
+    : 'chat';
+  const executionMode: AgentExecutionMode =
+    body['executionMode'] === 'parallel' ? 'parallel' : 'sequential';
+  const allow = body['toolAllowlist'];
+  const toolAllowlist: string[] | null = Array.isArray(allow)
+    ? allow.map((s) => String(s).trim()).filter(Boolean)
+    : null;
+  const delegatableAgents = Array.isArray(body['delegatableAgents'])
+    ? body['delegatableAgents'].map((s) => String(s).trim()).filter(Boolean)
+    : [];
+  const rawBudget = body['budgetTokens'];
+  return {
+    name: String(body['name'] ?? '').trim(),
+    role: String(body['role'] ?? '').trim(),
+    systemPrompt: String(body['systemPrompt'] ?? '').trim(),
+    profile,
+    toolAllowlist,
+    maxToolRounds: clampInt(body['maxToolRounds'], 1, 12, 4),
+    budgetTokens: rawBudget === null || rawBudget === undefined || rawBudget === ''
+      ? null
+      : clampInt(rawBudget, 256, 32768, 4096),
+    executionMode,
+    maxConcurrency: clampInt(body['maxConcurrency'], 1, 8, 1),
+    canDelegate: !!body['canDelegate'],
+    delegatableAgents,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1886,6 +1937,105 @@ async function handleApi(
           detail: c.msg,
         })),
       });
+    }
+
+    // ---- Agent command center -------------------------------------------
+    // The panel runs in its own process, so it only does DB CRUD + enqueues;
+    // the daemon's resource-aware queue (which polls the DB) actually runs the
+    // tasks. That keeps task execution single-owner so the heavy-model slot is
+    // never contended by two processes.
+    if (path === '/api/agents' && method === 'GET') {
+      const agents = withDb((db) => createAgentRegistry(db).list()) ?? [];
+      return sendJson(res, 200, { agents });
+    }
+    if (path === '/api/agents' && method === 'POST') {
+      const body = await readJson<Record<string, unknown>>(req);
+      if (!String(body['name'] ?? '').trim() || !String(body['systemPrompt'] ?? '').trim()) {
+        return sendJson(res, 400, { error: 'name and systemPrompt are required' });
+      }
+      const result = withDb((db) => {
+        const reg = createAgentRegistry(db);
+        if (reg.getByName(String(body['name']).trim())) return { dup: true as const };
+        return { agent: reg.create(normalizeAgentInput(body)) };
+      });
+      if (!result) return sendJson(res, 500, { error: 'database unavailable' });
+      if ('dup' in result) return sendJson(res, 409, { error: 'an agent with that name exists' });
+      return sendJson(res, 200, result);
+    }
+    const agentIdMatch = /^\/api\/agents\/(\d+)$/.exec(path);
+    if (agentIdMatch && method === 'PUT') {
+      const id = Number(agentIdMatch[1]);
+      const body = await readJson<Record<string, unknown>>(req);
+      const updated = withDb((db) => {
+        const reg = createAgentRegistry(db);
+        if (!reg.get(id)) return null;
+        return reg.update(id, normalizeAgentInput(body)) ?? null;
+      });
+      return sendJson(res, updated ? 200 : 404, updated ? { agent: updated } : { error: 'not found' });
+    }
+    if (agentIdMatch && method === 'DELETE') {
+      const id = Number(agentIdMatch[1]);
+      const ok = withDb((db) => createAgentRegistry(db).remove(id)) ?? false;
+      return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'not found' });
+    }
+    const dispatchMatch = /^\/api\/agents\/(\d+)\/dispatch$/.exec(path);
+    if (dispatchMatch && method === 'POST') {
+      const id = Number(dispatchMatch[1]);
+      const body = await readJson<{ prompt?: string }>(req);
+      const prompt = String(body.prompt ?? '').trim();
+      if (!prompt) return sendJson(res, 400, { error: 'prompt is required' });
+      const task = withDb((db) => {
+        const reg = createAgentRegistry(db);
+        if (!reg.get(id)) return null;
+        return reg.enqueue({ agentId: id, prompt });
+      });
+      return sendJson(res, task ? 200 : 404, task ? { task } : { error: 'agent not found' });
+    }
+    if (path === '/api/agents/tasks' && method === 'GET') {
+      const data = withDb((db) => {
+        const reg = createAgentRegistry(db);
+        const names = new Map(reg.list().map((a) => [a.id, a.name]));
+        return {
+          tasks: reg
+            .listTasks({ limit: 60 })
+            .map((t) => ({ ...t, agentName: names.get(t.agentId) ?? null })),
+        };
+      }) ?? { tasks: [] };
+      return sendJson(res, 200, data);
+    }
+    const taskIdMatch = /^\/api\/agents\/tasks\/(\d+)$/.exec(path);
+    if (taskIdMatch && method === 'GET') {
+      const id = Number(taskIdMatch[1]);
+      const detail = withDb((db) => {
+        const reg = createAgentRegistry(db);
+        const task = reg.getTask(id);
+        if (!task) return null;
+        const agent = reg.get(task.agentId);
+        const transcript = task.conversationId
+          ? (db
+              .prepare(`SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id`)
+              .all(task.conversationId) as Array<{ role: string; content: string }>)
+          : [];
+        const children = reg
+          .listTasks({ parentId: task.id })
+          .map((c) => ({ id: c.id, agentId: c.agentId, status: c.status, prompt: c.prompt }));
+        return { task, agentName: agent?.name ?? null, transcript, children };
+      });
+      return sendJson(res, detail ? 200 : 404, detail ?? { error: 'not found' });
+    }
+    const cancelMatch = /^\/api\/agents\/tasks\/(\d+)\/cancel$/.exec(path);
+    if (cancelMatch && method === 'POST') {
+      const id = Number(cancelMatch[1]);
+      // Only a still-queued task can be cancelled from another process; a
+      // running task is owned by the daemon and finishes on its own.
+      const ok = withDb((db) => {
+        const reg = createAgentRegistry(db);
+        const t = reg.getTask(id);
+        if (!t || t.status !== 'queued') return false;
+        reg.updateTask(id, { status: 'cancelled', finishedAt: Date.now() });
+        return true;
+      });
+      return sendJson(res, ok ? 200 : 409, ok ? { ok: true } : { error: 'task is not queued' });
     }
 
     if (path === '/api/extensions' && method === 'GET') {

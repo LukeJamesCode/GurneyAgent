@@ -29,6 +29,17 @@ import { createOrchestrator } from '../core/orchestrator.js';
 import { createScheduler, type Nudge } from '../core/scheduler.js';
 import { setupFollowups } from '../core/followups.js';
 import {
+  createAgentRegistry,
+  createAgentRuntime,
+  filterToolRegistry,
+  isAgentChatId,
+  seedStarterAgents,
+  SPAWN_AGENT_TOOL_NAME,
+} from '../core/agents.js';
+import { createAgentQueue } from '../core/agent-queue.js';
+import { setupAgentDelegation } from '../core/agent-delegation.js';
+import type { Tier } from './profiles.js';
+import {
   createExtensionLoader,
   type HostOrchestrator,
   type VoicePayload,
@@ -135,6 +146,21 @@ function envInt(key: string): number | undefined {
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 0) return undefined;
   return n;
+}
+
+// How many tiny-model (non-heavy) agent tasks may run at once, by tier. The
+// heavy slot is always 1 (one resident reasoning model); only tiny tasks
+// parallelize, and only where there's RAM/CPU headroom to do so. A Pi stays
+// strictly sequential.
+function tinyAgentConcurrencyForTier(tier: Tier | undefined): number {
+  switch (tier) {
+    case 'heavy':
+      return 3;
+    case 'standard':
+      return 2;
+    default:
+      return 1;
+  }
 }
 
 export async function run(options: StartRunOptions = {}): Promise<void> {
@@ -311,10 +337,14 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   await loader.loadAll();
 
   const maxToolRounds = envInt('GURNEY_MAX_TOOL_ROUNDS');
+  // The main (Telegram/panel) chat must not see the delegation tool — spawn_agent
+  // is only meaningful inside an agent run, and exposing it to the small chat
+  // model would just invite misfires. Agents get it via their own filtered view.
+  const chatTools = filterToolRegistry(tools, (h) => h.name !== SPAWN_AGENT_TOOL_NAME);
   const orchestrator = createOrchestrator({
     db,
     llm,
-    tools,
+    tools: chatTools,
     log,
     promptFragmentProvider: (filter) => loader.promptFragment(filter),
     toolIntentFilter: (message) => loader.relevantExtensions(message),
@@ -327,6 +357,48 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
 
   const ownerId = cfg.telegram.allowedIds[0]!;
   log.info('telegram owner identified', { ownerId });
+
+  // Multi-agent engine. Personas run headlessly through their own per-agent
+  // orchestrators (sharing this db/llm/tool registry); the queue governs WHEN
+  // they run so two heavy reasoners never thrash the one resident model slot.
+  const agentRegistry = createAgentRegistry(db);
+  // Crash recovery: any task left 'running' by a previous process can never
+  // resume mid-turn, so re-queue it for a clean re-run.
+  const requeued = db
+    .prepare(`UPDATE agent_tasks SET status = 'queued', started_at = NULL WHERE status = 'running'`)
+    .run().changes;
+  if (requeued > 0) log.info('re-queued interrupted agent tasks', { count: requeued });
+  // Seed a starter fleet on a fresh install (no-op once any agent exists).
+  seedStarterAgents(agentRegistry);
+  const agentRuntime = createAgentRuntime({
+    db,
+    llm,
+    tools,
+    log,
+    registry: agentRegistry,
+    ownerUserId: ownerId,
+  });
+  const agentQueue = createAgentQueue({
+    registry: agentRegistry,
+    runtime: agentRuntime,
+    llm,
+    log,
+    tinyConcurrency: tinyAgentConcurrencyForTier(cfg.tier),
+    // The web panel enqueues tasks from its own process; poll so the daemon —
+    // the single executor — picks them up.
+    pollMs: 2500,
+  });
+  // The spawn_agent delegation tool (visible only to agents that may delegate).
+  setupAgentDelegation({
+    tools,
+    registry: agentRegistry,
+    runtime: agentRuntime,
+    queue: agentQueue,
+    log,
+  });
+  // Pick up any queued/re-queued work now that the engine is live.
+  agentQueue.notify();
+
   const telegram = createTelegram({
     token: cfg.telegram.token,
     allowedUserIds: cfg.telegram.allowedIds,
@@ -338,6 +410,8 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     db,
     prefs,
     followups,
+    agentRegistry,
+    agentQueue,
     logFilePath: logFilePath(home),
     schedulerStats: () => scheduler.stats(),
     schedulerList: () => [...scheduler.list()],
@@ -380,6 +454,16 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   // tool-engine contract is unchanged — confirm is still a single async
   // hook returning a boolean per call.
   confirmToolCall = async (handler, args, ctx) => {
+    // Background agent runs are unattended — a confirm-tier tool has no one to
+    // approve it, so it fails closed rather than auto-running or hanging. This
+    // is the key guardrail against silent autonomy in a delegated swarm.
+    if (ctx.chatId !== undefined && isAgentChatId(ctx.chatId)) {
+      log.warn('confirm-tier tool blocked in background agent run — failing closed', {
+        tool: handler.name,
+        chatId: ctx.chatId,
+      });
+      return false;
+    }
     if (ctx.chatId !== undefined) {
       for (const surface of loader.chatSurfaces()) {
         let owns = false;
@@ -515,6 +599,14 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
       await loader.shutdown();
     } catch (e) {
       log.warn('extension loader shutdown failed', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+    try {
+      await agentQueue.drain();
+      await agentRuntime.shutdown();
+    } catch (e) {
+      log.warn('agent engine shutdown failed', {
         error: e instanceof Error ? e.message : String(e),
       });
     }

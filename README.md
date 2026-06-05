@@ -17,8 +17,8 @@
 </p>
 
 <p align="center">
-  <a href="./docs/getting-started.md">Getting started</a> ·
-  <a href="./docs/extension-authoring.md">Build an extension</a> ·
+  <a href="./docs/01-setup-and-deployment.md">Getting started</a> ·
+  <a href="./docs/03-extensions-and-authoring.md">Build an extension</a> ·
   <a href="./docs/index.md">Docs</a> ·
   <a href="./CHANGELOG.md">Changelog</a> ·
   <a href="./CONTRIBUTING.md">Contributing</a>
@@ -77,7 +77,7 @@ This means you can shape Gurney into whatever assistant you actually want:
 | A finance tracker              | parses bank emails via IMAP, registers `/spend_this_week`          |
 | Something nobody's built yet   | …go for it. The host API is documented and stable.                 |
 
-The [Extension authoring guide](./docs/extension-authoring.md) walks through the manifest, the `Host` API, lifecycle, testing, and publishing. Scaffold one in a single command:
+The [Extension authoring guide](./docs/03-extensions-and-authoring.md) walks through the manifest, the `Host` API, lifecycle, testing, and publishing. Scaffold one in a single command:
 
 ```sh
 gurney ext create gurney-myext
@@ -121,13 +121,13 @@ gurney start --detach
 gurney status
 ```
 
-Prefer Docker? See [docs/deploying-with-docker.md](./docs/deploying-with-docker.md). Deploying to a Raspberry Pi as a systemd service? [docs/deploying-on-raspberry-pi.md](./docs/deploying-on-raspberry-pi.md). Stuck? [docs/troubleshooting.md](./docs/troubleshooting.md).
+Prefer Docker? Or deploying to a Raspberry Pi as a systemd service? See the deployment options in [docs/01-setup-and-deployment.md](./docs/01-setup-and-deployment.md). Stuck? See [docs/04-operations-and-troubleshooting.md](./docs/04-operations-and-troubleshooting.md).
 
-The full setup walkthrough is in [docs/getting-started.md](./docs/getting-started.md).
+The full setup walkthrough is in [docs/01-setup-and-deployment.md](./docs/01-setup-and-deployment.md).
 
 ## Hardware
 
-Gurney is designed around the constraint of running on cheap silicon. Rough guidance — see [Hardware and performance](./docs/hardware-and-performance.md) for the full tier guide:
+Gurney is designed around the constraint of running on cheap silicon. Rough guidance — see [Hardware and performance](./docs/01-setup-and-deployment.md#hardware-and-performance) for the full tier guide:
 
 | Tier      | Example hardware              | What runs                                 |
 | --------- | ----------------------------- | ----------------------------------------- |
@@ -139,15 +139,10 @@ Gurney is designed around the constraint of running on cheap silicon. Rough guid
 
 Everything user-facing lives under [`docs/`](./docs/index.md):
 
-- **[Getting started](./docs/getting-started.md)** — step-by-step setup, the wizard, doctor, start/stop, logs, config
-- **[CLI reference](./docs/cli-reference.md)** — every `gurney` subcommand and flag
-- **[Telegram command reference](./docs/telegram-commands.md)** — every slash command, grouped by extension
-- **[Configuration reference](./docs/configuration-reference.md)** — env vars and `~/.gurney/config.json` fields
-- **[Architecture](./docs/architecture.md)** — two-queue orchestrator, context manager, extension loader, LLM interface
-- **[Hardware and performance](./docs/hardware-and-performance.md)** — tier guide, Ollama tuning, KV cache, spec decode
-- **[Deploying on Raspberry Pi](./docs/deploying-on-raspberry-pi.md)** · **[Deploying with Docker](./docs/deploying-with-docker.md)**
-- **[Extension authoring](./docs/extension-authoring.md)** — write your own
-- **[Troubleshooting](./docs/troubleshooting.md)** — when things go wrong
+- **[01. Setup and Deployment](./docs/01-setup-and-deployment.md)** — hardware requirements, native Node vs Docker Compose, the `gurney init` wizard, and the `gurney doctor` pre-flight checks.
+- **[02. Repository and Architecture](./docs/02-repository-and-architecture.md)** — the two-queue orchestrator, context manager, LLM interface, SQLite schemas, and migrations.
+- **[03. Extensions and Authoring](./docs/03-extensions-and-authoring.md)** — the extension loader, Host API, settings schemas, building extensions, and bundled extensions.
+- **[04. Operations and Troubleshooting](./docs/04-operations-and-troubleshooting.md)** — configuration reference, Telegram commands, troubleshooting, and migrating from ATLAS v2.
 
 ## Project status
 
@@ -169,7 +164,7 @@ To report a security issue, follow the process in [SECURITY.md](./SECURITY.md) �
 - [Piper](https://github.com/rhasspy/piper) — fast local TTS
 - [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) — the storage backbone
 
-Gurney is the public, clean-room successor to a private homelab agent called **ATLAS v2**. Coming from there? See [Migrating from ATLAS](./docs/migrating-from-atlas.md).
+Gurney is the public, clean-room successor to a private homelab agent called **ATLAS v2**. Coming from there? See [Migrating from ATLAS](./docs/04-operations-and-troubleshooting.md#migrating-from-atlas-v2).
 
 ## Roadmap
 

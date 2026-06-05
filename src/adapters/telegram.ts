@@ -28,6 +28,9 @@ import type { ToolRegistry, ToolHandler, ToolContext } from '../core/tools.js';
 import type { DB } from '../storage/db.js';
 import type { ChatPrefs, PrefsStore, QuietCheck } from '../core/prefs.js';
 import type { Followups, FollowupRow } from '../core/followups.js';
+import type { AgentRegistry } from '../core/agents.js';
+import type { AgentQueue } from '../core/agent-queue.js';
+import { formatAgentList, handleDispatch } from './agent-commands.js';
 import { formatWindow, parseDuration, parseWindow } from '../core/prefs.js';
 import type { Nudge, NudgeAction, SchedulerStats } from '../core/scheduler.js';
 import {
@@ -63,6 +66,9 @@ export interface TelegramOptions {
   // Per-chat proactive prefs (quiet hours / snooze). Optional in tests.
   prefs?: PrefsStore;
   followups: Followups;
+  // Multi-agent engine, for /agents and /dispatch. Optional in tests.
+  agentRegistry?: AgentRegistry;
+  agentQueue?: AgentQueue;
   // Live scheduler stats for /status (nudge counts, fast-cache hit rate).
   schedulerStats?: () => SchedulerStats;
   // Live scheduler registry for /proactive.
@@ -151,6 +157,13 @@ const CORE_COMMAND_DEFS: readonly CoreCommandDef[] = [
   },
   { name: 'newchat', help: 'reset the conversation', advertised: 'Reset the conversation' },
   { name: 'stop', help: 'cancel an in-flight reply', advertised: 'Cancel an in-flight reply' },
+  { name: 'agents', help: 'list agent personas', advertised: 'List agent personas' },
+  {
+    name: 'dispatch',
+    argsHint: '<agent> <task>',
+    help: 'dispatch a background task to an agent',
+    advertised: 'Dispatch a task to an agent',
+  },
   {
     name: 'model',
     help: 'show the active model + profile',
@@ -821,6 +834,23 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
     await ctx.reply(cancelled ? 'Stopped.' : 'Nothing to stop.', {
       reply_markup: keyboardFor('home'),
     });
+  });
+
+  bot.command('agents', async (ctx) => {
+    if (!opts.agentRegistry) {
+      await ctx.reply('Agents are not available.');
+      return;
+    }
+    await ctx.reply(formatAgentList(opts.agentRegistry));
+  });
+
+  bot.command('dispatch', async (ctx) => {
+    if (!opts.agentRegistry) {
+      await ctx.reply('Agents are not available.');
+      return;
+    }
+    const arg = (ctx.match ?? '').toString();
+    await ctx.reply(handleDispatch(opts.agentRegistry, opts.agentQueue, arg));
   });
 
   bot.command('model', async (ctx) => {

@@ -8,6 +8,14 @@ Format: `## [version] — YYYY-MM-DD`
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-agent engine (core).** Gurney can now run named **agent personas** — each a saved bundle of orchestrator options (system prompt, model profile, tool allowlist, tool-round cap) plus an execution policy. Agents run headlessly through the normal orchestrator pipeline against a reserved virtual chat id, so every guard (per-turn tool gate, hallucination scrubbing, timeouts) applies for free. New core modules: `src/core/agents.ts` (registry + runtime), `src/core/agent-queue.ts` (scheduler), `src/core/agent-delegation.ts` (delegation tool); migration `0009_agents.sql`.
+- **Resource-aware task queue.** A background queue runs dispatched tasks under a model-resource governor: **at most one heavy (7–9B) task at a time** (so two reasoning agents never thrash the single resident model slot on a Pi), while tiny (0.5–0.8B) tasks run in parallel up to a tier-scaled cap (Small 1 / Standard 2 / Heavy 3). Each agent additionally picks `sequential` or `parallel` execution. Interrupted tasks are re-queued on restart.
+- **Supervisor → worker delegation.** A built-in `spawn_agent` tool (visible only to agents marked *can delegate*) lets a lead agent break a task into subtasks handled by specialists, `await` their results, and synthesise. Safety is enforced in code: a worker's tool grant is the **intersection** of the supervisor's grant and its own (delegation can never escalate), delegation depth is capped, and a `confirm`/`owner`-tier tool in an unattended background run **fails closed**.
+- `gurney-frontend`: an **Agents command center** — a new panel tab to create/edit personas, dispatch tasks, and watch them stream through queued → running → done with their transcript and sub-agent tree. New `/api/agents*` routes; the daemon stays the single task executor (the panel only does CRUD + dispatch).
+- A starter fleet (**planner**, **researcher**, **writer**, **critic**) is seeded on a fresh install to show the pattern.
+
 ### Fixed
 
 - `gurney-frontend`: **the panel token now survives closing the tab.** The token was stripped from the URL on load (so it isn't saved in browser history) but only kept in `sessionStorage`, which is cleared when the tab closes — so reopening the panel from browser history hit a 401 "token invalid" because neither the URL nor the store had it. The token is now persisted in `localStorage`, so reopening from history works without re-running `gurney start`.

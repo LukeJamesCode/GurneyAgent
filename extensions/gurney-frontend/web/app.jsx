@@ -8,6 +8,7 @@ const { useState, useEffect, useCallback, useRef } = React;
 
 const NAV = [
   { id: 'chat', label: 'Chat Hub', icon: 'chat' },
+  { id: 'agents', label: 'Agents', icon: 'spark' },
   { id: 'learn', label: 'Learn', icon: 'spark', requiresExt: 'gurney-tudor' },
   { id: 'voice', label: 'Voice Hub', icon: 'mic', requiresExt: 'gurney-voice' },
   { id: 'history', label: 'History', icon: 'doc' },
@@ -295,6 +296,7 @@ function App() {
           {route === 'learn' && learnEnabled && (
             <window.LearnHub agentRunning={agentStatus === 'running'} />
           )}
+          {route === 'agents' && <window.AgentsTab />}
           {route === 'history' && <window.HistoryTab />}
           {route === 'extensions' && <window.ExtensionsTab />}
           {route === 'settings' && (
