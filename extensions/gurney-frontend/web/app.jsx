@@ -3,7 +3,7 @@
 // decides between the first-run wizard and the main hub, and owns the agent
 // start/stop/restart actions (which POST to /api/agent/* — the server shells
 // out to `gurney start --detach` / `gurney stop`). Theme is a simple
-// localStorage-backed light/dark toggle; light is the default.
+// localStorage-backed light/dark toggle; dark is the default.
 const { useState, useEffect, useCallback, useRef } = React;
 
 const NAV = [
@@ -16,15 +16,15 @@ const NAV = [
   { id: 'memory', label: 'Memory', icon: 'database' },
   { id: 'tools', label: 'Tools', icon: 'tool' },
   { id: 'logs', label: 'Logs', icon: 'list' },
-  { id: 'settings', label: 'Settings', icon: 'gear' }
+  { id: 'settings', label: 'Settings', icon: 'gear' },
 ];
 
 function useTheme() {
   const [theme, setTheme] = useState(() => {
     try {
-      return localStorage.getItem('gurney_theme') || 'light';
+      return localStorage.getItem('gurney_theme') || 'dark';
     } catch (e) {
-      return 'light';
+      return 'dark';
     }
   });
   useEffect(() => {
@@ -217,7 +217,7 @@ function App() {
         onExit={() => setForcedView('hub')}
         onFinish={async () => {
           setForcedView('hub');
-          setRoute('chat');
+          setRoute('dashboard');
           await refresh();
           agentAction('start');
         }}
@@ -262,6 +262,15 @@ function App() {
         {state.cfgError && <ConfigErrorBar message={state.cfgError} />}
         <div className="content-shell">
           {route === 'dashboard' && <window.DashboardTab />}
+          {route === 'runs' && <window.HistoryTab />}
+          {route === 'workflows' && <window.DashboardTab />}
+          {route === 'projects' && <window.DashboardTab />}
+          {route === 'approvals' && <window.DashboardTab />}
+          {route === 'memory' && <window.DashboardTab />}
+          {route === 'tools' && <window.ExtensionsTab />}
+          {route === 'logs' && (
+            <window.SystemTab state={state} onReset={() => setForcedView('wizard')} />
+          )}
           {route === 'chat' && (
             <window.ChatHub
               agent={agentStatus}
@@ -324,13 +333,19 @@ function Topbar() {
         <span className="search-kbd">⌘K</span>
       </div>
       <div className="topbar-actions">
-        <button className="dash-btn green"><window.Icon name="play" size={14} /> New Run</button>
+        <button className="dash-btn green">
+          <window.Icon name="play" size={14} /> New Run
+        </button>
         <div className="icon-action" style={{ position: 'relative' }}>
           <window.Icon name="bell" size={18} />
           <div className="badge">3</div>
         </div>
-        <div className="icon-action"><window.Icon name="help-circle" size={18} /></div>
-        <div className="icon-action"><window.Icon name="settings" size={18} /></div>
+        <div className="icon-action">
+          <window.Icon name="help-circle" size={18} />
+        </div>
+        <div className="icon-action">
+          <window.Icon name="settings" size={18} />
+        </div>
       </div>
     </div>
   );
@@ -642,16 +657,45 @@ function Sidebar({
           margin: '0 10px 10px 10px',
         }}
       >
-        <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#448AFF', color: '#fff', display: 'grid', placeItems: 'center', fontWeight: 'bold', fontSize: '13px' }}>AB</div>
+        <div
+          style={{
+            width: '32px',
+            height: '32px',
+            borderRadius: '50%',
+            background: '#448AFF',
+            color: '#fff',
+            display: 'grid',
+            placeItems: 'center',
+            fontWeight: 'bold',
+            fontSize: '13px',
+          }}
+        >
+          AB
+        </div>
         <div style={{ flex: 1, lineHeight: '1.2' }}>
-          <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text)' }}>Alec Brown</div>
+          <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text)' }}>
+            Alec Brown
+          </div>
           <div style={{ fontSize: '11px', color: 'var(--text-3)' }}>Owner</div>
         </div>
         <window.Icon name="chevron-down" size={14} style={{ color: 'var(--text-2)' }} />
       </div>
-      <div style={{ padding: '0 12px 12px', fontSize: '10px', color: 'var(--text-3)', display: 'flex', flexDirection: 'column', gap: '4px', margin: '0 10px' }}>
+      <div
+        style={{
+          padding: '0 12px 12px',
+          fontSize: '10px',
+          color: 'var(--text-3)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '4px',
+          margin: '0 10px',
+        }}
+      >
         <span>CONTROL CENTER v1.2.3</span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><span className="dot green" style={{width: '6px', height: '6px'}}></span> All systems operational</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <span className="dot green" style={{ width: '6px', height: '6px' }}></span> All systems
+          operational
+        </span>
       </div>
     </aside>
   );
