@@ -23,6 +23,7 @@ import { createBridge, createRateLimiter, splitForDiscord, type Bridge } from '.
 import { parseCsvSet, type AllowlistConfig } from './lib/allowlist.js';
 import { createConfirmRenderer, type ConfirmRenderer } from './lib/confirm.js';
 import { createDiscordClient, type SlashCommandSpec } from './lib/client.js';
+import { VoiceManager } from './lib/voice.js';
 
 let stop: (() => Promise<void>) | null = null;
 
@@ -64,6 +65,7 @@ export async function register(host: Host): Promise<void> {
   let bridgeRef: Bridge | null = null;
   let confirmRef: ConfirmRenderer | null = null;
   let botUserId = '';
+  let voiceManager: VoiceManager | null = null;
 
   // Allowlist is read on every inbound message so a `gurney config` edit
   // takes effect without restarting the bridge.
@@ -79,6 +81,13 @@ export async function register(host: Host): Promise<void> {
     bridge: () => bridgeRef,
     allowlist: allowlistAccessor,
     handleConfirmButton: (customId, by) => (confirmRef ? confirmRef.onButton(customId, by) : false),
+  });
+
+  voiceManager = new VoiceManager({
+    log,
+    allowlist: allowlistAccessor,
+    host,
+    bridge: () => bridgeRef,
   });
 
   // Patch the resolveChat half of the confirm transport now that the
@@ -161,8 +170,48 @@ export async function register(host: Host): Promise<void> {
         }
       },
     },
+    {
+      name: 'vcjoin',
+      description: 'Summon Gurney into your current voice channel',
+      handle: async (ctx) => {
+        if (!ctx.guildId) {
+          await ctx.replyEphemeral('This command only works in a server.');
+          return;
+        }
+        const vcId = ctx.getMemberVoiceChannelId?.();
+        if (!vcId) {
+          await ctx.replyEphemeral('You must be in a voice channel first.');
+          return;
+        }
+        const adapter = ctx.getVoiceAdapterCreator?.();
+        if (!adapter) {
+          await ctx.replyEphemeral('Could not get voice adapter.');
+          return;
+        }
+        await voiceManager?.joinVoiceChannel(ctx.guildId, vcId, adapter);
+        await ctx.replyEphemeral('Joined voice channel.');
+      },
+    },
+    {
+      name: 'vcleave',
+      description: 'Dismiss Gurney from the voice channel',
+      handle: async (ctx) => {
+        if (!ctx.guildId) return;
+        voiceManager?.leaveVoiceChannel(ctx.guildId);
+        await ctx.replyEphemeral('Left voice channel.');
+      },
+    },
   ];
   client.registerSlashCommands(slashCommands);
+
+  host.telegram.afterReply(async (ctx) => {
+    if (isDiscordChatId(ctx.chatId)) {
+      const resolved = identity.resolve(ctx.chatId);
+      if (resolved && resolved.discordChannelId) {
+        await voiceManager?.playAudio(resolved.discordChannelId, ctx.text);
+      }
+    }
+  });
 
   // Start the gateway. Don't await — login takes a few seconds and other
   // extensions are still loading. Once `ready` fires we patch in the bot's

@@ -49,6 +49,8 @@ export interface SlashCommandContext {
   guildId: string | null;
   channelId: string;
   userId: string;
+  getVoiceAdapterCreator?: () => any;
+  getMemberVoiceChannelId?: () => string | null;
   // Reply privately (ephemeral) so opt-in/opt-out chatter doesn't spam
   // the channel for other members.
   replyEphemeral: (text: string) => Promise<void>;
@@ -77,6 +79,7 @@ const DEFAULT_INTENTS: GatewayIntentBits[] = [
   GatewayIntentBits.GuildMessages,
   GatewayIntentBits.DirectMessages,
   GatewayIntentBits.MessageContent,
+  GatewayIntentBits.GuildVoiceStates,
 ];
 
 function defaultClient(): Client {
@@ -185,6 +188,11 @@ export function createDiscordClient(opts: DiscordClientOptions): DiscordClientHa
         guildId: interaction.guildId,
         channelId: interaction.channelId,
         userId: interaction.user.id,
+        getVoiceAdapterCreator: () => interaction.guild?.voiceAdapterCreator,
+        getMemberVoiceChannelId: () => {
+          const member = interaction.member;
+          return (member && 'voice' in member && member.voice.channelId) ? member.voice.channelId : null;
+        },
         replyEphemeral: async (text) => {
           try {
             await interaction.reply({ content: text, ephemeral: true });
