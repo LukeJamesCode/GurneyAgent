@@ -6,17 +6,18 @@
 // localStorage-backed light/dark toggle; dark is the default.
 const { useState, useEffect, useCallback, useRef } = React;
 
+// Combined runs/workflows/history live under one "Runs" tab (HistoryTab).
+// Learn and Voice Hub only appear when their extension is enabled.
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: 'home' },
-  { id: 'runs', label: 'Runs', icon: 'play-circle' },
-  { id: 'workflows', label: 'Workflows', icon: 'git-merge' },
+  { id: 'chat', label: 'Chat Hub', icon: 'chat' },
   { id: 'agents', label: 'Agents', icon: 'spark' },
-  { id: 'projects', label: 'Projects', icon: 'folder' },
-  { id: 'approvals', label: 'Approvals', icon: 'shield' },
-  { id: 'memory', label: 'Memory', icon: 'database' },
-  { id: 'tools', label: 'Tools', icon: 'tool' },
-  { id: 'logs', label: 'Logs', icon: 'list' },
+  { id: 'runs', label: 'Runs', icon: 'play-circle' },
+  { id: 'learn', label: 'Learn', icon: 'spark', requiresExt: 'gurney-tudor' },
+  { id: 'voice', label: 'Voice Hub', icon: 'mic', requiresExt: 'gurney-voice' },
+  { id: 'extensions', label: 'Extensions', icon: 'plug' },
   { id: 'settings', label: 'Settings', icon: 'gear' },
+  { id: 'system', label: 'System', icon: 'pulse' },
 ];
 
 function useTheme() {
@@ -263,14 +264,6 @@ function App() {
         <div className="content-shell">
           {route === 'dashboard' && <window.DashboardTab />}
           {route === 'runs' && <window.HistoryTab />}
-          {route === 'workflows' && <window.DashboardTab />}
-          {route === 'projects' && <window.DashboardTab />}
-          {route === 'approvals' && <window.DashboardTab />}
-          {route === 'memory' && <window.DashboardTab />}
-          {route === 'tools' && <window.ExtensionsTab />}
-          {route === 'logs' && (
-            <window.SystemTab state={state} onReset={() => setForcedView('wizard')} />
-          )}
           {route === 'chat' && (
             <window.ChatHub
               agent={agentStatus}
@@ -310,7 +303,6 @@ function App() {
             <window.LearnHub agentRunning={agentStatus === 'running'} />
           )}
           {route === 'agents' && <window.AgentsTab />}
-          {route === 'history' && <window.HistoryTab />}
           {route === 'extensions' && <window.ExtensionsTab />}
           {route === 'settings' && (
             <window.SettingsTab onReRunWizard={() => setForcedView('wizard')} onSaved={refresh} />
