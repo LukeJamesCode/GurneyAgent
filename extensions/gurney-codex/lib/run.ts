@@ -44,7 +44,7 @@ export function readSettings(host: Host): Settings {
   const rawTurns = Number(host.settings.get<number>('context_turns', 6));
   const rawCtxChars = Number(host.settings.get<number>('context_max_chars', 4000));
   const s: Settings = {
-    model: host.settings.get<string>('model', 'gpt-5.3-codex') || 'gpt-5.3-codex',
+    model: host.settings.get<string>('model', 'gpt-5.5') || 'gpt-5.5',
     baseUrl:
       host.settings.get<string>('base_url', 'https://chatgpt.com/backend-api/codex') ||
       'https://chatgpt.com/backend-api/codex',
