@@ -12,14 +12,14 @@ An agent is a saved bundle of orchestrator options plus an execution policy. Not
 running one is special — it drives the **same** orchestrator pipeline as a Telegram turn, so
 it inherits every guard (per-turn tool gate, hallucination scrubbing, tool timeouts).
 
-| Field | Meaning |
-| --- | --- |
-| `systemPrompt` | The persona's instructions. |
-| `profile` | `chat` / `tools` (tiny models) or `reason` (the heavy 9B). |
-| `toolAllowlist` | Extension and/or tool names the agent may call. `null` = all tools; `[]` = none. A **short, role-scoped allowlist measurably improves tool selection** on a 0.8B model. |
-| `maxToolRounds`, `budgetTokens` | Per-agent caps. |
-| `executionMode` | `sequential` (one of its own tasks at a time) or `parallel` (up to `maxConcurrency`). |
-| `canDelegate`, `delegatableAgents` | Whether it may spawn sub-agents, and which ones (`[]` = any). |
+| Field                              | Meaning                                                                                                                                                                 |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `systemPrompt`                     | The persona's instructions.                                                                                                                                             |
+| `profile`                          | `chat` / `tools` (tiny models) or `reason` (the heavy 9B).                                                                                                              |
+| `toolAllowlist`                    | Extension and/or tool names the agent may call. `null` = all tools; `[]` = none. A **short, role-scoped allowlist measurably improves tool selection** on a 0.8B model. |
+| `maxToolRounds`, `budgetTokens`    | Per-agent caps.                                                                                                                                                         |
+| `executionMode`                    | `sequential` (one of its own tasks at a time) or `parallel` (up to `maxConcurrency`).                                                                                   |
+| `canDelegate`, `delegatableAgents` | Whether it may spawn sub-agents, and which ones (`[]` = any).                                                                                                           |
 
 Definitions and task rows live in SQLite (`agents`, `agent_tasks`; migration `0009`). Each run
 writes its transcript to a `conversations` row under a reserved **virtual chat id**
@@ -37,7 +37,7 @@ exactly one heavy (7–9B) model resident at a time. The task queue is keyed to 
 - A `sequential` agent runs only one of its own tasks at a time regardless of the global budget.
 
 So an agent marked `parallel` that uses the `reason` profile still serialises against all other
-heavy work — "parallel" never overrides physics. The command center shows a task as *queued*
+heavy work — "parallel" never overrides physics. The command center shows a task as _queued_
 until a model slot frees up.
 
 The daemon is the **single owner** of task execution. The web panel (a separate process) only
@@ -73,14 +73,14 @@ Safety is enforced in code, not by the prompt:
 
 A fresh install seeds four agents to demonstrate the pattern (delete them and they stay gone):
 
-- **planner** — heavy `reason` model; decomposes a goal and delegates to the others.
+- **orchestrator** - heavy `reason` model; decomposes any task and delegates to the available fleet.
 - **researcher** — `tools` model; gathers facts (parallel-friendly).
 - **writer** — `chat` model; drafts prose, no tools.
 - **critic** — `chat` model; reviews and tightens a draft.
 
 ## Example patterns
 
-- **Planner + parallel workers.** A 9B planner decomposes "summarise my week and draft three
+- **Orchestrator + parallel workers.** A 9B orchestrator decomposes "summarise my week and draft three
   priorities", dispatches 0.8B workers to gather calendar/tasks/weather in parallel, then
   synthesises once.
 - **Deterministic pipeline.** researcher → writer → critic, run sequentially — Pi-safe.
@@ -91,11 +91,11 @@ A fresh install seeds four agents to demonstrate the pattern (delete them and th
 
 ## Code map
 
-| Concern | File |
-| --- | --- |
-| Definitions, registry, headless runner, starter fleet | `src/core/agents.ts` |
-| Resource-aware queue | `src/core/agent-queue.ts` |
-| `spawn_agent` delegation tool | `src/core/agent-delegation.ts` |
-| Schema | `src/storage/migrations/0009_agents.sql` |
-| Boot wiring (engine + confirm fail-closed) | `src/cli/start.ts` |
-| Command center API + UI | `extensions/gurney-frontend/server.ts`, `extensions/gurney-frontend/web/agents.jsx` |
+| Concern                                               | File                                                                                |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Definitions, registry, headless runner, starter fleet | `src/core/agents.ts`                                                                |
+| Resource-aware queue                                  | `src/core/agent-queue.ts`                                                           |
+| `spawn_agent` delegation tool                         | `src/core/agent-delegation.ts`                                                      |
+| Schema                                                | `src/storage/migrations/0009_agents.sql`                                            |
+| Boot wiring (engine + confirm fail-closed)            | `src/cli/start.ts`                                                                  |
+| Command center API + UI                               | `extensions/gurney-frontend/server.ts`, `extensions/gurney-frontend/web/agents.jsx` |

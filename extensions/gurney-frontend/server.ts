@@ -34,9 +34,11 @@ import { fileURLToPath } from 'node:url';
 import { open as openDb, type DB } from '../../src/storage/db.js';
 import {
   createAgentRegistry,
+  AGENT_TASK_CANCELLED_MESSAGE,
   type AgentExecutionMode,
   type CreateAgentInput,
 } from '../../src/core/agents.js';
+import { createAgentScheduleStore } from '../../src/core/agent-schedules.js';
 import type { ProfileName } from '../../src/core/llm.js';
 import { createLogger } from '../../src/util/log.js';
 import { createOllama } from '../../src/core/llm.js';
@@ -195,13 +197,36 @@ function normalizeAgentInput(body: Record<string, unknown>): CreateAgentInput {
     profile,
     toolAllowlist,
     maxToolRounds: clampInt(body['maxToolRounds'], 1, 12, 4),
-    budgetTokens: rawBudget === null || rawBudget === undefined || rawBudget === ''
-      ? null
-      : clampInt(rawBudget, 256, 32768, 4096),
+    budgetTokens:
+      rawBudget === null || rawBudget === undefined || rawBudget === ''
+        ? null
+        : clampInt(rawBudget, 256, 32768, 4096),
     executionMode,
     maxConcurrency: clampInt(body['maxConcurrency'], 1, 8, 1),
     canDelegate: !!body['canDelegate'],
     delegatableAgents,
+  };
+}
+
+function normalizeAgentScheduleInput(body: Record<string, unknown>): {
+  agentIds: number[];
+  prompt: string;
+  nextRunAt: number;
+  recurrence: 'once' | 'daily' | 'weekly';
+} {
+  const rawIds = Array.isArray(body['agentIds'])
+    ? body['agentIds']
+    : body['agentId'] !== undefined
+      ? [body['agentId']]
+      : [];
+  const agentIds = rawIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0);
+  const recurrence =
+    body['recurrence'] === 'daily' || body['recurrence'] === 'weekly' ? body['recurrence'] : 'once';
+  return {
+    agentIds,
+    prompt: String(body['prompt'] ?? '').trim(),
+    nextRunAt: Number(body['nextRunAt']),
+    recurrence,
   };
 }
 
@@ -1962,6 +1987,57 @@ async function handleApi(
       if ('dup' in result) return sendJson(res, 409, { error: 'an agent with that name exists' });
       return sendJson(res, 200, result);
     }
+    if (path === '/api/agents/schedules' && method === 'GET') {
+      const data = withDb((db) => {
+        const reg = createAgentRegistry(db);
+        const names = new Map(reg.list().map((a) => [a.id, a.name]));
+        const schedules = createAgentScheduleStore(db, reg)
+          .list({ limit: 80 })
+          .map((s) => ({
+            ...s,
+            agentNames: s.agentIds.map((id) => names.get(id) ?? `#${id}`),
+          }));
+        return { schedules };
+      }) ?? { schedules: [] };
+      return sendJson(res, 200, data);
+    }
+    if (path === '/api/agents/schedules' && method === 'POST') {
+      const body = await readJson<Record<string, unknown>>(req);
+      const input = normalizeAgentScheduleInput(body);
+      if (input.agentIds.length === 0) {
+        return sendJson(res, 400, { error: 'at least one agent is required' });
+      }
+      if (!input.prompt) return sendJson(res, 400, { error: 'prompt is required' });
+      if (!Number.isFinite(input.nextRunAt)) {
+        return sendJson(res, 400, { error: 'nextRunAt must be a timestamp' });
+      }
+      if (input.nextRunAt <= Date.now()) {
+        return sendJson(res, 400, { error: 'scheduled time must be in the future' });
+      }
+      try {
+        const schedule = withDb((db) => {
+          const reg = createAgentRegistry(db);
+          return createAgentScheduleStore(db, reg).create(input);
+        });
+        return sendJson(
+          res,
+          schedule ? 200 : 500,
+          schedule ? { schedule } : { error: 'database unavailable' },
+        );
+      } catch (e) {
+        return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    const scheduleIdMatch = /^\/api\/agents\/schedules\/(\d+)$/.exec(path);
+    if (scheduleIdMatch && method === 'DELETE') {
+      const id = Number(scheduleIdMatch[1]);
+      const ok =
+        withDb((db) => {
+          const reg = createAgentRegistry(db);
+          return createAgentScheduleStore(db, reg).remove(id);
+        }) ?? false;
+      return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'not found' });
+    }
     const agentIdMatch = /^\/api\/agents\/(\d+)$/.exec(path);
     if (agentIdMatch && method === 'PUT') {
       const id = Number(agentIdMatch[1]);
@@ -1971,7 +2047,11 @@ async function handleApi(
         if (!reg.get(id)) return null;
         return reg.update(id, normalizeAgentInput(body)) ?? null;
       });
-      return sendJson(res, updated ? 200 : 404, updated ? { agent: updated } : { error: 'not found' });
+      return sendJson(
+        res,
+        updated ? 200 : 404,
+        updated ? { agent: updated } : { error: 'not found' },
+      );
     }
     if (agentIdMatch && method === 'DELETE') {
       const id = Number(agentIdMatch[1]);
@@ -2026,16 +2106,22 @@ async function handleApi(
     const cancelMatch = /^\/api\/agents\/tasks\/(\d+)\/cancel$/.exec(path);
     if (cancelMatch && method === 'POST') {
       const id = Number(cancelMatch[1]);
-      // Only a still-queued task can be cancelled from another process; a
-      // running task is owned by the daemon and finishes on its own.
       const ok = withDb((db) => {
         const reg = createAgentRegistry(db);
         const t = reg.getTask(id);
-        if (!t || t.status !== 'queued') return false;
-        reg.updateTask(id, { status: 'cancelled', finishedAt: Date.now() });
+        if (!t || !['queued', 'running'].includes(t.status)) return false;
+        reg.updateTask(id, {
+          status: 'cancelled',
+          error: AGENT_TASK_CANCELLED_MESSAGE,
+          finishedAt: Date.now(),
+        });
         return true;
       });
-      return sendJson(res, ok ? 200 : 409, ok ? { ok: true } : { error: 'task is not queued' });
+      return sendJson(
+        res,
+        ok ? 200 : 409,
+        ok ? { ok: true } : { error: 'task is not queued or running' },
+      );
     }
 
     if (path === '/api/extensions' && method === 'GET') {
@@ -2347,11 +2433,7 @@ async function handleApi(
         | 'standard'
         | 'deep';
       const generator: 'local' | 'codex' | 'cloud' =
-        body.generator === 'codex'
-          ? 'codex'
-          : body.generator === 'cloud'
-            ? 'cloud'
-            : 'local';
+        body.generator === 'codex' ? 'codex' : body.generator === 'cloud' ? 'cloud' : 'local';
       // Keep only well-formed http(s) sources the client sent back as approved.
       const approvedSources = Array.isArray(body.approvedSources)
         ? body.approvedSources

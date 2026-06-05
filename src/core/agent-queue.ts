@@ -20,7 +20,13 @@
 
 import type { Logger } from '../util/log.js';
 import type { LLM, ProfileName } from './llm.js';
-import type { AgentRegistry, AgentRuntime, AgentTask, EnqueueTaskInput } from './agents.js';
+import {
+  AGENT_TASK_CANCELLED_MESSAGE,
+  type AgentRegistry,
+  type AgentRuntime,
+  type AgentTask,
+  type EnqueueTaskInput,
+} from './agents.js';
 
 export interface AgentQueueOptions {
   registry: AgentRegistry;
@@ -50,6 +56,8 @@ export interface AgentQueue {
   // Re-scan for runnable work. Call after enqueuing through the registry
   // directly (e.g. the spawn_agent tool).
   notify(): void;
+  // Cancel queued work or abort a running task owned by this process.
+  cancel(taskId: number): boolean;
   // True while a task is in flight or queued work remains.
   busy(): boolean;
   runningCount(): number;
@@ -145,8 +153,17 @@ export function createAgentQueue(opts: AgentQueueOptions): AgentQueue {
   // Synchronous scan. Walk queued tasks in priority order and start every one
   // capacity allows. A blocked candidate doesn't stop the scan — a tiny task
   // can still start while the heavy slot is full.
+  function cancelRequestedRunningTasks(): void {
+    for (const [taskId] of running) {
+      if (opts.registry.getTask(taskId)?.status === 'cancelled') {
+        opts.runtime.cancelTask(taskId);
+      }
+    }
+  }
+
   function tick(): void {
     if (draining) return;
+    cancelRequestedRunningTasks();
     const queued = opts.registry.listTasks({ status: 'queued' });
     // listTasks returns newest-first; run oldest-first within a priority band.
     queued.sort((a, b) => b.priority - a.priority || a.id - b.id);
@@ -166,6 +183,24 @@ export function createAgentQueue(opts: AgentQueueOptions): AgentQueue {
     const task = opts.registry.enqueue(input);
     notify();
     return task;
+  }
+
+  function cancel(taskId: number): boolean {
+    const task = opts.registry.getTask(taskId);
+    if (!task) return false;
+    if (task.status === 'done' || task.status === 'error' || task.status === 'cancelled') {
+      return false;
+    }
+    opts.registry.updateTask(taskId, {
+      status: 'cancelled',
+      error: AGENT_TASK_CANCELLED_MESSAGE,
+      finishedAt: Date.now(),
+    });
+    if (running.has(taskId)) opts.runtime.cancelTask(taskId);
+    const cancelled = opts.registry.getTask(taskId);
+    if (cancelled) opts.onTaskUpdate?.(cancelled);
+    notify();
+    return true;
   }
 
   async function drain(): Promise<void> {
@@ -188,6 +223,7 @@ export function createAgentQueue(opts: AgentQueueOptions): AgentQueue {
   return {
     dispatch,
     notify,
+    cancel,
     busy: () => running.size > 0 || opts.registry.listTasks({ status: 'queued' }).length > 0,
     runningCount: () => running.size,
     drain,

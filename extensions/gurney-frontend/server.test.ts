@@ -51,7 +51,7 @@ test('frontend API creates agents through POST /api/agents', async () => {
     });
 
     const body = (await response.json()) as {
-      agent?: { name: string; role: string; profile: string; maxToolRounds: number };
+      agent?: { id: number; name: string; role: string; profile: string; maxToolRounds: number };
       error?: string;
     };
 
@@ -60,6 +60,25 @@ test('frontend API creates agents through POST /api/agents', async () => {
     assert.equal(body.agent?.role, 'plans the work');
     assert.equal(body.agent?.profile, 'reason');
     assert.equal(body.agent?.maxToolRounds, 6);
+
+    const scheduleResponse = await fetch(`http://127.0.0.1:${port}/api/agents/schedules`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        agentIds: [body.agent?.id],
+        prompt: 'Run the daily planning task',
+        nextRunAt: Date.now() + 60 * 60_000,
+        recurrence: 'daily',
+      }),
+    });
+    const scheduleBody = (await scheduleResponse.json()) as {
+      schedule?: { prompt: string; recurrence: string; agentIds: number[] };
+      error?: string;
+    };
+    assert.equal(scheduleResponse.status, 200, scheduleBody.error);
+    assert.equal(scheduleBody.schedule?.prompt, 'Run the daily planning task');
+    assert.equal(scheduleBody.schedule?.recurrence, 'daily');
+    assert.deepEqual(scheduleBody.schedule?.agentIds, [body.agent?.id]);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     if (previousHome === undefined) {

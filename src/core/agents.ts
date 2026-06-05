@@ -40,6 +40,7 @@ export const SPAWN_AGENT_TOOL_NAME = 'spawn_agent';
 // depth 0; spawn_agent refuses once a child would exceed this, so a buggy
 // persona can't recurse without bound.
 export const MAX_DELEGATION_DEPTH = 3;
+export const AGENT_TASK_CANCELLED_MESSAGE = 'Agent task cancelled by user.';
 
 // Intersect two tool grants. null means "all tools". The result never grants
 // more than either input (fail-safe): the AND of two ceilings. For two
@@ -373,7 +374,8 @@ export function createAgentRegistry(db: DB): AgentRegistry {
       execution_mode: input.executionMode ?? 'sequential',
       priority: input.priority ?? 0,
       depth: input.depth ?? 0,
-      tool_allowlist_override: override === undefined || override === null ? null : JSON.stringify(override),
+      tool_allowlist_override:
+        override === undefined || override === null ? null : JSON.stringify(override),
       created_at: Date.now(),
     });
     return getTask(Number(info.lastInsertRowid))!;
@@ -456,21 +458,40 @@ export function createAgentRegistry(db: DB): AgentRegistry {
 // small models get to quality: a sparing heavy Planner that decomposes and
 // delegates, and cheap tiny-model workers each kept to a narrow job.
 export function seedStarterAgents(registry: AgentRegistry): void {
-  if (registry.list().length > 0) return;
+  const existing = registry.list();
+  if (registry.getByName('orchestrator')) return;
+  if (existing.length > 0) {
+    registry.create({
+      name: 'orchestrator',
+      role: 'Coordinates any task across the available agent fleet',
+      systemPrompt:
+        'You are the Orchestrator. For any user task, decide whether to answer directly or break it ' +
+        'into concrete subtasks. Use spawn_agent to delegate to the best available agents from your ' +
+        'current roster, wait for their results when synthesis matters, then return one clear final answer. ' +
+        'Keep the plan lean and avoid spawning agents for trivial work.',
+      profile: 'reason',
+      toolAllowlist: [],
+      executionMode: 'sequential',
+      maxToolRounds: 8,
+      canDelegate: true,
+      delegatableAgents: [],
+    });
+    return;
+  }
   registry.create({
-    name: 'planner',
-    role: 'Breaks a goal into steps and delegates them',
+    name: 'orchestrator',
+    role: 'Coordinates any task across the available agent fleet',
     systemPrompt:
-      'You are the Planner. Break the user goal into a few concrete subtasks. ' +
-      'Use the spawn_agent tool to delegate each subtask to the right specialist ' +
-      '(researcher, writer, critic), then synthesise their results into one clear answer. ' +
-      'Keep your own reasoning brief.',
+      'You are the Orchestrator. For any user task, decide whether to answer directly or break it ' +
+      'into concrete subtasks. Use spawn_agent to delegate to the best available agents from your ' +
+      'current roster, wait for their results when synthesis matters, then return one clear final answer. ' +
+      'Keep the plan lean and avoid spawning agents for trivial work.',
     profile: 'reason',
     toolAllowlist: [],
     executionMode: 'sequential',
-    maxToolRounds: 6,
+    maxToolRounds: 8,
     canDelegate: true,
-    delegatableAgents: ['researcher', 'writer', 'critic'],
+    delegatableAgents: [],
   });
   registry.create({
     name: 'researcher',
@@ -526,7 +547,12 @@ export function filterToolRegistry(
   predicate: (h: ToolHandler) => boolean,
 ): ToolRegistry {
   const visibleNames = (): Set<string> =>
-    new Set(base.list().filter(predicate).map((h) => h.name));
+    new Set(
+      base
+        .list()
+        .filter(predicate)
+        .map((h) => h.name),
+    );
   return {
     register: (h) => base.register(h),
     unregister: (n) => base.unregister(n),
@@ -582,6 +608,9 @@ export interface AgentRuntime {
   // Run a queued task to completion. Marks it running, drives the orchestrator,
   // persists result/error + the conversation link, returns the outcome.
   runTask(taskId: number, opts?: { onDelta?: (delta: string) => void }): Promise<RunResult>;
+  // Best-effort cancellation for a queued or running task. Running tasks abort
+  // their active orchestrator turn; queued tasks are marked terminal.
+  cancelTask(taskId: number): boolean;
   shutdown(): Promise<void>;
 }
 
@@ -590,7 +619,8 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
   // One orchestrator per agent definition, rebuilt when the definition changes
   // (keyed by updatedAt). The expensive resources — db, llm, base tool
   // registry — are shared singletons; an orchestrator is a thin wrapper.
-  const cache = new Map<number, { updatedAt: number; orch: Orchestrator }>();
+  const cache = new Map<number, { cacheKey: string; orch: Orchestrator }>();
+  const active = new Map<number, { orch: Orchestrator; virtualChatId: number }>();
 
   // Build the tool-visibility predicate for an agent. The delegation tool is
   // visible iff the agent may delegate (independent of its allowlist); an
@@ -607,17 +637,17 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     };
   }
 
-  function buildOrchestrator(
-    agent: AgentDefinition,
-    override: string[] | null,
-  ): Orchestrator {
+  function buildOrchestrator(agent: AgentDefinition, override: string[] | null): Orchestrator {
     const tools = filterToolRegistry(opts.tools, agentPredicate(agent, override));
+    const systemPrompt = agent.canDelegate
+      ? `${agent.systemPrompt}\n\n${delegateRosterPrompt(agent)}`
+      : agent.systemPrompt;
     return createOrchestrator({
       db: opts.db,
       llm: opts.llm,
       tools,
       log: opts.log.child({ agent: agent.name }),
-      systemPrompt: agent.systemPrompt,
+      systemPrompt,
       defaultProfile: agent.profile,
       // The persona runs on a single model; use it for tool turns too rather
       // than falling back to the global chat model.
@@ -627,15 +657,50 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     });
   }
 
+  function delegateRoster(agent: AgentDefinition): AgentDefinition[] {
+    if (!agent.canDelegate) return [];
+    const allowed = new Set(agent.delegatableAgents);
+    return opts.registry
+      .list()
+      .filter((candidate) => candidate.id !== agent.id)
+      .filter((candidate) => allowed.size === 0 || allowed.has(candidate.name));
+  }
+
+  function delegateRosterPrompt(agent: AgentDefinition): string {
+    const roster = delegateRoster(agent);
+    if (roster.length === 0) {
+      return 'No delegate agents are currently available. Do not call spawn_agent.';
+    }
+    const lines = roster.map(
+      (candidate) =>
+        `- ${candidate.name}: ${candidate.role || candidate.systemPrompt.slice(0, 90)} (${candidate.profile})`,
+    );
+    return [
+      'Available delegate agents for spawn_agent:',
+      ...lines,
+      'Pick the smallest suitable agent for each subtask. Use exact agent names.',
+    ].join('\n');
+  }
+
+  function orchestratorCacheKey(agent: AgentDefinition): string {
+    if (!agent.canDelegate) return String(agent.updatedAt);
+    return `${agent.updatedAt}:${delegateRoster(agent)
+      .map(
+        (candidate) => `${candidate.id}:${candidate.name}:${candidate.role}:${candidate.updatedAt}`,
+      )
+      .join('|')}`;
+  }
+
   // Cache the common case — an agent run with no grant ceiling — keyed by the
   // definition's updatedAt. Runs that carry a per-task override get a one-off
   // orchestrator that's torn down after the run.
   function orchestratorFor(agent: AgentDefinition): Orchestrator {
     const hit = cache.get(agent.id);
-    if (hit && hit.updatedAt === agent.updatedAt) return hit.orch;
+    const cacheKey = orchestratorCacheKey(agent);
+    if (hit && hit.cacheKey === cacheKey) return hit.orch;
     if (hit) void hit.orch.shutdown();
     const orch = buildOrchestrator(agent, null);
-    cache.set(agent.id, { updatedAt: agent.updatedAt, orch });
+    cache.set(agent.id, { cacheKey, orch });
     return orch;
   }
 
@@ -645,6 +710,9 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
   ): Promise<RunResult> {
     const task = opts.registry.getTask(taskId);
     if (!task) throw new Error(`agent task ${taskId} not found`);
+    if (task.status === 'cancelled') {
+      return { ok: false, text: '', error: AGENT_TASK_CANCELLED_MESSAGE, conversationId: 0 };
+    }
     const agent = opts.registry.get(task.agentId);
     if (!agent) throw new Error(`agent ${task.agentId} for task ${taskId} not found`);
 
@@ -661,6 +729,7 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     const orch = ephemeral
       ? buildOrchestrator(agent, task.toolAllowlistOverride)
       : orchestratorFor(agent);
+    active.set(task.id, { orch, virtualChatId });
     let buffer = '';
     let finalText: string | undefined;
     let conversationId = 0;
@@ -690,6 +759,14 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
           },
         });
       } catch (e) {
+        if (opts.registry.getTask(task.id)?.status === 'cancelled') {
+          return {
+            ok: false,
+            text: '',
+            error: AGENT_TASK_CANCELLED_MESSAGE,
+            conversationId,
+          };
+        }
         const msg = e instanceof Error ? e.message : String(e);
         log.warn('agent task threw', { taskId, agent: agent.name, error: msg });
         opts.registry.updateTask(task.id, {
@@ -698,6 +775,15 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
           finishedAt: Date.now(),
         });
         return { ok: false, text: '', error: msg, conversationId };
+      }
+
+      if (opts.registry.getTask(task.id)?.status === 'cancelled') {
+        return {
+          ok: false,
+          text: finalText ?? buffer,
+          error: AGENT_TASK_CANCELLED_MESSAGE,
+          conversationId,
+        };
       }
 
       const errored = orch.lastError(virtualChatId);
@@ -719,14 +805,36 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
       });
       return { ok: true, text, conversationId };
     } finally {
+      active.delete(task.id);
       if (ephemeral) await orch.shutdown();
     }
   }
 
-  async function shutdown(): Promise<void> {
-    await Promise.all([...cache.values()].map((c) => c.orch.shutdown()));
-    cache.clear();
+  function cancelTask(taskId: number): boolean {
+    const task = opts.registry.getTask(taskId);
+    if (!task) return false;
+    if (task.status === 'done' || task.status === 'error') return false;
+    if (task.status !== 'cancelled') {
+      opts.registry.updateTask(taskId, {
+        status: 'cancelled',
+        error: AGENT_TASK_CANCELLED_MESSAGE,
+        finishedAt: Date.now(),
+      });
+    }
+    const hit = active.get(taskId);
+    if (hit) {
+      hit.orch.stop(hit.virtualChatId);
+      return true;
+    }
+    return task.status === 'queued' || task.status === 'running' || task.status === 'cancelled';
   }
 
-  return { runTask, shutdown };
+  async function shutdown(): Promise<void> {
+    for (const [taskId] of active) cancelTask(taskId);
+    await Promise.all([...cache.values()].map((c) => c.orch.shutdown()));
+    cache.clear();
+    active.clear();
+  }
+
+  return { runTask, cancelTask, shutdown };
 }

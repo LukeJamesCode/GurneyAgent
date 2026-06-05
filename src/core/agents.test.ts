@@ -14,6 +14,7 @@ import {
   agentToolPredicate,
   seedStarterAgents,
   AGENT_CHAT_ID_BASE,
+  AGENT_TASK_CANCELLED_MESSAGE,
 } from './agents.js';
 
 function silentLogger() {
@@ -70,6 +71,23 @@ async function* textStream(parts: string[]): AsyncIterable<ChatChunk> {
       ...(last ? { promptTokens: 5, completionTokens: parts.length, model: 'fake' } : {}),
     };
   }
+}
+
+async function* abortableStream(signal?: AbortSignal): AsyncIterable<ChatChunk> {
+  await new Promise<void>((resolve, reject) => {
+    const abort = () => {
+      const e = new Error('aborted');
+      e.name = 'AbortError';
+      reject(e);
+    };
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    signal?.addEventListener('abort', abort, { once: true });
+    void resolve;
+  });
+  yield { delta: 'late', done: true, model: 'fake', promptTokens: 1, completionTokens: 1 };
 }
 
 // A streamed round that asks for a single tool call, then a terminal chunk.
@@ -160,16 +178,37 @@ test('seedStarterAgents: seeds a fleet once and is idempotent', () => {
     const db = open({ path: join(dir, 'g.db') });
     const reg = createAgentRegistry(db);
     seedStarterAgents(reg);
-    const names = reg.list().map((a) => a.name).sort();
-    assert.deepEqual(names, ['critic', 'planner', 'researcher', 'writer']);
-    // The planner is the heavy delegator.
-    const planner = reg.getByName('planner')!;
-    assert.equal(planner.profile, 'reason');
-    assert.equal(planner.canDelegate, true);
+    const names = reg
+      .list()
+      .map((a) => a.name)
+      .sort();
+    assert.deepEqual(names, ['critic', 'orchestrator', 'researcher', 'writer']);
+    // The orchestrator is the heavy delegator and can choose any fleet agent.
+    const orchestrator = reg.getByName('orchestrator')!;
+    assert.equal(orchestrator.profile, 'reason');
+    assert.equal(orchestrator.canDelegate, true);
+    assert.deepEqual(orchestrator.delegatableAgents, []);
 
     // Running again is a no-op (so deleting a starter agent sticks).
     seedStarterAgents(reg);
     assert.equal(reg.list().length, 4);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('seedStarterAgents: adds the orchestrator to an existing fleet once', () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const reg = createAgentRegistry(db);
+    reg.create({ name: 'specialist', systemPrompt: 'x' });
+    seedStarterAgents(reg);
+    assert.ok(reg.getByName('orchestrator'));
+    assert.equal(reg.list().length, 2);
+    seedStarterAgents(reg);
+    assert.equal(reg.list().length, 2);
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -197,14 +236,23 @@ test('filterToolRegistry: scopes by tool name or extension and fails closed on e
 
   // Allow by extension name.
   const byExt = filterToolRegistry(base, agentToolPredicate(['extA']));
-  assert.deepEqual(byExt.list().map((h) => h.name), ['echo']);
-  assert.deepEqual(byExt.schemas().map((s) => s.function.name), ['echo']);
+  assert.deepEqual(
+    byExt.list().map((h) => h.name),
+    ['echo'],
+  );
+  assert.deepEqual(
+    byExt.schemas().map((s) => s.function.name),
+    ['echo'],
+  );
   assert.equal(byExt.get('secret'), undefined);
 
   // A hidden tool must fail closed even if its name is forced past the manifest
   // — this is the guard that stops a delegated worker reaching a tool outside
   // its grant via an auto-routed/forced call.
-  const res = await byExt.execute({ id: 'x', name: 'secret', arguments: {} }, { log: silentLogger() });
+  const res = await byExt.execute(
+    { id: 'x', name: 'secret', arguments: {} },
+    { log: silentLogger() },
+  );
   assert.equal(res.ok, false);
   assert.match(res.output, /not available/);
 
@@ -253,13 +301,92 @@ test('AgentRuntime: runs a task headlessly, honors the persona prompt + profile,
 
     // Transcript landed under the reserved virtual chat id.
     const msgs = db
-      .prepare(
-        `SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id`,
-      )
+      .prepare(`SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id`)
       .all(persisted.conversationId) as Array<{ role: string; content: string }>;
-    assert.deepEqual(msgs.map((m) => m.role), ['user', 'assistant']);
+    assert.deepEqual(
+      msgs.map((m) => m.role),
+      ['user', 'assistant'],
+    );
     assert.equal(msgs[0]!.content, 'Plan my week');
 
+    await runtime.shutdown();
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AgentRuntime: delegating agents see the allowed live roster in their prompt', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const reg = createAgentRegistry(db);
+    const llm = fakeLlm([textStream(['ok'])]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    const runtime = createAgentRuntime({
+      db,
+      llm,
+      tools,
+      log: silentLogger(),
+      registry: reg,
+      ownerUserId: 42,
+    });
+    const orchestrator = reg.create({
+      name: 'orchestrator',
+      systemPrompt: 'Coordinate work.',
+      canDelegate: true,
+      delegatableAgents: [],
+      toolAllowlist: [],
+    });
+    reg.create({
+      name: 'researcher',
+      role: 'Finds facts',
+      systemPrompt: 'research',
+      toolAllowlist: [],
+    });
+    reg.create({ name: 'writer', role: 'Writes prose', systemPrompt: 'write', toolAllowlist: [] });
+    const task = reg.enqueue({ agentId: orchestrator.id, prompt: 'make a plan' });
+
+    await runtime.runTask(task.id);
+    const system = llm.calls[0]!.messages[0]!.content;
+    assert.match(system, /Available delegate agents/);
+    assert.match(system, /researcher: Finds facts/);
+    assert.match(system, /writer: Writes prose/);
+    assert.doesNotMatch(system, /orchestrator:/);
+    await runtime.shutdown();
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AgentRuntime: cancelling a running task aborts the active orchestrator turn', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const reg = createAgentRegistry(db);
+    const llm = fakeLlm([() => abortableStream(llm.calls[0]?.signal)]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    const runtime = createAgentRuntime({
+      db,
+      llm,
+      tools,
+      log: silentLogger(),
+      registry: reg,
+      ownerUserId: 42,
+    });
+    const agent = reg.create({ name: 'worker', systemPrompt: 'work', toolAllowlist: [] });
+    const task = reg.enqueue({ agentId: agent.id, prompt: 'slow work' });
+
+    const running = runtime.runTask(task.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(runtime.cancelTask(task.id), true);
+    const result = await running;
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error, AGENT_TASK_CANCELLED_MESSAGE);
+    assert.equal(reg.getTask(task.id)?.status, 'cancelled');
+    assert.equal(llm.calls[0]?.signal?.aborted, true);
     await runtime.shutdown();
     db.close();
   } finally {

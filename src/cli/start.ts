@@ -38,6 +38,7 @@ import {
 } from '../core/agents.js';
 import { createAgentQueue } from '../core/agent-queue.js';
 import { setupAgentDelegation } from '../core/agent-delegation.js';
+import { setupAgentSchedules } from '../core/agent-schedules.js';
 import type { Tier } from './profiles.js';
 import {
   createExtensionLoader,
@@ -396,6 +397,13 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     queue: agentQueue,
     log,
   });
+  setupAgentSchedules({
+    db,
+    scheduler,
+    registry: agentRegistry,
+    queue: agentQueue,
+    log,
+  });
   // Pick up any queued/re-queued work now that the engine is live.
   agentQueue.notify();
 
@@ -479,7 +487,9 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
         if (!owns) continue;
         let preview: string;
         try {
-          preview = handler.confirmPrompt ? handler.confirmPrompt(args) : `Run \`${handler.name}\`?`;
+          preview = handler.confirmPrompt
+            ? handler.confirmPrompt(args)
+            : `Run \`${handler.name}\`?`;
         } catch {
           preview = `Run \`${handler.name}\`?`;
         }

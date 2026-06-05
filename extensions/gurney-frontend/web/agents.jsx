@@ -43,18 +43,22 @@ function textToList(text) {
 function AgentsTab() {
   const [agents, setAgents] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [schedules, setSchedules] = useState([]);
   const [editing, setEditing] = useState(null); // agent object or EMPTY_AGENT when creating
   const [dispatchFor, setDispatchFor] = useState(null); // agent to dispatch to
+  const [scheduleFor, setScheduleFor] = useState(null); // agent preselected for scheduling; null = choose in modal
   const [openTask, setOpenTask] = useState(null); // task id whose detail is open
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
-    const [a, t] = await Promise.all([
+    const [a, t, s] = await Promise.all([
       window.api.get('/api/agents'),
       window.api.get('/api/agents/tasks'),
+      window.api.get('/api/agents/schedules'),
     ]);
     if (a.ok) setAgents(a.data.agents || []);
     if (t.ok) setTasks(t.data.tasks || []);
+    if (s.ok) setSchedules(s.data.schedules || []);
   }, []);
 
   useEffect(() => {
@@ -93,14 +97,45 @@ function AgentsTab() {
     load();
   };
 
+  const cancelTask = async (task) => {
+    if (!task || !['queued', 'running'].includes(task.status)) return;
+    await window.api.post(`/api/agents/tasks/${task.id}/cancel`);
+    load();
+  };
+
+  const createSchedule = async (draft) => {
+    setError('');
+    const r = await window.api.post('/api/agents/schedules', draft);
+    if (!r.ok) {
+      setError(r.error || 'Schedule failed');
+      return;
+    }
+    setScheduleFor(null);
+    load();
+  };
+
+  const removeSchedule = async (schedule) => {
+    await fetchDelete(`/api/agents/schedules/${schedule.id}`);
+    load();
+  };
+
   return (
     <div style={{ maxWidth: 1040, margin: '0 auto', width: '100%' }}>
       <window.SectionTitle
         sub="Define personas, dispatch tasks, and watch them run. One heavy reasoning model runs at a time — tiny models can run in parallel."
         right={
-          <window.Button icon="plus" variant="primary" onClick={() => setEditing({ ...EMPTY_AGENT })}>
-            New agent
-          </window.Button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <window.Button icon="send" variant="subtle" onClick={() => setScheduleFor({})}>
+              Schedule
+            </window.Button>
+            <window.Button
+              icon="plus"
+              variant="primary"
+              onClick={() => setEditing({ ...EMPTY_AGENT })}
+            >
+              New agent
+            </window.Button>
+          </div>
         }
       >
         Agents
@@ -135,13 +170,19 @@ function AgentsTab() {
               onEdit={() => setEditing(a)}
               onDelete={() => removeAgent(a)}
               onDispatch={() => setDispatchFor(a)}
+              onSchedule={() => setScheduleFor(a)}
             />
           ))}
         </div>
       )}
 
       <window.SectionTitle sub="Most recent runs across all agents.">Tasks</window.SectionTitle>
-      <TaskList tasks={tasks} onOpen={(id) => setOpenTask(id)} />
+      <TaskList tasks={tasks} onOpen={(id) => setOpenTask(id)} onCancel={cancelTask} />
+
+      <window.SectionTitle sub="Timed one-shot and recurring agent work.">
+        Schedules
+      </window.SectionTitle>
+      <ScheduleList schedules={schedules} onDelete={removeSchedule} />
 
       {editing && (
         <AgentEditor
@@ -159,12 +200,29 @@ function AgentsTab() {
           onDispatch={(p) => dispatch(dispatchFor, p)}
         />
       )}
-      {openTask != null && <TaskDetail taskId={openTask} onClose={() => setOpenTask(null)} />}
+      {scheduleFor && (
+        <ScheduleModal
+          agents={agents}
+          initialAgent={scheduleFor.id ? scheduleFor : null}
+          onClose={() => setScheduleFor(null)}
+          onSchedule={createSchedule}
+        />
+      )}
+      {openTask != null && (
+        <TaskDetail
+          taskId={openTask}
+          onClose={() => setOpenTask(null)}
+          onCancelled={() => {
+            setOpenTask(null);
+            load();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function AgentCard({ agent, onEdit, onDelete, onDispatch }) {
+function AgentCard({ agent, onEdit, onDelete, onDispatch, onSchedule }) {
   const tools =
     agent.toolAllowlist === null
       ? 'all tools'
@@ -178,16 +236,25 @@ function AgentCard({ agent, onEdit, onDelete, onDispatch }) {
         <window.Badge tone="accent">{agent.profile}</window.Badge>
         <window.Badge tone="neutral">{agent.executionMode}</window.Badge>
       </div>
-      {agent.role && (
-        <div style={{ fontSize: 13, color: 'var(--text-2)' }}>{agent.role}</div>
-      )}
-      <div style={{ fontSize: 12.5, color: 'var(--text-3)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      {agent.role && <div style={{ fontSize: 13, color: 'var(--text-2)' }}>{agent.role}</div>}
+      <div
+        style={{
+          fontSize: 12.5,
+          color: 'var(--text-3)',
+          display: 'flex',
+          gap: 8,
+          flexWrap: 'wrap',
+        }}
+      >
         <span>{tools}</span>
         {agent.canDelegate && <window.Badge tone="warn">can delegate</window.Badge>}
       </div>
       <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
         <window.Button size="sm" variant="primary" icon="send" onClick={onDispatch}>
           Dispatch
+        </window.Button>
+        <window.Button size="sm" variant="subtle" icon="send" onClick={onSchedule}>
+          Schedule
         </window.Button>
         <window.Button size="sm" variant="subtle" icon="gear" onClick={onEdit}>
           Edit
@@ -198,7 +265,7 @@ function AgentCard({ agent, onEdit, onDelete, onDispatch }) {
   );
 }
 
-function TaskList({ tasks, onOpen }) {
+function TaskList({ tasks, onOpen, onCancel }) {
   if (tasks.length === 0) {
     return (
       <window.Card>
@@ -209,9 +276,8 @@ function TaskList({ tasks, onOpen }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {tasks.map((t) => (
-        <button
+        <div
           key={t.id}
-          onClick={() => onOpen(t.id)}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -224,14 +290,56 @@ function TaskList({ tasks, onOpen }) {
             cursor: 'pointer',
           }}
         >
-          <window.Badge tone={STATUS_TONE[t.status] || 'neutral'}>{t.status}</window.Badge>
-          <span style={{ fontWeight: 600, fontSize: 13, minWidth: 90 }}>{t.agentName || `#${t.agentId}`}</span>
-          <span style={{ flex: 1, fontSize: 13, color: 'var(--text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {t.parentId ? '↳ ' : ''}
-            {t.prompt}
-          </span>
-          <span style={{ fontSize: 11.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>#{t.id}</span>
-        </button>
+          <button
+            onClick={() => onOpen(t.id)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              minWidth: 0,
+              flex: 1,
+              border: 0,
+              background: 'transparent',
+              color: 'inherit',
+              padding: 0,
+              textAlign: 'left',
+              cursor: 'pointer',
+            }}
+          >
+            <window.Badge tone={STATUS_TONE[t.status] || 'neutral'}>{t.status}</window.Badge>
+            <span style={{ fontWeight: 600, fontSize: 13, minWidth: 90 }}>
+              {t.agentName || `#${t.agentId}`}
+            </span>
+            <span
+              style={{
+                flex: 1,
+                fontSize: 13,
+                color: 'var(--text-2)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {t.parentId ? '↳ ' : ''}
+              {t.prompt}
+            </span>
+            <span
+              style={{ fontSize: 11.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}
+            >
+              #{t.id}
+            </span>
+          </button>
+          {['queued', 'running'].includes(t.status) && (
+            <window.Button
+              size="sm"
+              variant="subtle"
+              icon="stop"
+              danger
+              onClick={() => onCancel(t)}
+              title="Stop task"
+            />
+          )}
+        </div>
       ))}
     </div>
   );
@@ -249,13 +357,20 @@ function DispatchModal({ agent, onClose, onDispatch }) {
           <window.Button variant="subtle" onClick={onClose}>
             Cancel
           </window.Button>
-          <window.Button variant="primary" icon="send" disabled={!prompt.trim()} onClick={() => onDispatch(prompt.trim())}>
+          <window.Button
+            variant="primary"
+            icon="send"
+            disabled={!prompt.trim()}
+            onClick={() => onDispatch(prompt.trim())}
+          >
             Dispatch
           </window.Button>
         </>
       }
     >
-      <window.Label hint="The agent runs this in the background; watch it under Tasks.">Task</window.Label>
+      <window.Label hint="The agent runs this in the background; watch it under Tasks.">
+        Task
+      </window.Label>
       <textarea
         autoFocus
         value={prompt}
@@ -273,6 +388,172 @@ function DispatchModal({ agent, onClose, onDispatch }) {
           font: 'inherit',
         }}
       />
+    </window.Modal>
+  );
+}
+
+function localDateTimeValue(ms) {
+  const d = new Date(ms);
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function parseLocalDateTime(value) {
+  const t = Date.parse(value);
+  return Number.isNaN(t) ? null : t;
+}
+
+function ScheduleList({ schedules, onDelete }) {
+  if (schedules.length === 0) {
+    return (
+      <window.Card>
+        <div style={{ color: 'var(--text-3)', fontSize: 14 }}>No schedules yet.</div>
+      </window.Card>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 26 }}>
+      {schedules.map((s) => (
+        <div
+          key={s.id}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '10px 14px',
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+          }}
+        >
+          <window.Badge tone={s.active ? 'accent' : 'neutral'}>
+            {s.active ? s.recurrence : 'done'}
+          </window.Badge>
+          <span style={{ fontWeight: 600, fontSize: 13, minWidth: 130 }}>
+            {(s.agentNames || []).join(', ')}
+          </span>
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: 13,
+              color: 'var(--text-2)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {s.prompt}
+          </span>
+          <span style={{ fontSize: 11.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+            {new Date(s.nextRunAt).toLocaleString()}
+          </span>
+          <window.Button size="sm" variant="subtle" icon="trash" onClick={() => onDelete(s)} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ScheduleModal({ agents, initialAgent, onClose, onSchedule }) {
+  const [selected, setSelected] = useState(() => (initialAgent ? [initialAgent.id] : []));
+  const [prompt, setPrompt] = useState('');
+  const [when, setWhen] = useState(() => localDateTimeValue(Date.now() + 60 * 60_000));
+  const [recurrence, setRecurrence] = useState('once');
+  const toggleAgent = (id) =>
+    setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  const nextRunAt = parseLocalDateTime(when);
+  const invalidTime = nextRunAt === null || nextRunAt <= Date.now();
+  return (
+    <window.Modal
+      open
+      onClose={onClose}
+      width={560}
+      title="Schedule agents"
+      footer={
+        <>
+          <window.Button variant="subtle" onClick={onClose}>
+            Cancel
+          </window.Button>
+          <window.Button
+            variant="primary"
+            icon="send"
+            disabled={selected.length === 0 || !prompt.trim() || invalidTime}
+            onClick={() =>
+              onSchedule({
+                agentIds: selected,
+                prompt: prompt.trim(),
+                nextRunAt,
+                recurrence,
+              })
+            }
+          >
+            Schedule
+          </window.Button>
+        </>
+      }
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <Field label="Agents">
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {agents.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => toggleAgent(a.id)}
+                style={{
+                  padding: '7px 10px',
+                  borderRadius: 'var(--radius-sm)',
+                  border: `1px solid ${selected.includes(a.id) ? 'var(--accent)' : 'var(--border)'}`,
+                  background: selected.includes(a.id) ? 'var(--accent-soft)' : 'var(--surface-2)',
+                  color: 'var(--text)',
+                  cursor: 'pointer',
+                  font: 'inherit',
+                  fontSize: 13,
+                }}
+              >
+                {a.name}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Task">
+          <textarea
+            autoFocus
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={4}
+            placeholder="e.g. Run my morning briefing and draft today's priorities"
+            style={{
+              width: '100%',
+              resize: 'vertical',
+              padding: '10px 12px',
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--border)',
+              background: 'var(--surface-2)',
+              color: 'var(--text)',
+              font: 'inherit',
+            }}
+          />
+        </Field>
+        <Row>
+          <Field label="Date and time">
+            <window.Input
+              type="datetime-local"
+              value={when}
+              min={localDateTimeValue(Date.now() + 60_000)}
+              onChange={(e) => setWhen(e.target.value)}
+            />
+          </Field>
+          <Field label="Repeat">
+            <window.Select value={recurrence} onChange={(e) => setRecurrence(e.target.value)}>
+              <option value="once">once</option>
+              <option value="daily">daily</option>
+              <option value="weekly">weekly</option>
+            </window.Select>
+          </Field>
+        </Row>
+      </div>
     </window.Modal>
   );
 }
@@ -313,7 +594,11 @@ function AgentEditor({ initial, agents, onClose, onSave, error }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <Row>
           <Field label="Name">
-            <window.Input value={d.name} onChange={(e) => set('name', e.target.value)} placeholder="researcher" />
+            <window.Input
+              value={d.name}
+              onChange={(e) => set('name', e.target.value)}
+              placeholder="researcher"
+            />
           </Field>
           <Field label="Model profile" hint="reason = heavy 9B; chat/tools = tiny">
             <window.Select value={d.profile} onChange={(e) => set('profile', e.target.value)}>
@@ -324,7 +609,11 @@ function AgentEditor({ initial, agents, onClose, onSave, error }) {
           </Field>
         </Row>
         <Field label="Role" hint="One line; shown on the card.">
-          <window.Input value={d.role} onChange={(e) => set('role', e.target.value)} placeholder="Gathers facts from the web" />
+          <window.Input
+            value={d.role}
+            onChange={(e) => set('role', e.target.value)}
+            placeholder="Gathers facts from the web"
+          />
         </Field>
         <Field label="System prompt">
           <textarea
@@ -359,7 +648,10 @@ function AgentEditor({ initial, agents, onClose, onSave, error }) {
         </Field>
         <Row>
           <Field label="Execution mode" hint="sequential = one of its tasks at a time">
-            <window.Select value={d.executionMode} onChange={(e) => set('executionMode', e.target.value)}>
+            <window.Select
+              value={d.executionMode}
+              onChange={(e) => set('executionMode', e.target.value)}
+            >
               <option value="sequential">sequential</option>
               <option value="parallel">parallel</option>
             </window.Select>
@@ -383,8 +675,15 @@ function AgentEditor({ initial, agents, onClose, onSave, error }) {
             />
           </Field>
         </Row>
-        <Field label="Delegation" hint="Allow this agent to spawn sub-agents (the spawn_agent tool).">
-          <window.Toggle checked={!!d.canDelegate} onChange={(v) => set('canDelegate', v)} label="Can delegate" />
+        <Field
+          label="Delegation"
+          hint="Allow this agent to spawn sub-agents (the spawn_agent tool)."
+        >
+          <window.Toggle
+            checked={!!d.canDelegate}
+            onChange={(v) => set('canDelegate', v)}
+            label="Can delegate"
+          />
         </Field>
         {d.canDelegate && (
           <Field
@@ -403,7 +702,7 @@ function AgentEditor({ initial, agents, onClose, onSave, error }) {
   );
 }
 
-function TaskDetail({ taskId, onClose }) {
+function TaskDetail({ taskId, onClose, onCancelled }) {
   const [detail, setDetail] = useState(null);
   const load = useCallback(async () => {
     const r = await window.api.get(`/api/agents/tasks/${taskId}`);
@@ -419,7 +718,7 @@ function TaskDetail({ taskId, onClose }) {
   const running = task && (task.status === 'queued' || task.status === 'running');
   const cancel = async () => {
     await window.api.post(`/api/agents/tasks/${taskId}/cancel`);
-    load();
+    onCancelled ? onCancelled() : load();
   };
 
   return (
@@ -430,9 +729,9 @@ function TaskDetail({ taskId, onClose }) {
       title={detail ? `Task #${task.id} · ${detail.agentName || ''}` : 'Task'}
       footer={
         <>
-          {task && task.status === 'queued' && (
-            <window.Button variant="subtle" icon="stop" onClick={cancel}>
-              Cancel
+          {task && ['queued', 'running'].includes(task.status) && (
+            <window.Button variant="subtle" icon="stop" danger onClick={cancel}>
+              Stop
             </window.Button>
           )}
           <window.Button variant="primary" onClick={onClose}>
@@ -448,11 +747,15 @@ function TaskDetail({ taskId, onClose }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <window.Badge tone={STATUS_TONE[task.status] || 'neutral'}>{task.status}</window.Badge>
             {running && <window.StatusDot state="starting" size={9} pulse />}
-            {task.depth > 0 && <window.Badge tone="neutral">sub-agent · depth {task.depth}</window.Badge>}
+            {task.depth > 0 && (
+              <window.Badge tone="neutral">sub-agent · depth {task.depth}</window.Badge>
+            )}
           </div>
           <div>
             <window.Label>Prompt</window.Label>
-            <div style={{ fontSize: 13.5, color: 'var(--text-2)', whiteSpace: 'pre-wrap' }}>{task.prompt}</div>
+            <div style={{ fontSize: 13.5, color: 'var(--text-2)', whiteSpace: 'pre-wrap' }}>
+              {task.prompt}
+            </div>
           </div>
           {task.error && (
             <div>
@@ -465,9 +768,21 @@ function TaskDetail({ taskId, onClose }) {
               <window.Label>Sub-agents</window.Label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {detail.children.map((c) => (
-                  <div key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
-                    <window.Badge tone={STATUS_TONE[c.status] || 'neutral'}>{c.status}</window.Badge>
-                    <span style={{ color: 'var(--text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <div
+                    key={c.id}
+                    style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}
+                  >
+                    <window.Badge tone={STATUS_TONE[c.status] || 'neutral'}>
+                      {c.status}
+                    </window.Badge>
+                    <span
+                      style={{
+                        color: 'var(--text-2)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
                       {c.prompt}
                     </span>
                   </div>
@@ -501,7 +816,14 @@ function TaskDetail({ taskId, onClose }) {
                     whiteSpace: 'pre-wrap',
                   }}
                 >
-                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase' }}>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      color: 'var(--text-3)',
+                      textTransform: 'uppercase',
+                    }}
+                  >
                     {m.role}
                   </span>
                   <div style={{ color: 'var(--text-2)', marginTop: 2 }}>{m.content}</div>
