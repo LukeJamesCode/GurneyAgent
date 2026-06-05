@@ -27,7 +27,7 @@ import {
 } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
-import { freemem, networkInterfaces, tmpdir, totalmem } from 'node:os';
+import { cpus, freemem, networkInterfaces, tmpdir, totalmem } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -461,6 +461,31 @@ function suggestTier(): { tier: GurneyConfig['tier']; ramGb: number } {
   return { tier, ramGb };
 }
 
+// Whole-machine CPU busy %, sampled from os.cpus() time counters. A single
+// reading is meaningless (counters are cumulative since boot), so we diff
+// against the previous reading; with the panel polling /api/state every few
+// seconds the delta covers exactly that interval. The first call has no
+// baseline and reports the last known value (0 until the second poll).
+let prevCpu: { idle: number; total: number } | null = null;
+let lastCpuPercent = 0;
+function sampleCpuPercent(): number {
+  let idle = 0;
+  let total = 0;
+  for (const c of cpus()) {
+    for (const t of Object.values(c.times)) total += t;
+    idle += c.times.idle;
+  }
+  if (prevCpu) {
+    const idleDelta = idle - prevCpu.idle;
+    const totalDelta = total - prevCpu.total;
+    if (totalDelta > 0) {
+      lastCpuPercent = Math.max(0, Math.min(100, Math.round((1 - idleDelta / totalDelta) * 100)));
+    }
+  }
+  prevCpu = { idle, total };
+  return lastCpuPercent;
+}
+
 async function buildState(): Promise<unknown> {
   const home = homeDir();
   let cfg: GurneyConfig | null = null;
@@ -486,6 +511,25 @@ async function buildState(): Promise<unknown> {
   const metrics = readMetrics(metricsFilePath(home));
   const { tier: suggestedTier, ramGb } = suggestTier();
   const fe = frontendSettings();
+
+  // Live agent-engine load, read straight from the task table the daemon's
+  // queue drains. queueDepth is work waiting or in flight; errors24h backs the
+  // dashboard's "Errors (24h)" stat and its red run-log rows.
+  const taskStats = withDb((db) => {
+    const queued = (
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM agent_tasks WHERE status IN ('queued', 'running')`)
+        .get() as { n: number }
+    ).n;
+    const errors = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM agent_tasks WHERE status = 'error' AND finished_at >= ?`,
+        )
+        .get(Date.now() - 24 * 60 * 60 * 1000) as { n: number }
+    ).n;
+    return { queueDepth: queued, errors24h: errors };
+  }) ?? { queueDepth: 0, errors24h: 0 };
 
   // Real daemon activity, sourced from the metrics snapshot the daemon writes
   // under ~/.gurney/ every ~60s (see src/core/metrics.ts). The panel runs in a
@@ -536,7 +580,14 @@ async function buildState(): Promise<unknown> {
       needsSetup,
     },
     proactive: fe['proactive'] !== 'false',
-    queueDepth: 0,
+    queueDepth: taskStats.queueDepth,
+    // Real machine + engine load for the dashboard's System Health panel.
+    system: {
+      cpuPercent: sampleCpuPercent(),
+      ramPercent: Math.max(0, Math.min(100, Math.round((1 - freemem() / totalmem()) * 100))),
+      queueDepth: taskStats.queueDepth,
+      errors24h: taskStats.errors24h,
+    },
     scheduler: metrics
       ? { jobs: metrics.scheduler.jobsRegistered, nudgesSent: metrics.scheduler.nudgesSent }
       : null,

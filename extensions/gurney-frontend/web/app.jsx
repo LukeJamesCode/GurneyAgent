@@ -262,7 +262,9 @@ function App() {
         {offline && <OfflineBar onRetry={refresh} />}
         {state.cfgError && <ConfigErrorBar message={state.cfgError} />}
         <div className="content-shell">
-          {route === 'dashboard' && <window.DashboardTab />}
+          {route === 'dashboard' && (
+            <window.DashboardTab state={state} onConfigureAgents={() => setRoute('agents')} />
+          )}
           {route === 'history' && <window.HistoryTab />}
           {route === 'chat' && (
             <window.ChatHub
@@ -636,42 +638,7 @@ function Sidebar({
         />
       )}
       <div style={{ flex: 1 }} />
-      <div
-        style={{
-          padding: '12px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          marginTop: '10px',
-          background: 'var(--surface)',
-          borderRadius: '10px',
-          border: '1px solid var(--border)',
-          margin: '0 10px 10px 10px',
-        }}
-      >
-        <div
-          style={{
-            width: '32px',
-            height: '32px',
-            borderRadius: '50%',
-            background: '#448AFF',
-            color: '#fff',
-            display: 'grid',
-            placeItems: 'center',
-            fontWeight: 'bold',
-            fontSize: '13px',
-          }}
-        >
-          AB
-        </div>
-        <div style={{ flex: 1, lineHeight: '1.2' }}>
-          <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text)' }}>
-            Alec Brown
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-3)' }}>Owner</div>
-        </div>
-        <window.Icon name="chevron-down" size={14} style={{ color: 'var(--text-2)' }} />
-      </div>
+
       <div
         style={{
           padding: '0 12px 12px',

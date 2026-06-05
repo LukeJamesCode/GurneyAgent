@@ -539,6 +539,19 @@ a {
 .dash-card.yellow-border {
   border-color: color-mix(in oklab, var(--warn) 40%, transparent);
 }
+.dash-card.clickable {
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.dash-card.clickable:hover {
+  border-color: var(--border-2);
+}
+.dash-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 
 .card-header {
   display: flex;
@@ -789,6 +802,55 @@ a {
   height: 18px;
   display: grid;
   place-items: center;
+}
+
+/* Tone variants used by the live dashboard (status dots, labels, progress
+   bars, card icons, log text) beyond the green/yellow the mockup hardcoded. */
+.dot.blue {
+  background: var(--info);
+  box-shadow: 0 0 6px var(--info);
+}
+.dot.red {
+  background: var(--err);
+  box-shadow: 0 0 6px var(--err);
+}
+.dot.gray {
+  background: var(--text-3);
+}
+.status-label.blue {
+  color: var(--info);
+}
+.status-label.red {
+  color: var(--err);
+}
+.status-label.gray {
+  color: var(--text-3);
+}
+.progress-fill.red {
+  background: var(--err);
+}
+.progress-fill.yellow {
+  background: var(--warn);
+}
+.progress-fill.gray {
+  background: var(--text-3);
+}
+.card-icon.yellow {
+  background: color-mix(in oklab, var(--warn) 15%, transparent);
+  color: var(--warn);
+}
+.card-icon.gray {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.status-check.red {
+  background: var(--err);
+}
+.red-text {
+  color: var(--err);
+}
+.blue-text {
+  color: var(--info);
 }
 
 .dash-bottom-grid {
