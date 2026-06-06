@@ -29,6 +29,10 @@ export function register(host: Host, options: RegisterOptions = {}): void {
   registerVoiceIn(host);
 
   host.telegram.afterReply(async ({ chatId, text, log }) => {
+    // Discord chat IDs are <= -8_000_000_000_001. We do not support sending
+    // Telegram voice notes to Discord chat IDs.
+    if (chatId <= -8000000000001) return;
+
     const fallback = Boolean(host.settings.get<boolean>('default_enabled', false));
     if (!getPref(host.db, chatId, fallback)) return;
 
