@@ -11,7 +11,15 @@ import {
 } from '@discordjs/voice';
 import prism from 'prism-media';
 import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
 import { mkdtempSync, createWriteStream, rmSync } from 'node:fs';
+
+class SilencingReadable extends Readable {
+  _read() {
+    this.push(Buffer.from([0xf8, 0xff, 0xfe]));
+    this.push(null);
+  }
+}
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Logger } from '../../../src/util/log.js';
@@ -63,15 +71,23 @@ export class VoiceManager {
     });
 
     const player = createAudioPlayer();
+    player.on('error', (e) => {
+      this.log.warn('audio player error', { error: e.message });
+    });
     connection.subscribe(player);
     this.players.set(guildId, player);
     this.channelToGuild.set(channelId, guildId);
 
     connection.receiver.speaking.on('start', (userId) => {
+      this.log.info('speaking event received', { userId });
       this.handleUserSpeaking(connection, guildId, channelId, userId).catch((e) => {
         this.log.warn('error handling user speaking', { error: e instanceof Error ? e.message : String(e) });
       });
     });
+
+    // Send a silent frame immediately to open the Discord UDP socket for receiving audio.
+    const silentResource = createAudioResource(new SilencingReadable(), { inputType: StreamType.OggOpus });
+    player.play(silentResource);
   }
 
   public leaveVoiceChannel(guildId: string): void {
