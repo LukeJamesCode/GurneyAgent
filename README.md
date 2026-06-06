@@ -166,84 +166,29 @@ To report a security issue, follow the process in [SECURITY.md](./SECURITY.md) �
 
 Gurney is the public, clean-room successor to a private homelab agent called **ATLAS v2**. Coming from there? See [Migrating from ATLAS](./docs/04-operations-and-troubleshooting.md#migrating-from-atlas-v2).
 
-## Roadmap
-
-Gurney 1.0 is the stable baseline. The 1.x line below is grouped into coherent releases — each version is a theme rather than a dumping ground. Versions are targets, not promises; order may shift as priorities settle.
-
-### Returning from pre-1.0
-
-Two extensions shipped during the 0.x line and were pulled before 1.0 to keep the public release lean. They're slated to return as official extensions, rebuilt against the stable host API:
-
-| Extension          | What it does                                              | Target |
-| ------------------ | --------------------------------------------------------- | ------ |
-| `gurney-websearch` | Web search as an LLM tool (DuckDuckGo / SearXNG)          | v1.4   |
-| `gurney-memgraph`  | Long-term graph memory (FalkorDB / Graphiti, heavy tier)  | v1.4   |
-
-### v1.1 — Surfaces I: web UI + voice in
-
-- **Optional web UI extension** — strictly opt-in, terminal-first remains the default. Useful for browsing histories, editing config, and managing extensions on the LAN without a Telegram round-trip.
-- **`gurney-stt` (voice input)** — local Whisper.cpp / Vosk transcription so Telegram voice notes flow into the chat loop as normal user turns.
-
-### v1.2 — Multi-provider engine
-
-- **Pluggable LLM providers** — first-class backends for Anthropic, OpenAI, Google, OpenRouter, and friends, alongside the default local Ollama. Per-profile routing (chat vs. reason vs. tools).
-- **Subscription-based auth** — reuse an existing paid plan (Codex / ChatGPT / Claude sub auth and equivalents) instead of minting an API key. Tokens stay in `~/.gurney` with the rest of your secrets.
-- **Hybrid routing policy** — "cheap local first, escalate to cloud on hard turns" with per-chat budgets and an audit trail of which provider answered each turn.
-
-Local Ollama remains the default. Cloud providers stay strictly opt-in.
-
-### v1.3 — Surfaces II: vision + Discord
-
-- **`gurney-vision`** — local VLM (LLaVA-class) so the model can answer about images sent through whichever surface you use.
-- **Discord adapter** — second chat surface as an official extension, same host API as the Telegram adapter.
-- **Gemma 4 support** — able to choose gemma 4 models over qwen3.5.
-
-### v1.4 — The returning extensions + streaming
-
-- **`gurney-websearch` ** — DuckDuckGo + SearXNG aggregator, with optional Brave / Kagi backends and a clean cite-as-you-answer prompt fragment.
-- **`gurney-memgraph` ** — long-term graph memory, rebuilt against the stable 1.0 host API. Heavy tier only.
-- **Streaming Telegram replies** — token-by-token edits instead of one-shot send, so long answers feel live.
-
-### v1.5 — Data trust release
-
+## What's Planned for Gurney?
+- **Gurney-browser-use**  — and extention for similar use as claude chrome
+- **Gurney IOS/Android App**  — controll gurney from anywhere
+- **Gurney Windows/Mac App**  — gurney control built into your OS possible computer use 
+- **gurney project manager**  — an extention for gurney to help you build your projects start to end
+- **Long-term memory extention**  — long-term graph memory, rebuilt against the stable 1.0 host API. Heavy tier only.
+- **Claude api support**  — use a claude api with gurney
+- **Gemma model support**  — use a gemma models with gurney locally
+- **Gurney-tudor upgrades**  — various upgrades to match or beat google's notebooklm
+- **various gurney hardware products**  — no hints, not required to use gurney just useful.
+- **vison model support**  — use the vison abilites of models like qwen3.5
 - **Conversation export / import** — Markdown + JSON, per-chat or per-thread.
 - **Auto-update on a cadence** — `gurney update --auto` with an opt-in systemd timer.
 - **Encrypted secrets at rest** — wrap `~/.gurney/config.json` and OAuth tokens with a keyring or passphrase-derived key.
 - **Backup & restore** — one command to snapshot SQLite + config to a local path or S3-compatible bucket, and one command to restore.
-
-### v1.6 — Information extensions
-
-A coherent "pull the outside world in" release.
-
-- **`gurney-files`** — local RAG over a chosen folder of notes, PDFs, or scans.
-- **`gurney-email`** — IMAP triage, draft writer, and "summarise overnight" rolled into briefings.
-- **`gurney-rss`** — feed reader + daily digest that plugs into the briefing pipeline.
-- **more small model support** — able to choose more local models from new labs.
-
-### v1.7 — Homelab tier
-
-For the people running Gurney next to their rack.
-
-- **`gurney-homeassistant`** — Home Assistant REST/WebSocket bridge.
-- **`gurney-shell`** — sandboxed shell runner with command allowlists.
-- **`gurney-code`** — git / repo helper: `/diff`, `/lastcommit`, "review this branch".
-
-### v1.8 — Money + chat reach
-
-- **`gurney-finance`** — bank-email parsing and spend summaries (the use case teased in the README table above).
+- **gurney-homeassistant** — Home Assistant REST/WebSocket bridge.
+- **gurney-code** — git / repo helper: `/diff`, `/lastcommit`, "review this branch".
 - **Matrix adapter** — third chat surface for users on self-hosted Matrix homeservers.
-
-### v1.9 — Extension ecosystem
-
-Sharpening the developer experience so third-party extensions can land safely.
-
-- **`gurney ext search <kw>`** — registry-aware discovery from the CLI.
 - **Extension signing & checksum verification** — opt-in, but a clear path for trusting third-party extensions.
 - **Extension test harness** — `gurney ext test ./my-ext` runs your extension inside a mocked host.
 
-### v2.0 — Agentic leap
-
-- **`gurney-browser`** — sandboxed browser automation, building on the agentic-safety and confused-deputy design already drafted in [`future-plans/agentic-safety-and-browser-automation.md`](./future-plans/agentic-safety-and-browser-automation.md). This is the milestone that earns the major-version bump: it changes what Gurney can *do*, not just what it can talk about, and the safety model needs to land first.
+Have an idea for an update?
+tell me in the discord!
 
 ## License
 
