@@ -8,7 +8,7 @@ import type { Scheduler } from './scheduler.js';
 import type { AgentQueue } from './agent-queue.js';
 import type { AgentRegistry, AgentTask } from './agents.js';
 
-export type AgentScheduleRecurrence = 'once' | 'daily' | 'weekly';
+export type AgentScheduleRecurrence = 'once' | 'daily' | 'weekly' | 'monthly' | 'yearly';
 
 export interface AgentSchedule {
   id: number;
@@ -82,10 +82,23 @@ function rowToSchedule(row: ScheduleRow): AgentSchedule {
 }
 
 function normalizeRecurrence(value: unknown): AgentScheduleRecurrence {
-  return value === 'daily' || value === 'weekly' ? value : 'once';
+  return value === 'daily' || value === 'weekly' || value === 'monthly' || value === 'yearly'
+    ? (value as AgentScheduleRecurrence)
+    : 'once';
 }
 
 function advanceNextRun(from: number, recurrence: AgentScheduleRecurrence, now: number): number {
+  if (recurrence === 'monthly' || recurrence === 'yearly') {
+    let next = new Date(from);
+    while (next.getTime() <= now) {
+      if (recurrence === 'monthly') {
+        next.setMonth(next.getMonth() + 1);
+      } else {
+        next.setFullYear(next.getFullYear() + 1);
+      }
+    }
+    return next.getTime();
+  }
   const step = recurrence === 'weekly' ? WEEK_MS : DAY_MS;
   let next = from + step;
   while (next <= now) next += step;

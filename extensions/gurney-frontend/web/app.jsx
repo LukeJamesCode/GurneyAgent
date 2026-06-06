@@ -12,6 +12,7 @@ const { useState, useEffect, useCallback, useRef } = React;
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: 'home' },
   { id: 'agents', label: 'Agents', icon: 'spark' },
+  { id: 'builder', label: 'Builder', icon: 'grid' },
   { id: 'history', label: 'History', icon: 'doc' },
   { id: 'learn', label: 'Learn', icon: 'spark', requiresExt: 'gurney-tudor' },
   { id: 'extensions', label: 'Extensions', icon: 'plug' },
@@ -280,6 +281,7 @@ function App() {
             <window.LearnHub agentRunning={agentStatus === 'running'} />
           )}
           {route === 'agents' && <window.AgentsTab state={state} />}
+          {route === 'builder' && <window.WorkflowBuilder state={state} />}
           {route === 'extensions' && <window.ExtensionsTab />}
           {route === 'settings' && (
             <window.SettingsTab onReRunWizard={() => setForcedView('wizard')} onSaved={refresh} />
@@ -287,6 +289,7 @@ function App() {
           {route === 'system' && (
             <window.SystemTab state={state} onReset={() => setForcedView('wizard')} />
           )}
+          {route === 'docs' && <window.DocsTab />}
         </div>
       </main>
     </div>
@@ -439,7 +442,7 @@ function Topbar({ state, setRoute }) {
             </div>
           )}
         </div>
-        <div className="icon-action">
+        <div className="icon-action" onClick={() => setRoute('docs')} style={{ cursor: 'pointer' }}>
           <window.Icon name="help-circle" size={18} />
         </div>
         <div className="icon-action" onClick={() => setRoute('settings')} style={{ cursor: 'pointer' }}>

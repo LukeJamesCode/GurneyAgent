@@ -37,7 +37,7 @@ test('legacy 0003 image migration stays immutable before visualization migration
 
   const sql = readFileSync(join(MIGRATIONS_DIR, '0003_tudor_segment_images.sql'), 'utf8');
   assert.equal(
-    createHash('sha256').update(sql).digest('hex'),
+    createHash('sha256').update(sql.replace(/\r\n/g, '\n')).digest('hex'),
     '30b5d240d6e08f23cd9f52445b709cd95bc543a5d05b1477f5b6bc6f02f36747',
   );
 });

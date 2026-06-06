@@ -62,7 +62,7 @@ export function intersectGrants(a: string[] | null, b: string[] | null): string[
 }
 
 export type AgentExecutionMode = 'sequential' | 'parallel';
-export type AgentTaskStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled';
+export type AgentTaskStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled' | 'paused';
 
 export interface AgentDefinition {
   id: number;
@@ -104,6 +104,7 @@ export interface AgentTask {
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
+  pausedUntil: number | null;
 }
 
 export interface CreateAgentInput {
@@ -206,6 +207,7 @@ interface TaskRow {
   created_at: number;
   started_at: number | null;
   finished_at: number | null;
+  paused_until: number | null;
 }
 
 function rowToTask(r: TaskRow): AgentTask {
@@ -227,6 +229,7 @@ function rowToTask(r: TaskRow): AgentTask {
     createdAt: r.created_at,
     startedAt: r.started_at,
     finishedAt: r.finished_at,
+    pausedUntil: r.paused_until ?? null,
   };
 }
 
@@ -251,7 +254,7 @@ export interface AgentRegistry {
   updateTask(
     id: number,
     patch: Partial<
-      Pick<AgentTask, 'status' | 'result' | 'error' | 'conversationId' | 'virtualChatId'>
+      Pick<AgentTask, 'status' | 'result' | 'error' | 'conversationId' | 'virtualChatId' | 'pausedUntil'>
     > & { startedAt?: number; finishedAt?: number },
   ): void;
 }
@@ -424,7 +427,7 @@ export function createAgentRegistry(db: DB): AgentRegistry {
   function updateTask(
     id: number,
     patch: Partial<
-      Pick<AgentTask, 'status' | 'result' | 'error' | 'conversationId' | 'virtualChatId'>
+      Pick<AgentTask, 'status' | 'result' | 'error' | 'conversationId' | 'virtualChatId' | 'pausedUntil'>
     > & { startedAt?: number; finishedAt?: number },
   ): void {
     const sets: string[] = [];
@@ -442,6 +445,7 @@ export function createAgentRegistry(db: DB): AgentRegistry {
       add('virtual_chat_id', 'virtual_chat_id', patch.virtualChatId);
     if (patch.startedAt !== undefined) add('started_at', 'started_at', patch.startedAt);
     if (patch.finishedAt !== undefined) add('finished_at', 'finished_at', patch.finishedAt);
+    if (patch.pausedUntil !== undefined) add('paused_until', 'paused_until', patch.pausedUntil);
     if (sets.length === 0) return;
     db.prepare(`UPDATE agent_tasks SET ${sets.join(', ')} WHERE id = @id`).run(params);
   }
@@ -822,7 +826,7 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
   function cancelTask(taskId: number): boolean {
     const task = opts.registry.getTask(taskId);
     if (!task) return false;
-    if (task.status === 'done' || task.status === 'error') return false;
+    if (task.status === 'done' || task.status === 'error' || task.status === 'paused') return false;
     if (task.status !== 'cancelled') {
       opts.registry.updateTask(taskId, {
         status: 'cancelled',

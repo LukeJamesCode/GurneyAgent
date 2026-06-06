@@ -42,6 +42,8 @@ import { createAgentQueue } from '../core/agent-queue.js';
 import { setupAgentApprovals } from '../core/agent-approvals.js';
 import { setupAgentDelegation } from '../core/agent-delegation.js';
 import { setupAgentSchedules } from '../core/agent-schedules.js';
+import { createWorkflowRegistry } from '../core/workflows.js';
+import { createWorkflowRunner } from '../core/workflow-runner.js';
 import type { Tier } from './profiles.js';
 import {
   createExtensionLoader,
@@ -424,6 +426,25 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   // Pick up any queued/re-queued work now that the engine is live.
   agentQueue.notify();
 
+  // Authored-workflow engine. Mirrors the agent queue: the panel inserts a
+  // queued workflow_runs row, and this runner polls + claims + executes them.
+  const workflowRegistry = createWorkflowRegistry(db);
+  // Re-queue any workflow runs left 'running' by a crash (same pattern as agent tasks).
+  const requeued_wf = db
+    .prepare(`UPDATE workflow_runs SET status = 'queued', started_at = NULL WHERE status = 'running'`)
+    .run().changes;
+  if (requeued_wf > 0) log.info('re-queued interrupted workflow runs', { count: requeued_wf });
+  const workflowRunner = createWorkflowRunner({
+    registry: workflowRegistry,
+    agents: agentRegistry,
+    runtime: agentRuntime,
+    tools,
+    log,
+    ownerUserId: ownerId,
+    pollMs: 2500,
+  });
+  workflowRunner.start();
+
   const telegram = createTelegram({
     token: cfg.telegram.token,
     allowedUserIds: cfg.telegram.allowedIds,
@@ -641,6 +662,11 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     }
     try {
       scheduler.stop();
+    } catch {
+      /* ignore */
+    }
+    try {
+      workflowRunner.stop();
     } catch {
       /* ignore */
     }

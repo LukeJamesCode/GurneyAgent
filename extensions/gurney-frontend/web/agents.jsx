@@ -52,6 +52,7 @@ const WF_STATUS = {
   done: { tone: 'green', label: 'Done', node: 'done', icon: 'check-circle', spin: false },
   error: { tone: 'red', label: 'Error', node: 'error', icon: 'alert-triangle', spin: false },
   cancelled: { tone: 'gray', label: 'Cancelled', node: 'pending', icon: 'x', spin: false },
+  paused: { tone: 'yellow', label: 'Paused', node: 'pending', icon: 'pause-circle', spin: false },
 };
 const WF_TAG_TONES = ['green', 'blue', 'purple', 'yellow', 'gray'];
 const wfTagTone = (id) =>
@@ -73,7 +74,7 @@ function wfClip(text, n) {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 }
 
-function buildWorkflows(tasks) {
+function buildWorkflows(tasks, filter = 'Active Workflows') {
   const childrenByParent = new Map();
   for (const t of tasks) {
     if (t.parentId != null) {
@@ -83,7 +84,12 @@ function buildWorkflows(tasks) {
     }
   }
   return tasks
-    .filter((t) => t.parentId == null)
+    .filter((t) => {
+      if (t.parentId != null) return false;
+      if (filter === 'Active Workflows') return t.status === 'queued' || t.status === 'running' || t.status === 'paused';
+      if (filter === 'Inactive Workflows') return t.status === 'done' || t.status === 'error' || t.status === 'cancelled';
+      return true;
+    })
     .slice(0, 6)
     .map((root) => {
       const children = (childrenByParent.get(root.id) || []).sort((a, b) => a.id - b.id);
@@ -91,7 +97,7 @@ function buildWorkflows(tasks) {
       const meta = wfStatusOf(root.status);
       const percent = children.length
         ? Math.round((doneKids / children.length) * 100)
-        : ({ queued: 5, running: 50, done: 100, error: 100, cancelled: 100 }[root.status] ?? 0);
+        : ({ queued: 5, running: 50, done: 100, error: 100, cancelled: 100, paused: 50 }[root.status] ?? 0);
       const stepLabel = children.length
         ? `${doneKids} / ${children.length} sub-agents`
         : meta.label;
@@ -107,9 +113,10 @@ function buildWorkflows(tasks) {
     });
 }
 
-function WorkflowCard({ wf, selected, onSelect, onOpen, onCancel, onViewOutput }) {
+function WorkflowCard({ wf, selected, onSelect, onOpen, onCancel, onPause, onResume, onViewOutput }) {
   const title = wf.root.agentName || `Task #${wf.root.id}`;
   const active = wf.root.status === 'running' || wf.root.status === 'queued';
+  const paused = wf.root.status === 'paused';
   return (
     <div
       className={`dash-card clickable${selected ? ' selected' : ''}`}
@@ -167,15 +174,47 @@ function WorkflowCard({ wf, selected, onSelect, onOpen, onCancel, onViewOutput }
           <window.Icon name="external-link" size={14} /> Open
         </button>
         {active ? (
-          <button
-            className="dash-btn sub"
-            onClick={(e) => {
-              e.stopPropagation();
-              onCancel(wf.root);
-            }}
-          >
-            <window.Icon name="stop" size={14} /> Cancel
-          </button>
+          <>
+            <button
+              className="dash-btn sub"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (onPause) onPause(wf.root);
+              }}
+            >
+              <window.Icon name="pause-circle" size={14} /> Pause
+            </button>
+            <button
+              className="dash-btn sub"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCancel(wf.root);
+              }}
+            >
+              <window.Icon name="stop" size={14} /> Cancel
+            </button>
+          </>
+        ) : paused ? (
+          <>
+            <button
+              className="dash-btn sub"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (onResume) onResume(wf.root);
+              }}
+            >
+              <window.Icon name="play-circle" size={14} /> Resume
+            </button>
+            <button
+              className="dash-btn sub"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCancel(wf.root);
+              }}
+            >
+              <window.Icon name="stop" size={14} /> Cancel
+            </button>
+          </>
         ) : (
           <>
 
@@ -469,23 +508,59 @@ function MissionControl({
   approvalBusyId,
   onOpenTask,
   onCancelTask,
+  onPauseTask,
+  onResumeTask,
+  onPauseAll,
+  onCancelAll,
+  onResumeAll,
   onViewOutput,
   onConfigureAgents,
   onNewAgent,
   onEditAgent,
 }) {
   const [selectedId, setSelectedId] = useState(null);
-  const workflows = buildWorkflows(tasks);
+  const [workflowFilter, setWorkflowFilter] = useState('Active Workflows');
+  const workflows = buildWorkflows(tasks, workflowFilter);
   const selected = workflows.find((w) => w.root.id === selectedId) || workflows[0] || null;
   return (
     <div className="dash-bottom-grid" style={{ marginBottom: 26 }}>
       <div className="dash-col-left">
         <div className="dash-header" style={{ marginBottom: 0 }}>
-          <h2>Active Workflows</h2>
-          <div className="dash-header-actions">
-            <button className="dash-btn sub">
-              All Workflows <window.Icon name="chevron-down" size={14} />
-            </button>
+          <h2>{workflowFilter}</h2>
+          <div className="dash-header-actions" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ position: 'relative', display: 'inline-block' }}>
+              <select
+                className="dash-btn sub"
+                value={workflowFilter}
+                onChange={(e) => {
+                  setWorkflowFilter(e.target.value);
+                  setSelectedId(null);
+                }}
+                style={{ appearance: 'none', paddingRight: 24, cursor: 'pointer' }}
+              >
+                <option value="All Workflows">All Workflows</option>
+                <option value="Active Workflows">Active Workflows</option>
+                <option value="Inactive Workflows">Inactive Workflows</option>
+              </select>
+              <window.Icon 
+                name="chevron-down" 
+                size={14} 
+                style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} 
+              />
+            </div>
+            {workflowFilter === 'Active Workflows' && (
+              <>
+                <button className="dash-btn sub" onClick={onPauseAll}>
+                  <window.Icon name="pause-circle" size={14} /> Pause All
+                </button>
+                <button className="dash-btn sub" onClick={onCancelAll}>
+                  <window.Icon name="stop" size={14} /> Stop All
+                </button>
+                <button className="dash-btn sub" onClick={onResumeAll}>
+                  <window.Icon name="play-circle" size={14} /> Start All
+                </button>
+              </>
+            )}
             <button className="dash-btn sub" onClick={onConfigureAgents}>
               <window.Icon name="gear" size={14} /> Configure Agents
             </button>
@@ -495,7 +570,7 @@ function MissionControl({
         {workflows.length === 0 ? (
           <div className="dash-card">
             <div style={{ color: 'var(--text-3)', fontSize: 14, padding: '8px 2px' }}>
-              No active workflows yet. Dispatch a task to an agent and it shows up here, with any
+              No {workflowFilter.toLowerCase()} found. Dispatch a task to an agent and it shows up here, with any
               sub-agents it delegates to.
             </div>
           </div>
@@ -515,6 +590,8 @@ function MissionControl({
                 onSelect={setSelectedId}
                 onOpen={onOpenTask}
                 onCancel={onCancelTask}
+                onPause={onPauseTask}
+                onResume={onResumeTask}
                 onViewOutput={onViewOutput}
               />
             ))}
@@ -626,6 +703,7 @@ function AgentsTab({ state }) {
   const [scheduleFor, setScheduleFor] = useState(null); // agent preselected for scheduling; null = choose in modal
   const [openTask, setOpenTask] = useState(null); // task id whose detail is open
   const [viewOutputFor, setViewOutputFor] = useState(null); // task object
+  const [pauseTarget, setPauseTarget] = useState(null); // { task, isBulk }
   const [approvals, setApprovals] = useState({ pending: [], recent: [] });
   const [approvalBusyId, setApprovalBusyId] = useState(null); // approval id mid-resolve
   const [error, setError] = useState('');
@@ -690,8 +768,39 @@ function AgentsTab({ state }) {
   };
 
   const cancelTask = async (task) => {
-    if (!task || !['queued', 'running'].includes(task.status)) return;
+    if (!task || !['queued', 'running', 'paused'].includes(task.status)) return;
     await window.api.post(`/api/agents/tasks/${task.id}/cancel`);
+    load();
+  };
+
+  const requestPauseTask = (task) => setPauseTarget({ task, isBulk: false });
+  const requestPauseAll = () => setPauseTarget({ task: null, isBulk: true });
+
+  const executePause = async (until) => {
+    const { task, isBulk } = pauseTarget;
+    setPauseTarget(null);
+    if (isBulk) {
+      await window.api.post('/api/agents/tasks/pause_all', { until });
+    } else if (task) {
+      await window.api.post(`/api/agents/tasks/${task.id}/pause`, { until });
+    }
+    load();
+  };
+
+  const resumeTask = async (task) => {
+    if (!task || task.status !== 'paused') return;
+    await window.api.post(`/api/agents/tasks/${task.id}/resume`);
+    load();
+  };
+
+  const resumeAll = async () => {
+    await window.api.post('/api/agents/tasks/resume_all');
+    load();
+  };
+
+  const cancelAll = async () => {
+    if (!window.confirm("Are you sure you want to stop all active workflows?")) return;
+    await window.api.post('/api/agents/tasks/cancel_all');
     load();
   };
 
@@ -728,13 +837,25 @@ function AgentsTab({ state }) {
         approvalBusyId={approvalBusyId}
         onOpenTask={(id) => setOpenTask(id)}
         onCancelTask={cancelTask}
+        onPauseTask={requestPauseTask}
+        onResumeTask={resumeTask}
+        onPauseAll={requestPauseAll}
+        onCancelAll={cancelAll}
+        onResumeAll={resumeAll}
         onViewOutput={(task) => setViewOutputFor(task)}
         onConfigureAgents={() => setShowConfigureAgents(true)}
         onNewAgent={() => setEditing({ ...EMPTY_AGENT })}
         onEditAgent={(a) => setEditing(a)}
       />
 
-      <window.SectionTitle sub="Timed one-shot and recurring agent work.">
+      <window.SectionTitle 
+        sub="Timed one-shot and recurring agent work."
+        right={
+          <window.Button variant="primary" icon="plus" onClick={() => setScheduleFor({})}>
+            Add Schedule
+          </window.Button>
+        }
+      >
         Schedules
       </window.SectionTitle>
       <ScheduleList schedules={schedules} onDelete={removeSchedule} />
@@ -778,6 +899,14 @@ function AgentsTab({ state }) {
           initialAgent={scheduleFor.id ? scheduleFor : null}
           onClose={() => setScheduleFor(null)}
           onSchedule={createSchedule}
+        />
+      )}
+      {pauseTarget && (
+        <PauseModal
+          task={pauseTarget.task}
+          isBulk={pauseTarget.isBulk}
+          onClose={() => setPauseTarget(null)}
+          onConfirm={executePause}
         />
       )}
       {openTask != null && (
@@ -843,6 +972,75 @@ function DispatchModal({ agent, onClose, onDispatch }) {
           font: 'inherit',
         }}
       />
+    </window.Modal>
+  );
+}
+
+function PauseModal({ task, isBulk, onClose, onConfirm }) {
+  const [mode, setMode] = useState('forever'); // 'forever' | 'until'
+  const [until, setUntil] = useState('');
+
+  return (
+    <window.Modal
+      open
+      onClose={onClose}
+      title={isBulk ? "Pause All Workflows" : `Pause Workflow ${task ? `#${task.id}` : ''}`}
+      footer={
+        <>
+          <window.Button variant="subtle" onClick={onClose}>
+            Cancel
+          </window.Button>
+          <window.Button
+            variant="primary"
+            icon="pause-circle"
+            disabled={mode === 'until' && !until}
+            onClick={() => {
+              const ts = mode === 'until' ? new Date(until).getTime() : null;
+              onConfirm(ts);
+            }}
+          >
+            Pause
+          </window.Button>
+        </>
+      }
+    >
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, cursor: 'pointer' }}>
+          <input
+            type="radio"
+            checked={mode === 'forever'}
+            onChange={() => setMode('forever')}
+          />
+          Pause indefinitely
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <input
+            type="radio"
+            checked={mode === 'until'}
+            onChange={() => setMode('until')}
+          />
+          Pause until a specific date and time
+        </label>
+      </div>
+
+      {mode === 'until' && (
+        <Field label="Resume At" hint="The system will automatically resume the workflow at this time.">
+          <input
+            type="datetime-local"
+            value={until}
+            onChange={(e) => setUntil(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '8px 12px',
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--border)',
+              background: 'var(--surface-2)',
+              color: 'var(--text)',
+              font: 'inherit',
+            }}
+          />
+        </Field>
+      )}
     </window.Modal>
   );
 }
@@ -1002,9 +1200,11 @@ function ScheduleModal({ agents, initialAgent, onClose, onSchedule }) {
           </Field>
           <Field label="Repeat">
             <window.Select value={recurrence} onChange={(e) => setRecurrence(e.target.value)}>
-              <option value="once">once</option>
+              <option value="once">once (specific date)</option>
               <option value="daily">daily</option>
               <option value="weekly">weekly</option>
+              <option value="monthly">monthly</option>
+              <option value="yearly">yearly</option>
             </window.Select>
           </Field>
         </Row>

@@ -58,6 +58,11 @@ export interface AgentQueue {
   notify(): void;
   // Cancel queued work or abort a running task owned by this process.
   cancel(taskId: number): boolean;
+  // Pause a queued or running task. `until` is an epoch ms timestamp for
+  // timed pauses, or null for an indefinite pause.
+  pause(taskId: number, until: number | null): boolean;
+  // Resume a paused task by re-queuing it.
+  resume(taskId: number): boolean;
   // True while a task is in flight or queued work remains.
   busy(): boolean;
   runningCount(): number;
@@ -155,8 +160,20 @@ export function createAgentQueue(opts: AgentQueueOptions): AgentQueue {
   // can still start while the heavy slot is full.
   function cancelRequestedRunningTasks(): void {
     for (const [taskId] of running) {
-      if (opts.registry.getTask(taskId)?.status === 'cancelled') {
+      const task = opts.registry.getTask(taskId);
+      if (task?.status === 'cancelled' || task?.status === 'paused') {
         opts.runtime.cancelTask(taskId);
+      }
+    }
+  }
+
+  function sweepPausedTasks(): void {
+    const paused = opts.registry.listTasks({ status: 'paused' });
+    const now = Date.now();
+    for (const task of paused) {
+      if (task.pausedUntil !== null && task.pausedUntil <= now) {
+        opts.registry.updateTask(task.id, { status: 'queued', pausedUntil: null });
+        log.debug('auto-resumed paused task', { taskId: task.id });
       }
     }
   }
@@ -164,6 +181,7 @@ export function createAgentQueue(opts: AgentQueueOptions): AgentQueue {
   function tick(): void {
     if (draining) return;
     cancelRequestedRunningTasks();
+    sweepPausedTasks();
     const queued = opts.registry.listTasks({ status: 'queued' });
     // listTasks returns newest-first; run oldest-first within a priority band.
     queued.sort((a, b) => b.priority - a.priority || a.id - b.id);
@@ -203,6 +221,35 @@ export function createAgentQueue(opts: AgentQueueOptions): AgentQueue {
     return true;
   }
 
+  function pause(taskId: number, until: number | null): boolean {
+    const task = opts.registry.getTask(taskId);
+    if (!task) return false;
+    if (task.status !== 'queued' && task.status !== 'running') return false;
+    opts.registry.updateTask(taskId, {
+      status: 'paused',
+      pausedUntil: until,
+    });
+    if (running.has(taskId)) opts.runtime.cancelTask(taskId);
+    const paused = opts.registry.getTask(taskId);
+    if (paused) opts.onTaskUpdate?.(paused);
+    notify();
+    return true;
+  }
+
+  function resume(taskId: number): boolean {
+    const task = opts.registry.getTask(taskId);
+    if (!task) return false;
+    if (task.status !== 'paused') return false;
+    opts.registry.updateTask(taskId, {
+      status: 'queued',
+      pausedUntil: null,
+    });
+    const resumed = opts.registry.getTask(taskId);
+    if (resumed) opts.onTaskUpdate?.(resumed);
+    notify();
+    return true;
+  }
+
   async function drain(): Promise<void> {
     draining = true;
     if (pollTimer) {
@@ -224,6 +271,8 @@ export function createAgentQueue(opts: AgentQueueOptions): AgentQueue {
     dispatch,
     notify,
     cancel,
+    pause,
+    resume,
     busy: () => running.size > 0 || opts.registry.listTasks({ status: 'queued' }).length > 0,
     runningCount: () => running.size,
     drain,

@@ -20,6 +20,7 @@ import {
   copyFileSync,
   createReadStream,
   existsSync,
+  readdirSync,
   readFileSync,
   statSync,
   unlinkSync,
@@ -40,6 +41,7 @@ import {
 } from '../../src/core/agents.js';
 import { createAgentScheduleStore } from '../../src/core/agent-schedules.js';
 import { createAgentApprovalStore } from '../../src/core/agent-approvals.js';
+import { createWorkflowRegistry, type WorkflowGraphError } from '../../src/core/workflows.js';
 import type { ProfileName } from '../../src/core/llm.js';
 import { createLogger } from '../../src/util/log.js';
 import { createOllama } from '../../src/core/llm.js';
@@ -213,7 +215,7 @@ function normalizeAgentScheduleInput(body: Record<string, unknown>): {
   agentIds: number[];
   prompt: string;
   nextRunAt: number;
-  recurrence: 'once' | 'daily' | 'weekly';
+  recurrence: 'once' | 'daily' | 'weekly' | 'monthly' | 'yearly';
 } {
   const rawIds = Array.isArray(body['agentIds'])
     ? body['agentIds']
@@ -222,7 +224,7 @@ function normalizeAgentScheduleInput(body: Record<string, unknown>): {
       : [];
   const agentIds = rawIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0);
   const recurrence =
-    body['recurrence'] === 'daily' || body['recurrence'] === 'weekly' ? body['recurrence'] : 'once';
+    body['recurrence'] === 'daily' || body['recurrence'] === 'weekly' || body['recurrence'] === 'monthly' || body['recurrence'] === 'yearly' ? (body['recurrence'] as any) : 'once';
   return {
     agentIds,
     prompt: String(body['prompt'] ?? '').trim(),
@@ -1958,6 +1960,23 @@ async function handleApi(
       return sendJson(res, 200, await buildState());
     }
 
+    if (path === '/api/docs' && method === 'GET') {
+      const docsDir = join(REPO_ROOT, 'docs');
+      try {
+        const files = readdirSync(docsDir).filter((f) => f.endsWith('.md')).sort();
+        const docs = files.map((f) => {
+          const content = readFileSync(join(docsDir, f), 'utf8');
+          // Extract the first heading or use filename
+          const titleMatch = content.match(/^#\s+(.+)$/m);
+          const title = titleMatch ? titleMatch[1] : f.replace('.md', '').replace(/-/g, ' ');
+          return { filename: f, title, content };
+        });
+        return sendJson(res, 200, { ok: true, docs });
+      } catch (e) {
+        return sendJson(res, 500, { ok: false, error: (e as Error).message });
+      }
+    }
+
     if (path === '/api/config' && method === 'GET') {
       const cfg = effectiveConfig(homeDir());
       return sendJson(res, 200, {
@@ -2176,6 +2195,95 @@ async function handleApi(
       );
     }
 
+    // Pause a single task (queued or running).
+    const pauseMatch = /^\/api\/agents\/tasks\/(\d+)\/pause$/.exec(path);
+    if (pauseMatch && method === 'POST') {
+      const id = Number(pauseMatch[1]);
+      const body = await readJson<{ until?: number | null }>(req);
+      const until = typeof body.until === 'number' && Number.isFinite(body.until) ? body.until : null;
+      const ok = withDb((db) => {
+        const reg = createAgentRegistry(db);
+        const t = reg.getTask(id);
+        if (!t || !['queued', 'running'].includes(t.status)) return false;
+        reg.updateTask(id, { status: 'paused', pausedUntil: until });
+        return true;
+      });
+      return sendJson(
+        res,
+        ok ? 200 : 409,
+        ok ? { ok: true } : { error: 'task is not queued or running' },
+      );
+    }
+
+    // Resume a paused task.
+    const resumeMatch = /^\/api\/agents\/tasks\/(\d+)\/resume$/.exec(path);
+    if (resumeMatch && method === 'POST') {
+      const id = Number(resumeMatch[1]);
+      const ok = withDb((db) => {
+        const reg = createAgentRegistry(db);
+        const t = reg.getTask(id);
+        if (!t || t.status !== 'paused') return false;
+        reg.updateTask(id, { status: 'queued', pausedUntil: null });
+        return true;
+      });
+      return sendJson(
+        res,
+        ok ? 200 : 409,
+        ok ? { ok: true } : { error: 'task is not paused' },
+      );
+    }
+
+    // Bulk pause all active tasks.
+    if (path === '/api/agents/tasks/pause_all' && method === 'POST') {
+      const body = await readJson<{ until?: number | null }>(req);
+      const until = typeof body.until === 'number' && Number.isFinite(body.until) ? body.until : null;
+      const count = withDb((db) => {
+        const reg = createAgentRegistry(db);
+        const active = reg.listTasks({ status: ['queued', 'running'] });
+        let n = 0;
+        for (const t of active) {
+          reg.updateTask(t.id, { status: 'paused', pausedUntil: until });
+          n++;
+        }
+        return n;
+      }) ?? 0;
+      return sendJson(res, 200, { ok: true, count });
+    }
+
+    // Bulk resume all paused tasks.
+    if (path === '/api/agents/tasks/resume_all' && method === 'POST') {
+      const count = withDb((db) => {
+        const reg = createAgentRegistry(db);
+        const paused = reg.listTasks({ status: 'paused' });
+        let n = 0;
+        for (const t of paused) {
+          reg.updateTask(t.id, { status: 'queued', pausedUntil: null });
+          n++;
+        }
+        return n;
+      }) ?? 0;
+      return sendJson(res, 200, { ok: true, count });
+    }
+
+    // Bulk cancel all active/paused tasks.
+    if (path === '/api/agents/tasks/cancel_all' && method === 'POST') {
+      const count = withDb((db) => {
+        const reg = createAgentRegistry(db);
+        const active = reg.listTasks({ status: ['queued', 'running', 'paused'] });
+        let n = 0;
+        for (const t of active) {
+          reg.updateTask(t.id, {
+            status: 'cancelled',
+            error: AGENT_TASK_CANCELLED_MESSAGE,
+            finishedAt: Date.now(),
+          });
+          n++;
+        }
+        return n;
+      }) ?? 0;
+      return sendJson(res, 200, { ok: true, count });
+    }
+
     // Human-in-the-loop approvals. The daemon parks a risky agent tool call and
     // writes a pending row; the panel lists them and writes the decision. The
     // daemon's ApprovalManager polls the row and resolves the parked call — the
@@ -2202,6 +2310,111 @@ async function handleApi(
         updated ? 200 : 409,
         updated ? { approval: updated } : { error: 'approval is not pending or does not exist' },
       );
+    }
+
+    // ---- Authored workflows (n8n-style DAG builder) -------------------------
+    // Same contract as the agent routes: the panel only does CRUD + enqueue;
+    // the daemon's WorkflowRunner (which polls the DB) actually executes runs.
+    if (path === '/api/workflows' && method === 'GET') {
+      const workflows = withDb((db) => createWorkflowRegistry(db).list()) ?? [];
+      return sendJson(res, 200, { workflows });
+    }
+    if (path === '/api/workflows' && method === 'POST') {
+      const body = await readJson<Record<string, unknown>>(req);
+      if (!String(body['name'] ?? '').trim()) {
+        return sendJson(res, 400, { error: 'name is required' });
+      }
+      try {
+        const workflow = withDb((db) => {
+          const reg = createWorkflowRegistry(db);
+          return reg.create({
+            name: String(body['name']).trim(),
+            description: String(body['description'] ?? ''),
+            graph: body['graph'] as any,
+            active: body['active'] !== false,
+          });
+        });
+        return sendJson(res, workflow ? 200 : 500, workflow ? { workflow } : { error: 'database unavailable' });
+      } catch (e) {
+        return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    const workflowIdMatch = /^\/api\/workflows\/(\d+)$/.exec(path);
+    if (workflowIdMatch && method === 'GET') {
+      const id = Number(workflowIdMatch[1]);
+      const workflow = withDb((db) => createWorkflowRegistry(db).get(id));
+      return sendJson(res, workflow ? 200 : 404, workflow ? { workflow } : { error: 'not found' });
+    }
+    if (workflowIdMatch && method === 'PUT') {
+      const id = Number(workflowIdMatch[1]);
+      const body = await readJson<Record<string, unknown>>(req);
+      try {
+        const updated = withDb((db) => {
+          const reg = createWorkflowRegistry(db);
+          if (!reg.get(id)) return null;
+          return reg.update(id, {
+            ...(body['name'] !== undefined ? { name: String(body['name']).trim() } : {}),
+            ...(body['description'] !== undefined ? { description: String(body['description']) } : {}),
+            ...(body['graph'] !== undefined ? { graph: body['graph'] as any } : {}),
+            ...(body['active'] !== undefined ? { active: !!body['active'] } : {}),
+          });
+        });
+        return sendJson(res, updated ? 200 : 404, updated ? { workflow: updated } : { error: 'not found' });
+      } catch (e) {
+        return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    if (workflowIdMatch && method === 'DELETE') {
+      const id = Number(workflowIdMatch[1]);
+      const ok = withDb((db) => createWorkflowRegistry(db).remove(id)) ?? false;
+      return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'not found' });
+    }
+    const workflowRunMatch = /^\/api\/workflows\/(\d+)\/run$/.exec(path);
+    if (workflowRunMatch && method === 'POST') {
+      const id = Number(workflowRunMatch[1]);
+      const body = await readJson<{ input?: string }>(req);
+      const run = withDb((db) => {
+        const reg = createWorkflowRegistry(db);
+        if (!reg.get(id)) return null;
+        return reg.enqueueRun(id, body.input ?? null);
+      });
+      return sendJson(res, run ? 200 : 404, run ? { run } : { error: 'workflow not found' });
+    }
+    if (path === '/api/workflows/runs' && method === 'GET') {
+      const workflowId = url.searchParams.get('workflowId');
+      const status = url.searchParams.get('status');
+      const limit = url.searchParams.get('limit');
+      const runs = withDb((db) =>
+        createWorkflowRegistry(db).listRuns({
+          ...(workflowId ? { workflowId: Number(workflowId) } : {}),
+          ...(status ? { status: status as any } : {}),
+          ...(limit ? { limit: Number(limit) } : {}),
+        }),
+      ) ?? [];
+      return sendJson(res, 200, { runs });
+    }
+    const workflowRunIdMatch = /^\/api\/workflows\/runs\/(\d+)$/.exec(path);
+    if (workflowRunIdMatch && method === 'GET') {
+      const id = Number(workflowRunIdMatch[1]);
+      const data = withDb((db) => {
+        const reg = createWorkflowRegistry(db);
+        const run = reg.getRun(id);
+        if (!run) return null;
+        return { run, steps: reg.listStepRuns(id) };
+      });
+      return sendJson(res, data ? 200 : 404, data ?? { error: 'not found' });
+    }
+    const workflowCancelMatch = /^\/api\/workflows\/runs\/(\d+)\/cancel$/.exec(path);
+    if (workflowCancelMatch && method === 'POST') {
+      const id = Number(workflowCancelMatch[1]);
+      const ok = withDb((db) => {
+        const reg = createWorkflowRegistry(db);
+        const run = reg.getRun(id);
+        if (!run || !['queued', 'running'].includes(run.status)) return false;
+        reg.updateRun(id, { status: 'cancelled', error: 'cancelled by user', finishedAt: Date.now() });
+        return true;
+      });
+      return sendJson(res, ok ? 200 : 409, ok ? { ok: true } : { error: 'run is not queued or running' });
     }
 
     if (path === '/api/extensions' && method === 'GET') {
