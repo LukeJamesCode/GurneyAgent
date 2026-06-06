@@ -23,13 +23,14 @@ The model doesn't know which surface it's talking through. By default each
 Discord DM is its own conversation thread; set `shared_telegram_chat_id` to
 fuse it with your Telegram thread (see Settings).
 
-Discord is **opt-in by chat**:
+Discord is **opt-in by user**:
 
 - **DMs** are allowed only when your Discord user id is on the
   `allowed_dm_user_ids` allowlist.
 - **Guild channels** respond only when (a) your bot is **@-mentioned**
-  AND (b) the channel is in `allowed_channel_keys`. This is per-chat
-  opt-in; default-on group intercept is forbidden by the safety doc.
+  AND (b) the author is on the same `allowed_dm_user_ids` allowlist. The
+  mention is mandatory in guilds — default-on group intercept is forbidden
+  by the safety doc.
 
 Confirm-tier tools (anything that mutates state, escalates to Codex,
 spends money, etc.) pop a Discord message with two buttons:
@@ -98,42 +99,47 @@ Set:
   id by enabling **Developer Mode** in Discord (User Settings →
   Advanced → Developer Mode) and right-clicking your name → **Copy User
   ID**.
-- `allowed_channel_keys` — comma-separated `<guild_id>:<channel_id>`
-  pairs for channels the bot should listen in (still requires
-  @-mention). Right-click a channel name → **Copy Channel ID**;
-  right-click a server icon → **Copy Server ID** for the guild id.
+
+This one allowlist gates both surfaces: a user on it can DM the bot, and
+can talk to it in any guild channel by @-mentioning it. There is no
+per-channel opt-in — the bot replies in whatever channel an allowlisted
+user mentions it in.
 
 Restart (or hot-reload) Gurney; the bridge picks up the new allowlist
 within a few seconds.
 
 ### 5. Try it
 
-DM the bot from an allowlisted user, or @-mention it in an opted-in
-channel. The reply comes back from the same model, with the same memory,
-as your Telegram conversations.
+DM the bot from an allowlisted user, or @-mention it in any guild channel
+as that same user. The reply comes back from the same model, with the same
+memory, as your Telegram conversations.
 
 ## Slash commands
 
-Inside Discord, only one slash command is exposed:
+Inside Discord, three native slash commands are exposed:
 
-- `/gurney` — show whether the current channel is opted in. Replies
-  ephemerally (only you see it).
+- `/gurney` — tell you whether you're on the allowlist (and how to chat
+  if you are). Replies ephemerally (only you see it).
+- `/vcjoin` — summon Gurney into the voice channel you're currently in
+  (server only). See [Voice](#voice).
+- `/vcleave` — dismiss Gurney from the voice channel.
 
-Adding or removing chats happens via `gurney config gurney-discord` on
-the host — never via a model-driven path. This is intentional: the
-safety doc bans "model-driven allowlist edits."
+Adding or removing users from the allowlist happens via `gurney config
+gurney-discord` on the host — never via a model-driven path. This is
+intentional: the safety doc bans "model-driven allowlist edits."
 
 ## Settings reference
 
 | Key                       | Type     | Default | Description                                                                |
 | ------------------------- | -------- | ------- | -------------------------------------------------------------------------- |
 | `bot_token`               | string\* | _none_  | Bot token from the Developer Portal. Required. Marked `secret`.            |
-| `allowed_dm_user_ids`     | csv      | `""`    | Discord user IDs allowed to DM.                                            |
-| `allowed_channel_keys`    | csv      | `""`    | `<guild_id>:<channel_id>` pairs the bot will reply in (on @-mention).      |
+| `allowed_dm_user_ids`     | csv      | `""`    | Discord user IDs allowed to DM **and** to mention the bot in guilds. Empty = no access. |
 | `rate_limit_per_minute`   | number   | `10`    | Max user-initiated turns per Discord user per minute.                      |
 | `shared_telegram_chat_id` | number   | `0`     | `0` = each Discord DM is its own thread. Set to your Telegram chat id to share one conversation/history across both surfaces (DMs only). See note below. |
 | `proactive_dm_user_id`    | string   | `""`    | Discord user id to DM proactive briefings/nudges to. Empty = first `allowed_dm_user_ids` entry. |
 | `idle_disconnect_minutes` | number   | `0`     | Reserved — disconnect after N idle minutes. `0` = stay connected.          |
+| `entrance_sounds`         | map      | `""`    | `<user_id>:<absolute_path_to_mp3>,...` — play this sound when that user joins a voice channel Gurney is in. See [Voice](#voice). |
+| `talking_sounds`          | map      | `""`    | `<user_id>:<absolute_path_to_mp3>,...` — play this sound whenever that user starts talking in a voice channel. See [Voice](#voice). |
 
 **Identity (`shared_telegram_chat_id`).** Default `0` keeps Discord DMs on an
 isolated conversation thread (long-term memory is still shared). Set it to your
@@ -151,6 +157,51 @@ with the user (or the user must allow DMs) for the send to succeed.
 `bot_token` is plaintext in SQLite (`~/.gurney/state.db`,
 `extension_settings` table). Treat the file as you would a `.env`. The
 `secret: true` flag masks it in `gurney config` and `gurney status`.
+
+## Voice
+
+Gurney can sit in a Discord voice channel, listen for a wake word,
+transcribe what you say, run it through the **same pipeline** as a text
+turn, and speak the reply back into the channel.
+
+This piggybacks on the **gurney-voice** extension — install and set that
+up first. gurney-discord reads gurney-voice's resolved binary/model paths
+(whisper for STT, piper for TTS, plus ffmpeg) straight from its settings;
+without them, voice-in and voice-out silently no-op. The bot's invite also
+needs the `Connect` and `Speak` voice permissions (in addition to the text
+permissions in [step 3](#3-build-an-invite-url)).
+
+**Joining and leaving.** Join a voice channel yourself, then run `/vcjoin`
+— Gurney drops into your channel. `/vcleave` dismisses it. Both are
+server-only.
+
+**Talking to it.** While Gurney is in the channel, prefix what you say
+with the wake word — **"gurney …"** or **"hey gurney …"**. Everything
+after the wake word is handled exactly like an @-mention: same model, same
+memory, same tools. The reply is synthesised and spoken back into the
+channel. Bare "gurney" with nothing after it gets a short "I'm here."
+
+Voice is gated by the same allowlist as text: only speech from a user on
+`allowed_dm_user_ids` is transcribed and acted on. Everyone else's audio
+is ignored.
+
+**Sound effects.** Two optional settings play a local MP3 for a specific
+user (handy for entrance stings or talk-over gags):
+
+- `entrance_sounds` — plays when that user **joins** a voice channel
+  Gurney is already in.
+- `talking_sounds` — plays when that user **starts talking**.
+
+Both take the form `<user_id>:<absolute_path_to_mp3>`, comma-separated for
+multiple users:
+
+```
+123456789012345678:/home/me/sounds/entrance.mp3,987654321098765432:/home/me/sounds/airhorn.mp3
+```
+
+Paths may themselves contain commas (e.g. `Liam - Energetic, Social Media
+Creator.mp3`) — entries are split only at a `,<digits>:` boundary, so a
+comma inside a path is preserved.
 
 ## Identity model
 
@@ -192,7 +243,6 @@ Slack extensions would declare.
 
 ## What this isn't
 
-- No voice channels (out of scope for v1).
 - Extension commands run as text after a mention (`@Gurney /tasks`), not as
   **native** Discord slash commands. `/gurney` is the only registered native
   slash command; mirroring every extension command into Discord's slash UI is a
@@ -205,11 +255,11 @@ Slack extensions would declare.
 
 - **Bot is online but doesn't respond.** Check `gurney status` and
   `/discord` in Telegram. Most likely your Discord user id isn't on
-  `allowed_dm_user_ids`, or the channel pair isn't on
-  `allowed_channel_keys`, or the bot wasn't @-mentioned in the channel.
-- **DM tokens for guilds.** In a guild channel the bot must be
-  @-mentioned (`@gurney explain this`). Bare messages are ignored even
-  in opted-in channels — that's the safety property, not a bug.
+  `allowed_dm_user_ids`, or (in a guild) the bot wasn't @-mentioned.
+- **Mention required in guilds.** In a guild channel the bot must be
+  @-mentioned (`@gurney explain this`) **and** you must be on
+  `allowed_dm_user_ids`. Bare messages are ignored in every channel —
+  that's the safety property, not a bug.
 - **"Used Disallowed intents" on login.** Re-open the Developer
   Portal, enable **Message Content Intent**, and re-`gurney auth
   gurney-discord` is not needed; the next gateway reconnect picks the
