@@ -7,6 +7,8 @@ import {
   createAudioPlayer,
   createAudioResource,
   StreamType,
+  entersState,
+  VoiceConnectionStatus,
   type DiscordGatewayAdapterCreator,
 } from '@discordjs/voice';
 import prism from 'prism-media';
@@ -90,9 +92,16 @@ export class VoiceManager {
       });
     });
 
-    // Send a silent frame immediately to open the Discord UDP socket for receiving audio.
-    const silentResource = createAudioResource(new SilencingReadable(), { inputType: StreamType.Opus });
-    player.play(silentResource);
+    try {
+      await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+      this.log.info('voice connection ready', { guildId });
+      
+      // Send a silent frame to open the Discord UDP socket for receiving audio.
+      const silentResource = createAudioResource(new SilencingReadable(), { inputType: StreamType.Opus });
+      player.play(silentResource);
+    } catch (e) {
+      this.log.warn('voice connection failed to become ready', { error: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   public leaveVoiceChannel(guildId: string): void {
@@ -252,6 +261,11 @@ export class VoiceManager {
     }
 
     try {
+      const connection = getVoiceConnection(guildId);
+      if (connection) {
+        await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+      }
+
       const result = await synthesize({
         text,
         piperBin,
@@ -295,7 +309,7 @@ export class VoiceManager {
           const uid = pair.slice(0, idx);
           const mp3Path = pair.slice(idx + 1);
           if (uid === userId && mp3Path) {
-            this.playLocalFile(guildId, mp3Path);
+            void this.playLocalFile(guildId, mp3Path);
             break;
           }
         }
@@ -303,7 +317,7 @@ export class VoiceManager {
     }
   }
 
-  private playLocalFile(guildId: string, filePath: string): void {
+  private async playLocalFile(guildId: string, filePath: string): Promise<void> {
     const player = this.players.get(guildId);
     if (!player) {
       this.log.warn('playLocalFile: no player found', { guildId });
@@ -311,8 +325,15 @@ export class VoiceManager {
     }
 
     try {
+      const connection = getVoiceConnection(guildId);
+      if (connection) {
+        await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+      }
       this.log.info('playLocalFile: attempting createAudioResource', { filePath });
       const resource = createAudioResource(filePath);
+      resource.playStream.on('error', (e) => {
+        this.log.warn('playLocalFile stream error', { error: e.message, filePath });
+      });
       player.play(resource);
       this.log.info('playLocalFile: played sound', { guildId, filePath });
     } catch (e) {
