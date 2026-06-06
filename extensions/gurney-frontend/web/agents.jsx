@@ -178,15 +178,7 @@ function WorkflowCard({ wf, selected, onSelect, onOpen, onCancel, onViewOutput }
           </button>
         ) : (
           <>
-            <button
-              className="dash-btn sub"
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpen(wf.root.id);
-              }}
-            >
-              <window.Icon name="doc" size={14} /> Details
-            </button>
+
             {wf.root.status === 'done' && (
               <button
                 className="dash-btn sub"
