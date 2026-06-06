@@ -15,6 +15,7 @@ import prism from 'prism-media';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { mkdtempSync, createWriteStream, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 
 class SilencingReadable extends Readable {
   private frames = 0;
@@ -32,7 +33,7 @@ import { join } from 'node:path';
 import type { Logger } from '../../../src/util/log.js';
 import type { Bridge } from './bridge.js';
 import type { AllowlistConfig } from './allowlist.js';
-import { transcribe } from '../../gurney-voice/stt.js';
+import { runWhisperOnWav, defaultRunShell } from '../../gurney-voice/stt.js';
 import { synthesize } from '../../gurney-voice/synth.js';
 import type { Host } from '../../../src/core/extensions.js';
 
@@ -161,29 +162,42 @@ export class VoiceManager {
     }
 
     const dir = mkdtempSync(join(tmpdir(), 'gurney-discord-vc-'));
-    const oggPath = join(dir, 'in.ogg');
+    const wavPath = join(dir, 'in.wav');
 
     try {
-      interface PrismOpusModule {
-        OggLogicalBitstream: new (opts: { opusHead: unknown; pageSizeControl: { maxPackets: number } }) => NodeJS.ReadWriteStream;
-        OpusHead: new (opts: { channelCount: number; sampleRate: number }) => unknown;
-      }
-      const prismOpus = prism.opus as unknown as PrismOpusModule;
-      const oggStream = new prismOpus.OggLogicalBitstream({
-        opusHead: new prismOpus.OpusHead({
-          channelCount: 2,
-          sampleRate: 48000,
-        }),
-        pageSizeControl: {
-          maxPackets: 10,
-        },
-      });
-
-      await pipeline(audioStream, oggStream, createWriteStream(oggPath));
-
+      // Discord streams voice packets as Opus. We decode them to raw PCM (48kHz stereo),
+      // and pipe that raw PCM into ffmpeg to downsample to 16kHz mono WAV for whisper.
+      const decoder = new prism.opus.Decoder({ frameSize: 960, channels: 2, rate: 48000 });
+      
       const whisperBin = this.host.settings.get<string>('whisper_bin', 'whisper-cli');
       const ffmpegBin = this.host.settings.get<string>('ffmpeg_bin', 'ffmpeg');
+
+      const ffmpegArgs = [
+        '-y',
+        '-f', 's16le',
+        '-ar', '48000',
+        '-ac', '2',
+        '-i', 'pipe:0',
+        '-ar', '16000',
+        '-ac', '1',
+        '-c:a', 'pcm_s16le',
+        '-f', 'wav',
+        wavPath
+      ];
+
+      const ffmpegProcess = spawn(ffmpegBin, ffmpegArgs, { stdio: ['pipe', 'ignore', 'ignore'] });
       
+      // Pipe the Opus stream into the PCM decoder, then into ffmpeg's stdin.
+      audioStream.pipe(decoder).pipe(ffmpegProcess.stdin);
+
+      await new Promise<void>((resolve, reject) => {
+        ffmpegProcess.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`ffmpeg exited with code ${code}`));
+        });
+        ffmpegProcess.on('error', reject);
+      });
+
       // To get model path, we need to read gurney-voice's settings.
       // Since settings are extension-scoped, we must query the DB directly to get the sibling's config.
       const rows = this.host.db.prepare(
@@ -200,13 +214,11 @@ export class VoiceManager {
 
       const language = voiceSettings.get('stt_language') || 'auto';
 
-      const result = await transcribe({
-        oggPath,
-        whisperBin,
-        ffmpegBin,
-        modelPath,
-        language,
-      });
+      const result = await runWhisperOnWav(
+        wavPath,
+        { whisperBin, modelPath, language },
+        defaultRunShell,
+      );
 
       if (!result.transcript) return;
 

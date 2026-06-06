@@ -59,7 +59,7 @@ export class SttError extends Error {
   }
 }
 
-const defaultRunShell: RunShell = (cmd, args, { cwd }) => {
+export const defaultRunShell: RunShell = (cmd, args, { cwd }) => {
   const child = spawn(cmd, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     ...(cwd ? { cwd } : {}),
@@ -77,7 +77,7 @@ export function cleanTranscript(raw: string): string {
     .trim();
 }
 
-async function runWhisperOnWav(
+export async function runWhisperOnWav(
   wavPath: string,
   req: { whisperBin: string; modelPath: string; language?: string },
   runShell: RunShell,
