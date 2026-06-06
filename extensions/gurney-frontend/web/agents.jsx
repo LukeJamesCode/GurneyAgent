@@ -292,6 +292,57 @@ function LiveRunLog({ tasks, onOpen }) {
   );
 }
 
+function AgentStatusPanel({ agents, tasks, onNew, onEdit }) {
+  const stateOf = (id) => {
+    const mine = tasks.filter((t) => t.agentId === id);
+    if (mine.some((t) => t.status === 'running')) return { tone: 'yellow', label: 'Busy' };
+    if (mine.some((t) => t.status === 'queued')) return { tone: 'blue', label: 'Queued' };
+    return { tone: 'green', label: 'Online' };
+  };
+  return (
+    <div className="dash-panel">
+      <div className="panel-header">
+        <h3>
+          <window.Icon name="activity" size={16} /> Agent Status
+        </h3>
+        <a
+          href="#"
+          onClick={(e) => {
+            e.preventDefault();
+            onNew();
+          }}
+        >
+          + New
+        </a>
+      </div>
+      {agents.length === 0 ? (
+        <div style={{ color: 'var(--text-3)', fontSize: 13 }}>No agents yet.</div>
+      ) : (
+        <div className="status-list">
+          {agents.map((a) => {
+            const st = stateOf(a.id);
+            return (
+              <div
+                className="status-item"
+                key={a.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => onEdit(a)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') onEdit(a);
+                }}
+                style={{ cursor: 'pointer' }}
+                title="Edit agent"
+              >
+                <span className={`dot ${st.tone}`}></span> {a.name} <span>{st.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function SystemHealthPanel({ state }) {
   const sys = state && state.system ? state.system : null;
@@ -406,6 +457,7 @@ function ApprovalsPanel({ approvals, onResolve, busyId }) {
 // the left, a status/health/approvals/memory sidebar down the right.
 function MissionControl({
   tasks,
+  agents,
   state,
   approvals,
   onResolveApproval,
@@ -413,6 +465,8 @@ function MissionControl({
   onOpenTask,
   onCancelTask,
   onConfigureAgents,
+  onNewAgent,
+  onEditAgent,
 }) {
   const [selectedId, setSelectedId] = useState(null);
   const workflows = buildWorkflows(tasks);
@@ -479,6 +533,7 @@ function MissionControl({
       </div>
 
       <div className="dash-col-right">
+        <AgentStatusPanel agents={agents} tasks={tasks} onNew={onNewAgent} onEdit={onEditAgent} />
         <SystemHealthPanel state={state} />
         <ApprovalsPanel
           approvals={approvals}
@@ -658,6 +713,7 @@ function AgentsTab({ state }) {
 
       <MissionControl
         tasks={tasks}
+        agents={agents}
         state={state}
         approvals={approvals}
         onResolveApproval={resolveApproval}
@@ -665,6 +721,8 @@ function AgentsTab({ state }) {
         onOpenTask={(id) => setOpenTask(id)}
         onCancelTask={cancelTask}
         onConfigureAgents={() => setShowConfigureAgents(true)}
+        onNewAgent={() => setEditing({ ...EMPTY_AGENT })}
+        onEditAgent={(a) => setEditing(a)}
       />
 
       <window.SectionTitle sub="Timed one-shot and recurring agent work.">
