@@ -911,6 +911,12 @@ function ExtSettings({ ext, onBack, onSaved }) {
                   </option>
                 ))}
               </window.Select>
+            ) : f.format === 'user-audio-map' ? (
+              <UserAudioMapInput
+                extName={ext.name}
+                value={vals[f.key] || ''}
+                onChange={(val) => set(f.key, val)}
+              />
             ) : f.type === 'secret' ? (
               <window.SecretInput
                 value={vals[f.key] || ''}
@@ -1198,6 +1204,103 @@ function AuthFlowModal({ ext, onClose, onDone }) {
 
       {status === 'error' && <div style={{ marginTop: 14 }}>{<ErrorNote text={error} />}</div>}
     </window.Modal>
+  );
+}
+
+/* ---- custom inputs ---- */
+function UserAudioMapInput({ extName, value, onChange }) {
+  const [rows, setRows] = useStateExt(() => {
+    if (!value) return [];
+    return value.split(',').map((pair) => {
+      const idx = pair.indexOf(':');
+      if (idx === -1) return { uid: pair, path: '' };
+      return { uid: pair.slice(0, idx), path: pair.slice(idx + 1) };
+    });
+  });
+
+  const update = (newRows) => {
+    setRows(newRows);
+    onChange(newRows.filter(r => r.uid || r.path).map(r => `${r.uid}:${r.path}`).join(','));
+  };
+
+  const addRow = () => update([...rows, { uid: '', path: '' }]);
+  const removeRow = (i) => update(rows.filter((_, idx) => idx !== i));
+  const setRow = (i, field, val) => update(rows.map((r, idx) => idx === i ? { ...r, [field]: val } : r));
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {rows.map((row, i) => (
+        <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <window.Input
+            placeholder="User ID"
+            value={row.uid}
+            onChange={(e) => setRow(i, 'uid', e.target.value)}
+            style={{ width: 150 }}
+          />
+          <DropZoneInput
+            extName={extName}
+            value={row.path}
+            onChange={(path) => setRow(i, 'path', path)}
+          />
+          <window.Button variant="ghost" icon="trash" onClick={() => removeRow(i)} />
+        </div>
+      ))}
+      <div>
+        <window.Button variant="ghost" icon="plus" size="sm" onClick={addRow}>Add user mapping</window.Button>
+      </div>
+    </div>
+  );
+}
+
+function DropZoneInput({ extName, value, onChange }) {
+  const [dragging, setDragging] = useStateExt(false);
+  const [uploading, setUploading] = useStateExt(false);
+
+  const onDrop = async (e) => {
+    e.preventDefault();
+    setDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const res = await fetch(`/api/extensions/${encodeURIComponent(extName)}/upload`, {
+        method: 'POST',
+        headers: { 'x-filename': file.name },
+        body: file,
+      });
+      const data = await res.json();
+      if (res.ok && data.path) {
+        onChange(data.path);
+      } else {
+        window.alert(`Upload failed: ${data.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      window.alert(`Upload failed: ${err.message}`);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={onDrop}
+      style={{ flex: 1, position: 'relative' }}
+    >
+      <window.Input
+        value={uploading ? 'Uploading...' : value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={uploading}
+        placeholder="Drag MP3 file here or type absolute path"
+        style={{
+          width: '100%',
+          borderColor: dragging ? 'var(--accent)' : undefined,
+          background: dragging ? 'var(--accent-soft)' : undefined,
+        }}
+      />
+    </div>
   );
 }
 

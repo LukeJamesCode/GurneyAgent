@@ -38,11 +38,13 @@
     },
     "entrance_sounds": {
       "type": "string",
+      "format": "user-audio-map",
       "description": "Comma-separated list of <user_id>:<absolute_path_to_mp3> for playing an entrance sound when a specific user joins a voice channel Gurney is in.",
       "default": ""
     },
     "talking_sounds": {
       "type": "string",
+      "format": "user-audio-map",
       "description": "Comma-separated list of <user_id>:<absolute_path_to_mp3> for playing a sound whenever a specific user starts talking in a voice channel.",
       "default": ""
     }

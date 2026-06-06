@@ -85,6 +85,7 @@ export interface SettingsSchema {
     {
       type: 'string' | 'number' | 'boolean';
       default?: string | number | boolean;
+      format?: string;
       description?: string;
       secret?: boolean;
     }

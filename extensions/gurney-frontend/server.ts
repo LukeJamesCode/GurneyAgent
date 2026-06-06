@@ -634,6 +634,7 @@ interface ExtView {
     label: string;
     type: 'string' | 'number' | 'boolean' | 'secret' | 'enum';
     value: string | number | boolean;
+    format?: string;
     help?: string;
     options?: string[];
     required?: boolean;
@@ -683,6 +684,7 @@ function schemaToFields(
       label: humanize(key),
       type,
       value,
+      ...(decl.format ? { format: decl.format } : {}),
       ...(decl.description ? { help: decl.description } : {}),
       required: required.has(key),
     };
@@ -2466,6 +2468,18 @@ async function handleApi(
         res.end();
       }
       return;
+    }
+
+    const extUploadMatch = /^\/api\/extensions\/([a-z0-9._-]+)\/upload$/i.exec(path);
+    if (extUploadMatch && method === 'POST') {
+      const extName = extUploadMatch[1]!;
+      const fileBytes = await readRawBody(req);
+      const filename = req.headers['x-filename'] as string || `upload_${Date.now()}.mp3`;
+      const uploadDir = join(homeDir(), 'extensions', extName, 'uploads');
+      ensurePrivateDir(uploadDir);
+      const filePath = join(uploadDir, filename);
+      writeFileSync(filePath, fileBytes);
+      return sendJson(res, 200, { path: filePath });
     }
 
     const extAction =
