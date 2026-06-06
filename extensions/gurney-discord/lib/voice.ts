@@ -16,7 +16,8 @@ import { mkdtempSync, createWriteStream, rmSync } from 'node:fs';
 
 class SilencingReadable extends Readable {
   _read() {
-    this.push(Buffer.from([0xf8, 0xff, 0xfe]));
+    // Push one frame of raw PCM silence (48000Hz, 16-bit, stereo, 20ms = 960 samples * 4 bytes)
+    this.push(Buffer.alloc(960 * 4));
     this.push(null);
   }
 }
@@ -86,7 +87,7 @@ export class VoiceManager {
     });
 
     // Send a silent frame immediately to open the Discord UDP socket for receiving audio.
-    const silentResource = createAudioResource(new SilencingReadable(), { inputType: StreamType.OggOpus });
+    const silentResource = createAudioResource(new SilencingReadable(), { inputType: StreamType.Raw });
     player.play(silentResource);
   }
 
