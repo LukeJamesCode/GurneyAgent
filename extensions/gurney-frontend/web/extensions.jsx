@@ -1264,7 +1264,7 @@ function DropZoneInput({ extName, value, onChange }) {
 
     setUploading(true);
     try {
-      const res = await fetch(`/api/extensions/${encodeURIComponent(extName)}/upload`, {
+      const res = await fetch(window.api.url(`/api/extensions/${encodeURIComponent(extName)}/upload`), {
         method: 'POST',
         headers: { 'x-filename': file.name },
         body: file,
