@@ -109,8 +109,9 @@ export class VoiceManager {
     userId: string,
   ): Promise<void> {
     const allowedSet = this.allowlist().allowedDmUserIds;
+    this.log.info('handleUserSpeaking called', { userId, allowedSetSize: allowedSet.size });
     if (!allowedSet.has(userId) && userId !== this.allowlist().botUserId) {
-      // Not allowed, ignore
+      this.log.info('user not in allowedDmUserIds', { userId });
       return;
     }
 
@@ -119,6 +120,7 @@ export class VoiceManager {
     });
 
     const talkingSoundsStr = this.host.settings.get<string>('talking_sounds', '');
+    this.log.info('talkingSoundsStr retrieved', { talkingSoundsStr });
     if (talkingSoundsStr) {
       const pairs = talkingSoundsStr.split(',').map((s) => s.trim()).filter(Boolean);
       for (const pair of pairs) {
@@ -126,7 +128,9 @@ export class VoiceManager {
         if (idx !== -1) {
           const uid = pair.slice(0, idx);
           const mp3Path = pair.slice(idx + 1);
+          this.log.info('checking pair', { uid, userId, match: uid === userId });
           if (uid === userId && mp3Path) {
+            this.log.info('matched user talking sound', { userId, mp3Path });
             this.playLocalFile(guildId, mp3Path);
             break;
           }
@@ -296,12 +300,16 @@ export class VoiceManager {
 
   private playLocalFile(guildId: string, filePath: string): void {
     const player = this.players.get(guildId);
-    if (!player) return;
+    if (!player) {
+      this.log.warn('playLocalFile: no player found', { guildId });
+      return;
+    }
 
     try {
+      this.log.info('playLocalFile: attempting createAudioResource', { filePath });
       const resource = createAudioResource(filePath);
       player.play(resource);
-      this.log.info('played entrance sound', { guildId, filePath });
+      this.log.info('playLocalFile: played sound', { guildId, filePath });
     } catch (e) {
       this.log.warn('failed to play local file', { error: e instanceof Error ? e.message : String(e) });
     }
