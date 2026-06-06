@@ -32,16 +32,21 @@
       "description": "Disconnect the Discord gateway after this many minutes with no inbound messages (0 = stay connected). Useful on Pi targets.",
       "default": 0
     },
+    "taunt_mode": {
+      "type": "boolean",
+      "description": "When ON, the voice channel plays the entrance and talking sounds below (a soundboard). When OFF, Gurney acts as a normal voice assistant instead: it listens for the wake word (\"hey gurney\" / \"gurney\") and you can talk to it like a normal chat. The two modes are mutually exclusive.",
+      "default": false
+    },
     "entrance_sounds": {
       "type": "string",
       "format": "user-audio-map",
-      "description": "Comma-separated list of <user_id>:<absolute_path_to_mp3> for playing an entrance sound when a specific user joins a voice channel Gurney is in.",
+      "description": "Taunt mode only. Comma-separated list of <user_id>:<absolute_path_to_mp3> for playing an entrance sound when a specific user joins a voice channel Gurney is in.",
       "default": ""
     },
     "talking_sounds": {
       "type": "string",
       "format": "user-audio-map",
-      "description": "Comma-separated list of <user_id>:<absolute_path_to_mp3> for playing a sound whenever a specific user starts talking in a voice channel.",
+      "description": "Taunt mode only. Comma-separated list of <user_id>:<absolute_path_to_mp3> for playing a sound whenever a specific user starts talking in a voice channel.",
       "default": ""
     }
   },

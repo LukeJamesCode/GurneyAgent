@@ -143,18 +143,25 @@ export class VoiceManager {
       return;
     }
 
+    // Taunt mode swaps the channel's personality: ON = soundboard (play this
+    // user's talking sound, no assistant), OFF = normal voice assistant
+    // (transcribe and listen for the "gurney" wake word). The two are mutually
+    // exclusive, so in taunt mode we don't even subscribe to the audio.
+    if (this.host.settings.get<boolean>('taunt_mode', false)) {
+      const talkingSoundsStr = this.host.settings.get<string>('talking_sounds', '');
+      for (const { uid, path } of parseUserAudioMap(talkingSoundsStr)) {
+        if (uid === userId) {
+          this.log.info('matched user talking sound', { userId, path });
+          this.playLocalFile(guildId, path);
+          break;
+        }
+      }
+      return;
+    }
+
     const audioStream = connection.receiver.subscribe(userId, {
       end: { behavior: EndBehaviorType.AfterSilence, duration: 500 },
     });
-
-    const talkingSoundsStr = this.host.settings.get<string>('talking_sounds', '');
-    for (const { uid, path } of parseUserAudioMap(talkingSoundsStr)) {
-      if (uid === userId) {
-        this.log.info('matched user talking sound', { userId, path });
-        this.playLocalFile(guildId, path);
-        break;
-      }
-    }
 
     const dir = mkdtempSync(join(tmpdir(), 'gurney-discord-vc-'));
     const wavPath = join(dir, 'in.wav');
@@ -325,6 +332,9 @@ export class VoiceManager {
     if (newChannelId && newChannelId !== oldChannelId) {
       const ourGuild = this.channelToGuild.get(newChannelId);
       if (ourGuild === guildId) {
+        // Entrance sounds are a taunt-mode feature; in normal voice-assistant
+        // mode the bot stays quiet when people come and go.
+        if (!this.host.settings.get<boolean>('taunt_mode', false)) return;
         const entranceSoundsStr = this.host.settings.get<string>('entrance_sounds', '');
         for (const { uid, path } of parseUserAudioMap(entranceSoundsStr)) {
           if (uid === userId) {
