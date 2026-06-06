@@ -279,7 +279,7 @@ function App() {
           {route === 'learn' && learnEnabled && (
             <window.LearnHub agentRunning={agentStatus === 'running'} />
           )}
-          {route === 'agents' && <window.AgentsTab />}
+          {route === 'agents' && <window.AgentsTab state={state} />}
           {route === 'extensions' && <window.ExtensionsTab />}
           {route === 'settings' && (
             <window.SettingsTab onReRunWizard={() => setForcedView('wizard')} onSaved={refresh} />
@@ -442,7 +442,10 @@ function Wordmark() {
         <path d="M 50 25 L 71.7 37.5 L 71.7 50 L 50 37.5 Z" fill="#14532d" />
       </svg>
       <div style={{ lineHeight: 1.05, marginTop: 2 }}>
-        <div className="display" style={{ fontSize: 20, fontWeight: 800, letterSpacing: 0, color: 'var(--text)' }}>
+        <div
+          className="display"
+          style={{ fontSize: 20, fontWeight: 800, letterSpacing: 0, color: 'var(--text)' }}
+        >
           GURNEY
         </div>
         <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 700, letterSpacing: 0.5 }}>

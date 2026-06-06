@@ -36,6 +36,13 @@ export function isAgentChatId(chatId: number): boolean {
 // it out entirely. Registered by setupAgentDelegation (agent-delegation.ts).
 export const SPAWN_AGENT_TOOL_NAME = 'spawn_agent';
 
+// Name of the built-in approval tool. A 'confirm'-tier tool any agent may call
+// to pause and ask the human to sign off on a risky step it identified itself.
+// Always visible to agents (independent of their tool allowlist); filtered out
+// of the main chat orchestrator. Registered by setupAgentApprovals
+// (agent-approvals.ts).
+export const REQUEST_APPROVAL_TOOL_NAME = 'request_approval';
+
 // Maximum delegation depth (supervisor -> worker -> ...). A top-level task is
 // depth 0; spawn_agent refuses once a child would exceed this, so a buggy
 // persona can't recurse without bound.
@@ -633,6 +640,8 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     const ceiling = agentToolPredicate(override);
     return (h) => {
       if (h.name === SPAWN_AGENT_TOOL_NAME) return agent.canDelegate;
+      // Every agent may ask for human approval, regardless of its tool grant.
+      if (h.name === REQUEST_APPROVAL_TOOL_NAME) return true;
       return own(h) && ceiling(h);
     };
   }

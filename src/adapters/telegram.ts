@@ -30,6 +30,7 @@ import type { ChatPrefs, PrefsStore, QuietCheck } from '../core/prefs.js';
 import type { Followups, FollowupRow } from '../core/followups.js';
 import type { AgentRegistry } from '../core/agents.js';
 import type { AgentQueue } from '../core/agent-queue.js';
+import type { AgentApproval } from '../core/agent-approvals.js';
 import { formatAgentList, handleDispatch } from './agent-commands.js';
 import { formatWindow, parseDuration, parseWindow } from '../core/prefs.js';
 import type { Nudge, NudgeAction, SchedulerStats } from '../core/scheduler.js';
@@ -96,6 +97,9 @@ export interface TelegramOptions {
   extensionVoiceMessages?: () => ExtensionVoiceMessageRecord[];
   // Path to ~/.gurney/log/gurney.log for /logs.
   logFilePath?: string;
+  // Resolve a Yes/No press on an agent-approval prompt. Wired to the
+  // ApprovalManager; the allowlist middleware has already vetted the presser.
+  onAgentApproval?: (id: number, approved: boolean, fromUserId: number) => void;
 }
 
 export interface TelegramAdapter {
@@ -119,6 +123,9 @@ export interface TelegramAdapter {
     args: Record<string, unknown>,
     ctx: ToolContext,
   ): Promise<boolean>;
+  // Push an agent-approval prompt (with ✅/❌ buttons) to a chat. The button
+  // press comes back as an `agentapprove:<id>:<yes|no>` callback.
+  sendApprovalRequest(chatId: number, approval: AgentApproval): Promise<void>;
 }
 
 // How long a confirm-tier prompt waits for a Yes/No before giving up and
@@ -946,6 +953,24 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
     await ctx.answerCallbackQuery();
   });
 
+  // Agent-approval Yes/No. The decision is global (an approval id is unique and
+  // not chat-scoped) and the allowlist middleware already vetted the presser, so
+  // any allowlisted user can answer. Resolving is idempotent — a stale press
+  // (already decided) just no-ops in the manager.
+  bot.callbackQuery(/^agentapprove:(\d+):(yes|no)$/, async (ctx) => {
+    if (!ctx.from) {
+      await ctx.answerCallbackQuery();
+      return;
+    }
+    const id = Number(ctx.match[1]);
+    const approved = ctx.match[2] === 'yes';
+    opts.onAgentApproval?.(id, approved, ctx.from.id);
+    await ctx.answerCallbackQuery({ text: approved ? 'Approved' : 'Rejected' });
+    await ctx
+      .editMessageText(`${approved ? '✅ Approved' : '❌ Rejected'} · agent approval #${id}`)
+      .catch(() => {});
+  });
+
   bot.on('callback_query:data', async (ctx) => {
     if (!ctx.chat || !ctx.from) {
       await answerCallback(ctx);
@@ -1249,6 +1274,27 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
       } catch (e) {
         log.warn('sendMessage failed', {
           chatId,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    },
+    async sendApprovalRequest(chatId, approval) {
+      const keyboard = new InlineKeyboard()
+        .text('✅ Yes', `agentapprove:${approval.id}:yes`)
+        .text('❌ No', `agentapprove:${approval.id}:no`);
+      const who = approval.agentName ? approval.agentName : `Task #${approval.taskId}`;
+      // Plain text (no Markdown) so a tool name or reason with special
+      // characters can't break the message.
+      const text =
+        `🔐 Approval needed\n\n` +
+        `${who} wants to run "${approval.toolName}".\n\n` +
+        `${approval.preview}`;
+      try {
+        await bot.api.sendMessage(chatId, text, { reply_markup: keyboard });
+      } catch (e) {
+        log.warn('sendApprovalRequest failed', {
+          chatId,
+          id: approval.id,
           error: e instanceof Error ? e.message : String(e),
         });
       }

@@ -34,9 +34,12 @@ import {
   filterToolRegistry,
   isAgentChatId,
   seedStarterAgents,
+  AGENT_CHAT_ID_BASE,
   SPAWN_AGENT_TOOL_NAME,
+  REQUEST_APPROVAL_TOOL_NAME,
 } from '../core/agents.js';
 import { createAgentQueue } from '../core/agent-queue.js';
+import { setupAgentApprovals } from '../core/agent-approvals.js';
 import { setupAgentDelegation } from '../core/agent-delegation.js';
 import { setupAgentSchedules } from '../core/agent-schedules.js';
 import type { Tier } from './profiles.js';
@@ -338,10 +341,14 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   await loader.loadAll();
 
   const maxToolRounds = envInt('GURNEY_MAX_TOOL_ROUNDS');
-  // The main (Telegram/panel) chat must not see the delegation tool — spawn_agent
-  // is only meaningful inside an agent run, and exposing it to the small chat
-  // model would just invite misfires. Agents get it via their own filtered view.
-  const chatTools = filterToolRegistry(tools, (h) => h.name !== SPAWN_AGENT_TOOL_NAME);
+  // The main (Telegram/panel) chat must not see the agent-only tools —
+  // spawn_agent and request_approval are only meaningful inside an agent run,
+  // and exposing them to the small chat model would just invite misfires.
+  // Agents get them via their own filtered view.
+  const chatTools = filterToolRegistry(
+    tools,
+    (h) => h.name !== SPAWN_AGENT_TOOL_NAME && h.name !== REQUEST_APPROVAL_TOOL_NAME,
+  );
   const orchestrator = createOrchestrator({
     db,
     llm,
@@ -404,6 +411,16 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     queue: agentQueue,
     log,
   });
+  // Human-in-the-loop approvals: registers the request_approval tool and the
+  // manager that parks a confirm-tier agent call until the owner answers (over
+  // Telegram or the panel). The notifier is bound once the Telegram adapter
+  // exists, below.
+  const { manager: approvalManager } = setupAgentApprovals({
+    db,
+    tools,
+    registry: agentRegistry,
+    log,
+  });
   // Pick up any queued/re-queued work now that the engine is live.
   agentQueue.notify();
 
@@ -430,6 +447,18 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     extensionAfterTurns: () => loader.afterTurns(),
     extensionCallbacks: () => loader.callbacks(),
     extensionVoiceMessages: () => loader.voiceMessages(),
+    // Yes/No on an agent-approval prompt arrives here as a callback; resolve the
+    // parked tool call. The allowlist middleware already gated the press.
+    onAgentApproval: (id, approved, fromUserId) =>
+      approvalManager.resolveFromTelegram(id, approved, fromUserId),
+  });
+  // Now that the adapter exists, push approval prompts to the owner(s) over
+  // Telegram. Best-effort per chat — a send failure leaves the row pending and
+  // still answerable from the panel.
+  approvalManager.setNotifier(async (approval) => {
+    for (const chatId of cfg.telegram.allowedIds) {
+      await telegram.sendApprovalRequest(chatId, approval);
+    }
   });
   // Mirror a proactive nudge to every registered chat surface other than
   // Telegram (e.g. Discord) so briefings/nudges/reminders land wherever the
@@ -462,15 +491,25 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   // tool-engine contract is unchanged — confirm is still a single async
   // hook returning a boolean per call.
   confirmToolCall = async (handler, args, ctx) => {
-    // Background agent runs are unattended — a confirm-tier tool has no one to
-    // approve it, so it fails closed rather than auto-running or hanging. This
-    // is the key guardrail against silent autonomy in a delegated swarm.
+    // Background agent runs are unattended, so a confirm-tier tool can't pop a
+    // prompt in a live chat. Instead we park it: ask the owner over Telegram
+    // (Yes/No) and in the panel, and wait for a human to decide. This is the
+    // guardrail against silent autonomy in a delegated swarm — nothing risky
+    // runs until someone approves it.
     if (ctx.chatId !== undefined && isAgentChatId(ctx.chatId)) {
-      log.warn('confirm-tier tool blocked in background agent run — failing closed', {
-        tool: handler.name,
-        chatId: ctx.chatId,
+      let preview: string;
+      try {
+        preview = handler.confirmPrompt ? handler.confirmPrompt(args) : `Run \`${handler.name}\`?`;
+      } catch {
+        preview = `Run \`${handler.name}\`?`;
+      }
+      return approvalManager.request({
+        taskId: ctx.chatId - AGENT_CHAT_ID_BASE,
+        toolName: handler.name,
+        preview,
+        args,
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
       });
-      return false;
     }
     if (ctx.chatId !== undefined) {
       for (const surface of loader.chatSurfaces()) {
@@ -613,6 +652,9 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
       });
     }
     try {
+      // Release any parked approvals first so a task waiting on one can unwind,
+      // otherwise the drain would block on a tool call no one will answer now.
+      approvalManager.shutdown();
       await agentQueue.drain();
       await agentRuntime.shutdown();
     } catch (e) {

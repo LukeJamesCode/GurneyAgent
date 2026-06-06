@@ -107,8 +107,9 @@ function buildWorkflows(tasks) {
     });
 }
 
-function WorkflowCard({ wf, selected, onSelect }) {
+function WorkflowCard({ wf, selected, onSelect, onOpen, onCancel }) {
   const title = wf.root.agentName || `Task #${wf.root.id}`;
+  const active = wf.root.status === 'running' || wf.root.status === 'queued';
   return (
     <div
       className={`dash-card clickable${selected ? ' selected' : ''}`}
@@ -134,9 +135,6 @@ function WorkflowCard({ wf, selected, onSelect }) {
           </span>
         </div>
       </div>
-      <div style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.4 }}>
-        {wfClip(wf.root.prompt, 88)}
-      </div>
       <div className="progress-section">
         <div className="progress-labels">
           <span>{wf.stepLabel}</span>
@@ -158,10 +156,37 @@ function WorkflowCard({ wf, selected, onSelect }) {
           ))}
         </div>
       )}
-      <div className="card-actions single">
-        <span style={{ fontSize: 11.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
-          #{wf.root.id} · {wfRelTime(wf.root.createdAt)}
-        </span>
+      <div className="card-actions">
+        <button
+          className="dash-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen(wf.root.id);
+          }}
+        >
+          <window.Icon name="external-link" size={14} /> Open
+        </button>
+        {active ? (
+          <button
+            className="dash-btn sub"
+            onClick={(e) => {
+              e.stopPropagation();
+              onCancel(wf.root);
+            }}
+          >
+            <window.Icon name="stop" size={14} /> Cancel
+          </button>
+        ) : (
+          <button
+            className="dash-btn sub"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen(wf.root.id);
+            }}
+          >
+            <window.Icon name="doc" size={14} /> Details
+          </button>
+        )}
       </div>
     </div>
   );
@@ -217,59 +242,322 @@ function WorkflowDiagram({ wf }) {
   );
 }
 
-function ActiveWorkflows({ tasks }) {
-  const [selectedId, setSelectedId] = useState(null);
-  const workflows = buildWorkflows(tasks);
-  const selected = workflows.find((w) => w.root.id === selectedId) || workflows[0] || null;
-
-  if (workflows.length === 0) {
-    return (
-      <window.Card>
-        <div style={{ color: 'var(--text-3)', fontSize: 14, padding: '8px 2px' }}>
-          No active workflows yet. Dispatch a task to an agent below and it shows up here, with any
-          sub-agents it delegates to.
-        </div>
-      </window.Card>
-    );
-  }
+function LiveRunLog({ tasks, onOpen }) {
   return (
-    <div style={{ marginBottom: 26 }}>
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-          gap: 14,
-          marginBottom: 14,
-        }}
-      >
-        {workflows.map((wf) => (
-          <WorkflowCard
-            key={wf.root.id}
-            wf={wf}
-            selected={selected && wf.root.id === selected.root.id}
-            onSelect={setSelectedId}
-          />
-        ))}
+    <div className="dash-panel">
+      <div className="panel-header">
+        <h3>
+          <window.Icon name="activity" size={16} /> Live Run Log
+        </h3>
       </div>
-      {selected && (
-        <div className="dash-section" style={{ marginBottom: 0 }}>
-          <div className="section-header">
-            <h3>
-              <window.Icon name="git-merge" size={16} className="green-text" /> Pipeline:{' '}
-              {selected.root.agentName || `Task #${selected.root.id}`}
-            </h3>
-            <span className={`status-label ${selected.meta.tone}`}>
-              <span className={`dot ${selected.meta.tone}`}></span> {selected.meta.label}
-            </span>
-          </div>
-          <WorkflowDiagram wf={selected} />
+      {tasks.length === 0 ? (
+        <div style={{ color: 'var(--text-3)', fontSize: 13, padding: '6px 2px' }}>
+          No agent activity yet.
+        </div>
+      ) : (
+        <div className="log-table">
+          {tasks.slice(0, 6).map((t) => {
+            const meta = wfStatusOf(t.status);
+            const when = t.finishedAt || t.startedAt || t.createdAt;
+            return (
+              <div
+                key={t.id}
+                className={`log-row${t.status === 'error' ? ' yellow-bg' : ''}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => onOpen(t.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') onOpen(t.id);
+                }}
+                style={{ cursor: 'pointer' }}
+              >
+                <span className="time">{wfRelTime(when)}</span>
+                <window.Icon
+                  name={meta.icon}
+                  size={14}
+                  className={`${meta.tone}-text${meta.spin ? ' spin' : ''}`}
+                />
+                <span className={`msg${t.status === 'error' ? ' red-text' : ''}`}>
+                  {t.status === 'error' && t.error ? t.error : wfClip(t.prompt, 80)}
+                </span>
+                <span className={`tag ${wfTagTone(t.agentId)}`}>
+                  {t.agentName || `#${t.agentId}`}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-function AgentsTab() {
+function AgentStatusPanel({ agents, tasks, onNew, onEdit }) {
+  const stateOf = (id) => {
+    const mine = tasks.filter((t) => t.agentId === id);
+    if (mine.some((t) => t.status === 'running')) return { tone: 'yellow', label: 'Busy' };
+    if (mine.some((t) => t.status === 'queued')) return { tone: 'blue', label: 'Queued' };
+    return { tone: 'green', label: 'Online' };
+  };
+  return (
+    <div className="dash-panel">
+      <div className="panel-header">
+        <h3>
+          <window.Icon name="activity" size={16} /> Agent Status
+        </h3>
+        <a
+          href="#"
+          onClick={(e) => {
+            e.preventDefault();
+            onNew();
+          }}
+        >
+          + New
+        </a>
+      </div>
+      {agents.length === 0 ? (
+        <div style={{ color: 'var(--text-3)', fontSize: 13 }}>No agents yet.</div>
+      ) : (
+        <div className="status-list">
+          {agents.map((a) => {
+            const st = stateOf(a.id);
+            return (
+              <div
+                className="status-item"
+                key={a.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => onEdit(a)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') onEdit(a);
+                }}
+                style={{ cursor: 'pointer' }}
+                title="Edit agent"
+              >
+                <span className={`dot ${st.tone}`}></span> {a.name} <span>{st.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SystemHealthPanel({ state }) {
+  const sys = state && state.system ? state.system : null;
+  const cpu = sys && typeof sys.cpuPercent === 'number' ? sys.cpuPercent : null;
+  const ram =
+    sys && typeof sys.ramPercent === 'number'
+      ? sys.ramPercent
+      : state && state.ramGb
+        ? Math.round((1 - state.freeRamGb / state.ramGb) * 100)
+        : null;
+  const queue = sys ? sys.queueDepth : 0;
+  const errors = sys ? sys.errors24h : 0;
+  return (
+    <div className="dash-panel">
+      <div className="panel-header">
+        <h3>
+          <window.Icon name="server" size={16} /> System Health
+        </h3>
+      </div>
+      <div className="health-stats">
+        <div className="stat-row">
+          <span>
+            <window.Icon name="cpu" size={14} /> CPU
+          </span>
+          <div className="val">
+            {cpu == null ? '—' : `${cpu}%`}
+            <div className="mini-bar">
+              <div className="fill green" style={{ width: `${cpu ?? 0}%` }}></div>
+            </div>
+          </div>
+        </div>
+        <div className="stat-row">
+          <span>
+            <window.Icon name="database" size={14} /> RAM
+          </span>
+          <div className="val">
+            {ram == null ? '—' : `${ram}%`}
+            <div className="mini-bar">
+              <div className="fill green" style={{ width: `${ram ?? 0}%` }}></div>
+            </div>
+          </div>
+        </div>
+        <div className="stat-row">
+          <span>
+            <window.Icon name="layers" size={14} /> Queue
+          </span>
+          <div className="val">{queue}</div>
+        </div>
+        <div className="stat-row">
+          <span>
+            <window.Icon name="alert-triangle" size={14} /> Errors (24h)
+          </span>
+          <div className={`val${errors > 0 ? ' red-text' : ''}`}>{errors}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ApprovalsPanel({ approvals, onResolve, busyId }) {
+  const pending = (approvals && approvals.pending) || [];
+  return (
+    <div className="dash-panel">
+      <div className="panel-header">
+        <h3>
+          <window.Icon name="shield" size={16} /> Approvals
+        </h3>
+        {pending.length > 0 && <span className="tag yellow">{pending.length} pending</span>}
+      </div>
+      {pending.length === 0 ? (
+        <div style={{ color: 'var(--text-3)', fontSize: 13, lineHeight: 1.5 }}>
+          No pending approvals. Risky agent steps will appear here for sign-off.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {pending.map((a) => (
+            <div className="approval-card" key={a.id}>
+              <span className="tag yellow mb-2">PENDING</span>
+              <span className="right">{wfRelTime(a.createdAt)}</span>
+              <p style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--text-2)' }}>
+                <strong style={{ color: 'var(--text)' }}>
+                  {a.agentName || `Task #${a.taskId}`}
+                </strong>{' '}
+                wants to run <code>{a.toolName}</code>
+                {a.preview ? ` — ${wfClip(a.preview, 120)}` : ''}
+              </p>
+              <div className="appr-actions" style={{ gridTemplateColumns: '1fr 1fr' }}>
+                <button
+                  className="dash-btn green"
+                  disabled={busyId === a.id}
+                  onClick={() => onResolve(a.id, true)}
+                >
+                  <window.Icon name="check" size={14} /> Approve
+                </button>
+                <button
+                  className="dash-btn red"
+                  disabled={busyId === a.id}
+                  onClick={() => onResolve(a.id, false)}
+                >
+                  <window.Icon name="x" size={14} /> Reject
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MemoryPanel() {
+  return (
+    <div className="dash-panel">
+      <div className="panel-header">
+        <h3>
+          <window.Icon name="database" size={16} /> Memory
+        </h3>
+      </div>
+      <div style={{ color: 'var(--text-3)', fontSize: 13, lineHeight: 1.5 }}>
+        Project memory isn’t wired up. Enable the memory extension to surface stored facts here.
+      </div>
+    </div>
+  );
+}
+
+// The mission-control layout: workflow cards + pipeline diagram + run log down
+// the left, a status/health/approvals/memory sidebar down the right.
+function MissionControl({
+  tasks,
+  agents,
+  state,
+  approvals,
+  onResolveApproval,
+  approvalBusyId,
+  onOpenTask,
+  onCancelTask,
+  onNewAgent,
+  onEditAgent,
+}) {
+  const [selectedId, setSelectedId] = useState(null);
+  const workflows = buildWorkflows(tasks);
+  const selected = workflows.find((w) => w.root.id === selectedId) || workflows[0] || null;
+  return (
+    <div className="dash-bottom-grid" style={{ marginBottom: 26 }}>
+      <div className="dash-col-left">
+        <div className="dash-header" style={{ marginBottom: 0 }}>
+          <h2>Active Workflows</h2>
+          <div className="dash-header-actions">
+            <button className="dash-btn sub">
+              All Workflows <window.Icon name="chevron-down" size={14} />
+            </button>
+          </div>
+        </div>
+
+        {workflows.length === 0 ? (
+          <div className="dash-card">
+            <div style={{ color: 'var(--text-3)', fontSize: 14, padding: '8px 2px' }}>
+              No active workflows yet. Dispatch a task to an agent and it shows up here, with any
+              sub-agents it delegates to.
+            </div>
+          </div>
+        ) : (
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+              gap: 16,
+            }}
+          >
+            {workflows.map((wf) => (
+              <WorkflowCard
+                key={wf.root.id}
+                wf={wf}
+                selected={selected && wf.root.id === selected.root.id}
+                onSelect={setSelectedId}
+                onOpen={onOpenTask}
+                onCancel={onCancelTask}
+              />
+            ))}
+          </div>
+        )}
+
+        {selected && (
+          <div className="dash-section" style={{ marginBottom: 0 }}>
+            <div className="section-header">
+              <h3>
+                <window.Icon name="git-merge" size={16} className="green-text" /> Workflow:{' '}
+                {selected.root.agentName || `Task #${selected.root.id}`}
+              </h3>
+              <span className={`status-label ${selected.meta.tone}`}>
+                <span className={`dot ${selected.meta.tone}`}></span> {selected.meta.label}
+              </span>
+            </div>
+            <WorkflowDiagram wf={selected} />
+          </div>
+        )}
+
+        <LiveRunLog tasks={tasks} onOpen={onOpenTask} />
+      </div>
+
+      <div className="dash-col-right">
+        <AgentStatusPanel agents={agents} tasks={tasks} onNew={onNewAgent} onEdit={onEditAgent} />
+        <SystemHealthPanel state={state} />
+        <ApprovalsPanel
+          approvals={approvals}
+          onResolve={onResolveApproval}
+          busyId={approvalBusyId}
+        />
+        <MemoryPanel />
+      </div>
+    </div>
+  );
+}
+
+function AgentsTab({ state }) {
   const [agents, setAgents] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [schedules, setSchedules] = useState([]);
@@ -277,18 +565,32 @@ function AgentsTab() {
   const [dispatchFor, setDispatchFor] = useState(null); // agent to dispatch to
   const [scheduleFor, setScheduleFor] = useState(null); // agent preselected for scheduling; null = choose in modal
   const [openTask, setOpenTask] = useState(null); // task id whose detail is open
+  const [approvals, setApprovals] = useState({ pending: [], recent: [] });
+  const [approvalBusyId, setApprovalBusyId] = useState(null); // approval id mid-resolve
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
-    const [a, t, s] = await Promise.all([
+    const [a, t, s, p] = await Promise.all([
       window.api.get('/api/agents'),
       window.api.get('/api/agents/tasks'),
       window.api.get('/api/agents/schedules'),
+      window.api.get('/api/agents/approvals'),
     ]);
     if (a.ok) setAgents(a.data.agents || []);
     if (t.ok) setTasks(t.data.tasks || []);
     if (s.ok) setSchedules(s.data.schedules || []);
+    if (p.ok) setApprovals({ pending: p.data.pending || [], recent: p.data.recent || [] });
   }, []);
+
+  const resolveApproval = async (id, approved) => {
+    setApprovalBusyId(id);
+    // Optimistically drop it from the pending list so the buttons don't linger.
+    setApprovals((cur) => ({ ...cur, pending: cur.pending.filter((a) => a.id !== id) }));
+    const r = await window.api.post(`/api/agents/approvals/${id}/resolve`, { approved });
+    if (!r.ok) setError(r.error || 'Could not record the decision');
+    setApprovalBusyId(null);
+    load();
+  };
 
   useEffect(() => {
     load();
@@ -349,9 +651,28 @@ function AgentsTab() {
   };
 
   return (
-    <div style={{ maxWidth: 1040, margin: '0 auto', width: '100%' }}>
+    <div style={{ maxWidth: 1320, margin: '0 auto', width: '100%' }}>
+      {error && (
+        <div style={{ marginBottom: 14 }}>
+          <window.Badge tone="err">{error}</window.Badge>
+        </div>
+      )}
+
+      <MissionControl
+        tasks={tasks}
+        agents={agents}
+        state={state}
+        approvals={approvals}
+        onResolveApproval={resolveApproval}
+        approvalBusyId={approvalBusyId}
+        onOpenTask={(id) => setOpenTask(id)}
+        onCancelTask={cancelTask}
+        onNewAgent={() => setEditing({ ...EMPTY_AGENT })}
+        onEditAgent={(a) => setEditing(a)}
+      />
+
       <window.SectionTitle
-        sub="Define personas, dispatch tasks, and watch them run. One heavy reasoning model runs at a time — tiny models can run in parallel."
+        sub="Personas you can dispatch tasks to or schedule."
         right={
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <window.Button icon="send" variant="subtle" onClick={() => setScheduleFor({})}>
@@ -367,21 +688,6 @@ function AgentsTab() {
           </div>
         }
       >
-        Agents
-      </window.SectionTitle>
-
-      {error && (
-        <div style={{ marginBottom: 14 }}>
-          <window.Badge tone="err">{error}</window.Badge>
-        </div>
-      )}
-
-      <window.SectionTitle sub="Live top-level tasks and the sub-agents they delegated to.">
-        Active Workflows
-      </window.SectionTitle>
-      <ActiveWorkflows tasks={tasks} />
-
-      <window.SectionTitle sub="Personas you can dispatch tasks to or schedule.">
         Fleet
       </window.SectionTitle>
       {agents.length === 0 ? (
@@ -412,9 +718,6 @@ function AgentsTab() {
           ))}
         </div>
       )}
-
-      <window.SectionTitle sub="Most recent runs across all agents.">Tasks</window.SectionTitle>
-      <TaskList tasks={tasks} onOpen={(id) => setOpenTask(id)} onCancel={cancelTask} />
 
       <window.SectionTitle sub="Timed one-shot and recurring agent work.">
         Schedules
@@ -499,86 +802,6 @@ function AgentCard({ agent, onEdit, onDelete, onDispatch, onSchedule }) {
         <window.Button size="sm" variant="subtle" icon="trash" onClick={onDelete} />
       </div>
     </window.Card>
-  );
-}
-
-function TaskList({ tasks, onOpen, onCancel }) {
-  if (tasks.length === 0) {
-    return (
-      <window.Card>
-        <div style={{ color: 'var(--text-3)', fontSize: 14 }}>No tasks dispatched yet.</div>
-      </window.Card>
-    );
-  }
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {tasks.map((t) => (
-        <div
-          key={t.id}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            textAlign: 'left',
-            padding: '10px 14px',
-            background: 'var(--surface)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-sm)',
-            cursor: 'pointer',
-          }}
-        >
-          <button
-            onClick={() => onOpen(t.id)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              minWidth: 0,
-              flex: 1,
-              border: 0,
-              background: 'transparent',
-              color: 'inherit',
-              padding: 0,
-              textAlign: 'left',
-              cursor: 'pointer',
-            }}
-          >
-            <window.Badge tone={STATUS_TONE[t.status] || 'neutral'}>{t.status}</window.Badge>
-            <span style={{ fontWeight: 600, fontSize: 13, minWidth: 90 }}>
-              {t.agentName || `#${t.agentId}`}
-            </span>
-            <span
-              style={{
-                flex: 1,
-                fontSize: 13,
-                color: 'var(--text-2)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {t.parentId ? '↳ ' : ''}
-              {t.prompt}
-            </span>
-            <span
-              style={{ fontSize: 11.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}
-            >
-              #{t.id}
-            </span>
-          </button>
-          {['queued', 'running'].includes(t.status) && (
-            <window.Button
-              size="sm"
-              variant="subtle"
-              icon="stop"
-              danger
-              onClick={() => onCancel(t)}
-              title="Stop task"
-            />
-          )}
-        </div>
-      ))}
-    </div>
   );
 }
 

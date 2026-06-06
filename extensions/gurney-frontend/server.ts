@@ -39,6 +39,7 @@ import {
   type CreateAgentInput,
 } from '../../src/core/agents.js';
 import { createAgentScheduleStore } from '../../src/core/agent-schedules.js';
+import { createAgentApprovalStore } from '../../src/core/agent-approvals.js';
 import type { ProfileName } from '../../src/core/llm.js';
 import { createLogger } from '../../src/util/log.js';
 import { createOllama } from '../../src/core/llm.js';
@@ -2172,6 +2173,34 @@ async function handleApi(
         res,
         ok ? 200 : 409,
         ok ? { ok: true } : { error: 'task is not queued or running' },
+      );
+    }
+
+    // Human-in-the-loop approvals. The daemon parks a risky agent tool call and
+    // writes a pending row; the panel lists them and writes the decision. The
+    // daemon's ApprovalManager polls the row and resolves the parked call — the
+    // same cross-process handoff the task queue uses.
+    if (path === '/api/agents/approvals' && method === 'GET') {
+      const data = withDb((db) => {
+        const store = createAgentApprovalStore(db);
+        return { pending: store.listPending(), recent: store.listRecent(20) };
+      }) ?? { pending: [], recent: [] };
+      return sendJson(res, 200, data);
+    }
+    const approvalMatch = /^\/api\/agents\/approvals\/(\d+)\/resolve$/.exec(path);
+    if (approvalMatch && method === 'POST') {
+      const id = Number(approvalMatch[1]);
+      const body = await readJson<{ approved?: boolean }>(req);
+      if (typeof body.approved !== 'boolean') {
+        return sendJson(res, 400, { error: 'approved (boolean) is required' });
+      }
+      const updated = withDb((db) =>
+        createAgentApprovalStore(db).decide(id, body.approved as boolean, 'panel'),
+      );
+      return sendJson(
+        res,
+        updated ? 200 : 409,
+        updated ? { approval: updated } : { error: 'approval is not pending or does not exist' },
       );
     }
 
