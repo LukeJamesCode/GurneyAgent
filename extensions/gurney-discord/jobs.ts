@@ -71,7 +71,6 @@ export async function register(host: Host): Promise<void> {
   // takes effect without restarting the bridge.
   const allowlistAccessor = (): AllowlistConfig => ({
     allowedDmUserIds: parseCsvSet(host.settings.get<string>('allowed_dm_user_ids', '')),
-    allowedChannelKeys: parseCsvSet(host.settings.get<string>('allowed_channel_keys', '')),
     botUserId,
   });
 
@@ -157,18 +156,16 @@ export async function register(host: Host): Promise<void> {
           );
           return;
         }
-        const key = `${ctx.guildId}:${ctx.channelId}`;
-        const allowed = parseCsvSet(host.settings.get<string>('allowed_channel_keys', ''));
+        const allowed = parseCsvSet(host.settings.get<string>('allowed_dm_user_ids', ''));
         const self = client.selfId() ?? 'me';
-        if (allowed.has(key)) {
+        if (allowed.has(ctx.userId)) {
           await ctx.replyEphemeral(
-            `This channel is opted in. Mention <@${self}> to chat. ` +
-              'To opt out, remove this channel from `allowed_channel_keys` via `gurney config gurney-discord` on the host.',
+            `You are on the allowlist. Mention <@${self}> to chat anywhere!`
           );
         } else {
           await ctx.replyEphemeral(
-            "This channel isn't opted in. Ask the bridge operator to add " +
-              `\`${key}\` to allowed_channel_keys via \`gurney config gurney-discord\` on the host.`,
+            "You aren't on the allowlist. Ask the bridge operator to add " +
+              `your user ID (\`${ctx.userId}\`) to allowed_dm_user_ids via \`gurney config gurney-discord\` on the host.`
           );
         }
       },
@@ -239,7 +236,6 @@ export async function register(host: Host): Promise<void> {
       log.info('gurney-discord bridge online', {
         botUserId,
         dmAllowlistSize: parseCsvSet(host.settings.get<string>('allowed_dm_user_ids', '')).size,
-        channelOptInCount: parseCsvSet(host.settings.get<string>('allowed_channel_keys', '')).size,
       });
     },
     (e) => {

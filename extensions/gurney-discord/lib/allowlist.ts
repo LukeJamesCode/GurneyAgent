@@ -14,7 +14,6 @@
 
 export interface AllowlistConfig {
   allowedDmUserIds: Set<string>;
-  allowedChannelKeys: Set<string>;
   botUserId: string;
 }
 
@@ -53,16 +52,16 @@ export function decide(cfg: AllowlistConfig, m: InboundMessageMeta): AllowDecisi
     return { allow: false, reason: 'dm_not_allowed' };
   }
 
-  // Guild channel: require both an opt-in for this channel AND an explicit
-  // @-mention of the bot. The mention requirement is non-negotiable — the
-  // safety doc forbids default-on group-chat intercept.
+  // Guild channel: require an explicit @-mention of the bot.
   if (!m.mentionedUserIds.has(cfg.botUserId)) {
     return { allow: false, reason: 'guild_not_mentioned' };
   }
-  const key = `${m.guildId}:${m.channelId}`;
-  if (!cfg.allowedChannelKeys.has(key)) {
-    return { allow: false, reason: 'channel_not_opted_in' };
+  
+  // Enforce user allowlist globally instead of channel allowlist
+  if (!cfg.allowedDmUserIds.has(m.authorId)) {
+    return { allow: false, reason: 'dm_not_allowed' };
   }
+  
   return { allow: true, kind: 'mention' };
 }
 

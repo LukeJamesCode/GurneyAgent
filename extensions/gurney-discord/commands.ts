@@ -15,13 +15,11 @@ export function register(host: Host): void {
     async (ctx) => {
       const identity = createIdentityStore(host.db);
       const dmAllow = parseCsvSet(host.settings.get<string>('allowed_dm_user_ids', ''));
-      const channelAllow = parseCsvSet(host.settings.get<string>('allowed_channel_keys', ''));
       const tokenSet = (host.settings.get<string>('bot_token', '') || '').length > 0;
       const chats = identity.count();
       const lines = [
         `Discord bridge: ${tokenSet ? 'configured' : 'NOT configured (run `gurney auth gurney-discord`)'}`,
-        `DM allowlist: ${dmAllow.size} user${dmAllow.size === 1 ? '' : 's'}`,
-        `Channel opt-ins: ${channelAllow.size}`,
+        `User allowlist: ${dmAllow.size} user${dmAllow.size === 1 ? '' : 's'}`,
         `Known chats: ${chats}`,
       ];
       await ctx.reply(lines.join('\n'));

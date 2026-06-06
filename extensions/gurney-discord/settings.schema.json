@@ -11,11 +11,7 @@
       "description": "Comma-separated Discord user IDs allowed to DM the bot. Empty = no DM access. IDs are 17-19 digit snowflakes from Discord's Developer Mode 'Copy ID'.",
       "default": ""
     },
-    "allowed_channel_keys": {
-      "type": "string",
-      "description": "Comma-separated <guild_id>:<channel_id> pairs where the bot will respond to @-mentions. Empty = no channels. Use /gurney enable inside Discord to opt a channel in interactively.",
-      "default": ""
-    },
+
     "rate_limit_per_minute": {
       "type": "number",
       "description": "Max user-initiated turns per minute per Discord user. Defends against runaway loops and noisy clients.",
