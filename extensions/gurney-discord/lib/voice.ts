@@ -81,6 +81,14 @@ export class VoiceManager {
     player.on('error', (e) => {
       this.log.warn('audio player error', { error: e.message });
     });
+    
+    connection.on('stateChange', (oldState, newState) => {
+      this.log.info('voice connection stateChange', { old: oldState.status, new: newState.status });
+    });
+    connection.on('debug', (msg) => {
+      this.log.info('voice connection debug', { msg });
+    });
+
     connection.subscribe(player);
     this.players.set(guildId, player);
     this.channelToGuild.set(channelId, guildId);
