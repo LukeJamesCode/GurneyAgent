@@ -107,7 +107,7 @@ function buildWorkflows(tasks) {
     });
 }
 
-function WorkflowCard({ wf, selected, onSelect, onOpen, onCancel }) {
+function WorkflowCard({ wf, selected, onSelect, onOpen, onCancel, onViewOutput }) {
   const title = wf.root.agentName || `Task #${wf.root.id}`;
   const active = wf.root.status === 'running' || wf.root.status === 'queued';
   return (
@@ -177,15 +177,28 @@ function WorkflowCard({ wf, selected, onSelect, onOpen, onCancel }) {
             <window.Icon name="stop" size={14} /> Cancel
           </button>
         ) : (
-          <button
-            className="dash-btn sub"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpen(wf.root.id);
-            }}
-          >
-            <window.Icon name="doc" size={14} /> Details
-          </button>
+          <>
+            <button
+              className="dash-btn sub"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpen(wf.root.id);
+              }}
+            >
+              <window.Icon name="doc" size={14} /> Details
+            </button>
+            {wf.root.status === 'done' && (
+              <button
+                className="dash-btn sub"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onViewOutput) onViewOutput(wf.root);
+                }}
+              >
+                <window.Icon name="file-text" size={14} /> View Output
+              </button>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -464,6 +477,7 @@ function MissionControl({
   approvalBusyId,
   onOpenTask,
   onCancelTask,
+  onViewOutput,
   onConfigureAgents,
   onNewAgent,
   onEditAgent,
@@ -509,6 +523,7 @@ function MissionControl({
                 onSelect={setSelectedId}
                 onOpen={onOpenTask}
                 onCancel={onCancelTask}
+                onViewOutput={onViewOutput}
               />
             ))}
           </div>
@@ -618,6 +633,7 @@ function AgentsTab({ state }) {
   const [dispatchFor, setDispatchFor] = useState(null); // agent to dispatch to
   const [scheduleFor, setScheduleFor] = useState(null); // agent preselected for scheduling; null = choose in modal
   const [openTask, setOpenTask] = useState(null); // task id whose detail is open
+  const [viewOutputFor, setViewOutputFor] = useState(null); // task object
   const [approvals, setApprovals] = useState({ pending: [], recent: [] });
   const [approvalBusyId, setApprovalBusyId] = useState(null); // approval id mid-resolve
   const [error, setError] = useState('');
@@ -720,6 +736,7 @@ function AgentsTab({ state }) {
         approvalBusyId={approvalBusyId}
         onOpenTask={(id) => setOpenTask(id)}
         onCancelTask={cancelTask}
+        onViewOutput={(task) => setViewOutputFor(task)}
         onConfigureAgents={() => setShowConfigureAgents(true)}
         onNewAgent={() => setEditing({ ...EMPTY_AGENT })}
         onEditAgent={(a) => setEditing(a)}
@@ -779,6 +796,12 @@ function AgentsTab({ state }) {
             setOpenTask(null);
             load();
           }}
+        />
+      )}
+      {viewOutputFor && (
+        <OutputModal
+          task={viewOutputFor}
+          onClose={() => setViewOutputFor(null)}
         />
       )}
     </div>
@@ -1318,6 +1341,39 @@ async function rawFetch(method, path, body) {
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e), offline: true };
   }
+}
+
+function OutputModal({ task, onClose }) {
+  return (
+    <window.Modal
+      open
+      onClose={onClose}
+      width={640}
+      title={`Output · ${task.agentName || `Task #${task.id}`}`}
+      footer={
+        <window.Button variant="primary" onClick={onClose}>
+          Close
+        </window.Button>
+      }
+    >
+      <div
+        style={{
+          maxHeight: '60vh',
+          overflowY: 'auto',
+          padding: 12,
+          background: 'var(--surface-2)',
+          borderRadius: 'var(--radius-sm)',
+          border: '1px solid var(--border)',
+          color: 'var(--text)',
+          fontSize: 14,
+          lineHeight: 1.5,
+          whiteSpace: 'pre-wrap',
+        }}
+      >
+        {task.result || 'No output available.'}
+      </div>
+    </window.Modal>
+  );
 }
 
 Object.assign(window, { AgentsTab });
