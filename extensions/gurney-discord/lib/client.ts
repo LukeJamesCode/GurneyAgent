@@ -13,6 +13,7 @@ import {
   type Message,
   type Interaction,
 } from 'discord.js';
+import type { DiscordGatewayAdapterCreator } from '@discordjs/voice';
 import type { Logger } from '../../../src/util/log.js';
 import type { Bridge } from './bridge.js';
 import { decide, type AllowlistConfig, type InboundMessageMeta } from './allowlist.js';
@@ -49,7 +50,7 @@ export interface SlashCommandContext {
   guildId: string | null;
   channelId: string;
   userId: string;
-  getVoiceAdapterCreator?: () => any;
+  getVoiceAdapterCreator?: () => DiscordGatewayAdapterCreator | undefined;
   getMemberVoiceChannelId?: () => string | null;
   // Reply privately (ephemeral) so opt-in/opt-out chatter doesn't spam
   // the channel for other members.

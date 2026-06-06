@@ -7,6 +7,7 @@ import {
   createAudioPlayer,
   createAudioResource,
   StreamType,
+  type DiscordGatewayAdapterCreator,
 } from '@discordjs/voice';
 import prism from 'prism-media';
 import { pipeline } from 'node:stream/promises';
@@ -16,8 +17,8 @@ import { join } from 'node:path';
 import type { Logger } from '../../../src/util/log.js';
 import type { Bridge } from './bridge.js';
 import type { AllowlistConfig } from './allowlist.js';
-import { transcribe, type TranscribeRequest } from '../../gurney-voice/stt.js';
-import { synthesize, type SynthRequest } from '../../gurney-voice/synth.js';
+import { transcribe } from '../../gurney-voice/stt.js';
+import { synthesize } from '../../gurney-voice/synth.js';
 import type { Host } from '../../../src/core/extensions.js';
 
 export interface VoiceManagerOptions {
@@ -50,7 +51,7 @@ export class VoiceManager {
   public async joinVoiceChannel(
     guildId: string,
     channelId: string,
-    adapterCreator: any,
+    adapterCreator: DiscordGatewayAdapterCreator,
   ): Promise<void> {
     this.log.info('joining voice channel', { guildId, channelId });
     const connection = discordJoinVoiceChannel({
@@ -105,7 +106,11 @@ export class VoiceManager {
     const oggPath = join(dir, 'in.ogg');
 
     try {
-      const prismOpus = prism.opus as any;
+      interface PrismOpusModule {
+        OggLogicalBitstream: new (opts: { opusHead: unknown; pageSizeControl: { maxPackets: number } }) => NodeJS.ReadWriteStream;
+        OpusHead: new (opts: { channelCount: number; sampleRate: number }) => unknown;
+      }
+      const prismOpus = prism.opus as unknown as PrismOpusModule;
       const oggStream = new prismOpus.OggLogicalBitstream({
         opusHead: new prismOpus.OpusHead({
           channelCount: 2,
