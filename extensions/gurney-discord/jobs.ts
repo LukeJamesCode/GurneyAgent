@@ -29,6 +29,11 @@ let stop: (() => Promise<void>) | null = null;
 
 export async function register(host: Host): Promise<void> {
   const log = host.log.child({ mod: 'gurney-discord' });
+  // If a prior gateway client is still live — e.g. a hot-reload that re-ran
+  // register() before unregister() tore the old one down — stop it first.
+  // Two simultaneous connections on the same token make Discord deliver every
+  // message twice, so the bot replies twice. This makes register() idempotent.
+  if (stop) await stop();
   const token = host.settings.get<string>('bot_token', '');
   if (!token) {
     log.info(
@@ -81,7 +86,12 @@ export async function register(host: Host): Promise<void> {
     allowlist: allowlistAccessor,
     handleConfirmButton: (customId, by) => (confirmRef ? confirmRef.onButton(customId, by) : false),
     handleVoiceStateUpdate: (ctx) => {
-      voiceManager?.handleVoiceStateUpdate(ctx.userId, ctx.oldChannelId, ctx.newChannelId, ctx.guildId);
+      voiceManager?.handleVoiceStateUpdate(
+        ctx.userId,
+        ctx.oldChannelId,
+        ctx.newChannelId,
+        ctx.guildId,
+      );
     },
   });
 
@@ -160,12 +170,12 @@ export async function register(host: Host): Promise<void> {
         const self = client.selfId() ?? 'me';
         if (allowed.has(ctx.userId)) {
           await ctx.replyEphemeral(
-            `You are on the allowlist. Mention <@${self}> to chat anywhere!`
+            `You are on the allowlist. Mention <@${self}> to chat anywhere!`,
           );
         } else {
           await ctx.replyEphemeral(
             "You aren't on the allowlist. Ask the bridge operator to add " +
-              `your user ID (\`${ctx.userId}\`) to allowed_dm_user_ids via \`gurney config gurney-discord\` on the host.`
+              `your user ID (\`${ctx.userId}\`) to allowed_dm_user_ids via \`gurney config gurney-discord\` on the host.`,
           );
         }
       },

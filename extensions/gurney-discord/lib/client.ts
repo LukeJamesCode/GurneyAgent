@@ -74,7 +74,12 @@ export interface DiscordClientOptions {
   // Build the client only after these intents are present. Tests pass an
   // override; production uses the default factory.
   clientFactory?: () => Client;
-  handleVoiceStateUpdate?: (ctx: { userId: string, oldChannelId: string | null, newChannelId: string | null, guildId: string }) => void;
+  handleVoiceStateUpdate?: (ctx: {
+    userId: string;
+    oldChannelId: string | null;
+    newChannelId: string | null;
+    guildId: string;
+  }) => void;
 }
 
 const DEFAULT_INTENTS: GatewayIntentBits[] = [
@@ -90,6 +95,27 @@ function defaultClient(): Client {
     intents: DEFAULT_INTENTS,
     partials: [Partials.Channel],
   });
+}
+
+// Process-wide exactly-once guard for inbound messages. discord.js delivers
+// each message once per gateway connection, so seeing the same id twice means
+// a second connection is live in this process (e.g. a hot-reload that re-ran
+// register() before the previous client finished tearing down). Deduping by id
+// here — module-level so it's shared across any client instances in the
+// process — makes the bot reply exactly once. (Two separate Gurney processes
+// share no memory and can't be deduped here; that's an operator issue.)
+const HANDLED_MESSAGE_CAP = 500;
+const handledMessageIds = new Set<string>();
+const handledMessageOrder: string[] = [];
+function markMessageHandled(id: string): boolean {
+  if (handledMessageIds.has(id)) return true;
+  handledMessageIds.add(id);
+  handledMessageOrder.push(id);
+  if (handledMessageOrder.length > HANDLED_MESSAGE_CAP) {
+    const evicted = handledMessageOrder.shift();
+    if (evicted !== undefined) handledMessageIds.delete(evicted);
+  }
+  return false;
 }
 
 export function createDiscordClient(opts: DiscordClientOptions): DiscordClientHandle {
@@ -139,13 +165,19 @@ export function createDiscordClient(opts: DiscordClientOptions): DiscordClientHa
           userId,
           oldChannelId: oldState.channelId,
           newChannelId: newState.channelId,
-          guildId: newState.guild.id
+          guildId: newState.guild.id,
         });
       }
     }
   });
 
   async function handleMessage(msg: Message): Promise<void> {
+    // Exactly-once guard — see markMessageHandled. Drops a message a second
+    // gateway connection (e.g. from a reload race) would otherwise re-deliver.
+    if (markMessageHandled(msg.id)) {
+      log.debug('discord duplicate messageCreate ignored', { id: msg.id });
+      return;
+    }
     // Build a transport-neutral meta so the gating logic stays unit-testable.
     const meta: InboundMessageMeta = {
       authorId: msg.author.id,
@@ -208,7 +240,9 @@ export function createDiscordClient(opts: DiscordClientOptions): DiscordClientHa
         getVoiceAdapterCreator: () => interaction.guild?.voiceAdapterCreator,
         getMemberVoiceChannelId: () => {
           const member = interaction.member;
-          return (member && 'voice' in member && member.voice.channelId) ? member.voice.channelId : null;
+          return member && 'voice' in member && member.voice.channelId
+            ? member.voice.channelId
+            : null;
         },
         replyEphemeral: async (text) => {
           try {
@@ -282,7 +316,12 @@ export function createDiscordClient(opts: DiscordClientOptions): DiscordClientHa
   // safely fails closed rather than throwing.
   const confirmTransport: ConfirmTransport = {
     resolveChat: () => null,
-    sendPrompt: async ({ channelId, text, yesCustomId, noCustomId }): Promise<ConfirmMessageRef> => {
+    sendPrompt: async ({
+      channelId,
+      text,
+      yesCustomId,
+      noCustomId,
+    }): Promise<ConfirmMessageRef> => {
       const channel = await client.channels.fetch(channelId).catch(() => null);
       if (!channel || !channel.isTextBased() || !('send' in channel)) {
         throw new Error(`confirm channel ${channelId} is not sendable`);
