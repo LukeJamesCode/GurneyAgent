@@ -250,7 +250,7 @@ function App() {
       />
 
       <main className="main-panel">
-        <Topbar />
+        <Topbar state={state} setRoute={setRoute} />
         {offline && <OfflineBar onRetry={refresh} />}
         {state.cfgError && <ConfigErrorBar message={state.cfgError} />}
         <div className="content-shell">
@@ -293,7 +293,80 @@ function App() {
   );
 }
 
-function Topbar() {
+function Topbar({ state, setRoute }) {
+  const [open, setOpen] = useState(false);
+  const [tasks, setTasks] = useState([]);
+  const [courses, setCourses] = useState([]);
+  const dropdownRef = useRef(null);
+
+  useEffect(() => {
+    // We only need to load them to check if there are notifications.
+    const loadNotifs = async () => {
+      try {
+        const [t, c] = await Promise.all([
+          window.api.get('/api/agents/tasks'),
+          window.api.get('/api/tudor/courses')
+        ]);
+        if (t.ok && t.data && t.data.tasks) setTasks(t.data.tasks);
+        if (c.ok && c.data && c.data.courses) setCourses(c.data.courses);
+      } catch (e) {
+        // ignore
+      }
+    };
+    loadNotifs();
+    const interval = setInterval(loadNotifs, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setOpen(false);
+      }
+    }
+    if (open) {
+      document.addEventListener("mousedown", handleClickOutside);
+    } else {
+      document.removeEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [open]);
+
+  const needsSetup = (state && state.extensions && state.extensions.needsSetup) || [];
+  const activeTasks = tasks.filter(t => t.status === 'running' || t.status === 'error').slice(0, 5);
+  const doneCourses = courses.filter(c => c.lessonCount > 0 && c.doneCount >= c.lessonCount).slice(0, 5);
+
+  const notifications = [
+    ...needsSetup.map(ext => ({
+      id: `setup-${ext.name}`,
+      icon: 'plug',
+      title: 'Extension Needs Setup',
+      desc: `${ext.name.replace(/^gurney-/, '')} requires configuration.`,
+      action: () => setRoute('extensions')
+    })),
+    ...activeTasks.map(t => ({
+      id: `task-${t.id}`,
+      icon: t.status === 'error' ? 'alert-triangle' : 'loader',
+      tone: t.status === 'error' ? 'err' : 'accent',
+      title: t.status === 'error' ? 'Task Error' : 'Active Run',
+      desc: t.agentName || `Task #${t.id}`,
+      action: () => setRoute('agents')
+    })),
+    ...doneCourses.map(c => ({
+      id: `course-${c.id}`,
+      icon: 'check-circle',
+      tone: 'ok',
+      title: 'Lesson Completed',
+      desc: c.topic,
+      action: () => setRoute('learn')
+    }))
+  ];
+
+  const toggleOpen = () => setOpen(!open);
+
   return (
     <div className="topbar">
       <div className="search-bar">
@@ -302,17 +375,74 @@ function Topbar() {
         <span className="search-kbd">⌘K</span>
       </div>
       <div className="topbar-actions">
-        <button className="dash-btn green">
+        <button className="dash-btn green" onClick={() => setRoute('agents')}>
           <window.Icon name="play" size={14} /> New Run
         </button>
-        <div className="icon-action" style={{ position: 'relative' }}>
-          <window.Icon name="bell" size={18} />
-          <div className="badge">3</div>
+        <div className="icon-action" style={{ position: 'relative' }} ref={dropdownRef}>
+          <div onClick={toggleOpen} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+            <window.Icon name="bell" size={18} />
+            {notifications.length > 0 && <div className="badge">{notifications.length}</div>}
+          </div>
+          {open && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 36,
+                right: -10,
+                width: 320,
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius)',
+                boxShadow: 'var(--shadow-lg)',
+                zIndex: 100,
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden'
+              }}
+            >
+              <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>
+                Notifications
+              </div>
+              <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+                {notifications.length === 0 ? (
+                  <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>
+                    No new notifications.
+                  </div>
+                ) : (
+                  notifications.map(n => (
+                    <div
+                      key={n.id}
+                      onClick={() => { setOpen(false); n.action(); }}
+                      style={{
+                        padding: '12px 14px',
+                        borderBottom: '1px solid var(--border)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        gap: 12,
+                        alignItems: 'flex-start',
+                        transition: 'background 0.1s'
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = 'var(--surface-2)'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                      <div style={{ color: `var(--${n.tone || 'text-2'})`, flex: 'none', marginTop: 2 }}>
+                        <window.Icon name={n.icon} size={16} />
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)', marginBottom: 2 }}>{n.title}</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{n.desc}</div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
         </div>
         <div className="icon-action">
           <window.Icon name="help-circle" size={18} />
         </div>
-        <div className="icon-action">
+        <div className="icon-action" onClick={() => setRoute('settings')} style={{ cursor: 'pointer' }}>
           <window.Icon name="settings" size={18} />
         </div>
       </div>
