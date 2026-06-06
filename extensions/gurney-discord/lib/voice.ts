@@ -15,10 +15,14 @@ import { Readable } from 'node:stream';
 import { mkdtempSync, createWriteStream, rmSync } from 'node:fs';
 
 class SilencingReadable extends Readable {
+  private frames = 0;
   _read() {
-    // Push one frame of raw PCM silence (48000Hz, 16-bit, stereo, 20ms = 960 samples * 4 bytes)
-    this.push(Buffer.alloc(960 * 4));
-    this.push(null);
+    if (this.frames < 5) {
+      this.push(Buffer.from([0xf8, 0xff, 0xfe]));
+      this.frames++;
+    } else {
+      this.push(null);
+    }
   }
 }
 import { tmpdir } from 'node:os';
@@ -87,7 +91,7 @@ export class VoiceManager {
     });
 
     // Send a silent frame immediately to open the Discord UDP socket for receiving audio.
-    const silentResource = createAudioResource(new SilencingReadable(), { inputType: StreamType.Raw });
+    const silentResource = createAudioResource(new SilencingReadable(), { inputType: StreamType.Opus });
     player.play(silentResource);
   }
 
