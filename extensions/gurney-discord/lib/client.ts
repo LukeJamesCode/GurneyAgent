@@ -212,7 +212,7 @@ export function createDiscordClient(opts: DiscordClientOptions): DiscordClientHa
         },
         replyEphemeral: async (text) => {
           try {
-            await interaction.reply({ content: text, ephemeral: true });
+            await interaction.reply({ content: text, flags: ['Ephemeral'] });
           } catch (e) {
             log.warn('discord slash reply failed', {
               cmd: spec.name,

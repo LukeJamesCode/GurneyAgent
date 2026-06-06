@@ -191,8 +191,8 @@ export async function register(host: Host): Promise<void> {
           await ctx.replyEphemeral('Could not get voice adapter.');
           return;
         }
+        await ctx.replyEphemeral('Joining voice channel...');
         await voiceManager?.joinVoiceChannel(ctx.guildId, vcId, adapter);
-        await ctx.replyEphemeral('Joined voice channel.');
       },
     },
     {
@@ -200,8 +200,8 @@ export async function register(host: Host): Promise<void> {
       description: 'Dismiss Gurney from the voice channel',
       handle: async (ctx) => {
         if (!ctx.guildId) return;
+        await ctx.replyEphemeral('Leaving voice channel...');
         voiceManager?.leaveVoiceChannel(ctx.guildId);
-        await ctx.replyEphemeral('Left voice channel.');
       },
     },
   ];
