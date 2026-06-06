@@ -1,10 +1,14 @@
 {
   "name": "gurney-discord",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Discord as a second chat surface alongside Telegram. One Gurney process, two surfaces — same model, memory, extensions, and confirm-tier UX. Gateway WebSocket (no inbound webhook), DM-allowlist or per-channel opt-in, button-based confirm-tier prompts.",
   "gurney": ">=0.1.0",
   "deps": [],
-  "capabilities": ["network", "storage", "chat_surface"],
+  "capabilities": [
+    "network",
+    "storage",
+    "chat_surface"
+  ],
   "entrypoints": {
     "jobs": "./jobs.ts",
     "auth": "./auth.ts",

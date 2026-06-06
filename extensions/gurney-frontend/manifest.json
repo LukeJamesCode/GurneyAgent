@@ -1,15 +1,21 @@
 {
   "name": "gurney-frontend",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Local web control panel for Gurney. Serves a friendly browser UI on the LAN that mirrors the CLI: first-run setup, start/stop the agent, manage extensions, edit settings, run diagnostics, and follow logs. Strictly opt-in; the CLI stays fully usable on its own.",
   "gurney": ">=0.1.0",
   "deps": [],
-  "capabilities": ["network", "storage"],
+  "capabilities": [
+    "network",
+    "storage"
+  ],
   "entrypoints": {
     "setup": "./setup.ts",
     "commands": "./commands.ts"
   },
   "telegram_commands": [
-    { "command": "web", "description": "Get the link to the web control panel" }
+    {
+      "command": "web",
+      "description": "Get the link to the web control panel"
+    }
   ]
 }

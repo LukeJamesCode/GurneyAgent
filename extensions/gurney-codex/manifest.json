@@ -1,19 +1,33 @@
 {
   "name": "gurney-codex",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Escalate hard tasks from the local Qwen models to OpenAI Codex over a ChatGPT subscription (OAuth). Codex acts as Gurney's deep-reasoning brain for coding, reasoning, writing, planning, and analysis the small models can't do at quality. Local-first.",
   "gurney": ">=0.1.0",
   "deps": [],
-  "capabilities": ["network", "storage", "auth:oauth", "telegram"],
+  "capabilities": [
+    "network",
+    "storage",
+    "auth:oauth",
+    "telegram"
+  ],
   "entrypoints": {
     "tools": "./tools.ts",
     "commands": "./commands.ts",
     "auth": "./auth.ts"
   },
   "telegram_commands": [
-    { "command": "codex", "description": "Send a task straight to Codex: /codex <task>" },
-    { "command": "codexstatus", "description": "Today's Codex usage and remaining budget" },
-    { "command": "codexlogout", "description": "Forget stored Codex credentials" }
+    {
+      "command": "codex",
+      "description": "Send a task straight to Codex: /codex <task>"
+    },
+    {
+      "command": "codexstatus",
+      "description": "Today's Codex usage and remaining budget"
+    },
+    {
+      "command": "codexlogout",
+      "description": "Forget stored Codex credentials"
+    }
   ],
   "intent_pattern": "\\b(code|coding|refactor|implement|debug|rewrite|optimi[sz]e|function|script|program|regex|algorithm|tests?|write|draft|essay|email|explain|summari[sz]e|analy[sz]e|plan|design|outline|research|compare|calculate|solve|translate|brainstorm)\\b"
 }

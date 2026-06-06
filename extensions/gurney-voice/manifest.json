@@ -1,10 +1,14 @@
 {
   "name": "gurney-voice",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Two-way voice for Telegram: outbound replies via Piper TTS, inbound voice-note transcription via whisper.cpp. /voice on enables voice replies; /voice transcribe on enables voice-in.",
   "gurney": ">=0.1.0",
   "deps": [],
-  "capabilities": ["telegram", "storage", "network"],
+  "capabilities": [
+    "telegram",
+    "storage",
+    "network"
+  ],
   "entrypoints": {
     "commands": "./commands.ts",
     "jobs": "./jobs.ts",

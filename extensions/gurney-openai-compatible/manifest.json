@@ -1,17 +1,30 @@
 {
   "name": "gurney-openai-compatible",
-  "version": "0.1.0",
+  "version": "0.01",
   "description": "Register OpenAI-compatible chat-completions endpoints as Gurney LLM provider aliases.",
   "gurney": ">=0.1.0",
   "deps": [],
-  "capabilities": ["network", "storage", "telegram"],
+  "capabilities": [
+    "network",
+    "storage",
+    "telegram"
+  ],
   "entrypoints": {
     "tools": "./tools.ts",
     "commands": "./commands.ts"
   },
   "telegram_commands": [
-    { "command": "oai", "description": "Send a one-shot prompt to an OpenAI-compatible endpoint" },
-    { "command": "oaistatus", "description": "Today's OpenAI-compatible endpoint usage" },
-    { "command": "oaiendpoints", "description": "List configured OpenAI-compatible endpoints" }
+    {
+      "command": "oai",
+      "description": "Send a one-shot prompt to an OpenAI-compatible endpoint"
+    },
+    {
+      "command": "oaistatus",
+      "description": "Today's OpenAI-compatible endpoint usage"
+    },
+    {
+      "command": "oaiendpoints",
+      "description": "List configured OpenAI-compatible endpoints"
+    }
   ]
 }
