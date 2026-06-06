@@ -12,9 +12,8 @@ import {
   type DiscordGatewayAdapterCreator,
 } from '@discordjs/voice';
 import prism from 'prism-media';
-import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
-import { mkdtempSync, createWriteStream, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 
 class SilencingReadable extends Readable {
@@ -82,7 +81,7 @@ export class VoiceManager {
     player.on('error', (e) => {
       this.log.warn('audio player error', { error: e.message });
     });
-    
+
     connection.on('stateChange', (oldState, newState) => {
       this.log.info('voice connection stateChange', { old: oldState.status, new: newState.status });
     });
@@ -97,19 +96,25 @@ export class VoiceManager {
     connection.receiver.speaking.on('start', (userId) => {
       this.log.info('speaking event received', { userId });
       this.handleUserSpeaking(connection, guildId, channelId, userId).catch((e) => {
-        this.log.warn('error handling user speaking', { error: e instanceof Error ? e.message : String(e) });
+        this.log.warn('error handling user speaking', {
+          error: e instanceof Error ? e.message : String(e),
+        });
       });
     });
 
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
       this.log.info('voice connection ready', { guildId });
-      
+
       // Send a silent frame to open the Discord UDP socket for receiving audio.
-      const silentResource = createAudioResource(new SilencingReadable(), { inputType: StreamType.Opus });
+      const silentResource = createAudioResource(new SilencingReadable(), {
+        inputType: StreamType.Opus,
+      });
       player.play(silentResource);
     } catch (e) {
-      this.log.warn('voice connection failed to become ready', { error: e instanceof Error ? e.message : String(e) });
+      this.log.warn('voice connection failed to become ready', {
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
   }
 
@@ -143,21 +148,11 @@ export class VoiceManager {
     });
 
     const talkingSoundsStr = this.host.settings.get<string>('talking_sounds', '');
-    this.log.info('talkingSoundsStr retrieved', { talkingSoundsStr });
-    if (talkingSoundsStr) {
-      const pairs = talkingSoundsStr.split(',').map((s) => s.trim()).filter(Boolean);
-      for (const pair of pairs) {
-        const idx = pair.indexOf(':');
-        if (idx !== -1) {
-          const uid = pair.slice(0, idx);
-          const mp3Path = pair.slice(idx + 1);
-          this.log.info('checking pair', { uid, userId, match: uid === userId });
-          if (uid === userId && mp3Path) {
-            this.log.info('matched user talking sound', { userId, mp3Path });
-            this.playLocalFile(guildId, mp3Path);
-            break;
-          }
-        }
+    for (const { uid, path } of parseUserAudioMap(talkingSoundsStr)) {
+      if (uid === userId) {
+        this.log.info('matched user talking sound', { userId, path });
+        this.playLocalFile(guildId, path);
+        break;
       }
     }
 
@@ -168,25 +163,42 @@ export class VoiceManager {
       // Discord streams voice packets as Opus. We decode them to raw PCM (48kHz stereo),
       // and pipe that raw PCM into ffmpeg to downsample to 16kHz mono WAV for whisper.
       const decoder = new prism.opus.Decoder({ frameSize: 960, channels: 2, rate: 48000 });
-      
-      const whisperBin = this.host.settings.get<string>('whisper_bin', 'whisper-cli');
-      const ffmpegBin = this.host.settings.get<string>('ffmpeg_bin', 'ffmpeg');
+
+      // The binaries (and model) live in gurney-voice's settings, where its
+      // setup wizard persisted the resolved absolute paths after auto-download
+      // / source-build. whisper-cli in particular is built under
+      // ~/.gurney/extension_state/gurney-voice/native/ and is NOT on $PATH, so
+      // gurney-discord's own bare-name default would spawn-ENOENT.
+      const voiceSettings = this.voiceSettings();
+      const whisperBin =
+        voiceSettings.get('whisper_bin') ||
+        this.host.settings.get<string>('whisper_bin', 'whisper-cli');
+      const ffmpegBin =
+        voiceSettings.get('ffmpeg_bin') || this.host.settings.get<string>('ffmpeg_bin', 'ffmpeg');
 
       const ffmpegArgs = [
         '-y',
-        '-f', 's16le',
-        '-ar', '48000',
-        '-ac', '2',
-        '-i', 'pipe:0',
-        '-ar', '16000',
-        '-ac', '1',
-        '-c:a', 'pcm_s16le',
-        '-f', 'wav',
-        wavPath
+        '-f',
+        's16le',
+        '-ar',
+        '48000',
+        '-ac',
+        '2',
+        '-i',
+        'pipe:0',
+        '-ar',
+        '16000',
+        '-ac',
+        '1',
+        '-c:a',
+        'pcm_s16le',
+        '-f',
+        'wav',
+        wavPath,
       ];
 
       const ffmpegProcess = spawn(ffmpegBin, ffmpegArgs, { stdio: ['pipe', 'ignore', 'ignore'] });
-      
+
       // Pipe the Opus stream into the PCM decoder, then into ffmpeg's stdin.
       audioStream.pipe(decoder).pipe(ffmpegProcess.stdin);
 
@@ -198,13 +210,6 @@ export class VoiceManager {
         ffmpegProcess.on('error', reject);
       });
 
-      // To get model path, we need to read gurney-voice's settings.
-      // Since settings are extension-scoped, we must query the DB directly to get the sibling's config.
-      const rows = this.host.db.prepare(
-        `SELECT key, value FROM extension_settings WHERE extension = 'gurney-voice'`
-      ).all() as Array<{ key: string; value: string }>;
-      
-      const voiceSettings = new Map(rows.map(r => [r.key, r.value]));
       const modelPath = voiceSettings.get('whisper_model_path');
 
       if (!modelPath) {
@@ -224,7 +229,7 @@ export class VoiceManager {
 
       const transcript = result.transcript.trim();
       const lower = transcript.toLowerCase();
-      
+
       const wakeWords = ['hey gurney', 'gurney'];
       let wakeWordMatch = '';
       for (const w of wakeWords) {
@@ -238,7 +243,7 @@ export class VoiceManager {
         // Strip the wake word and any trailing punctuation/space
         let payload = transcript.slice(wakeWordMatch.length).trim();
         payload = payload.replace(/^[,.!?:]\s*/, '').trim();
-        
+
         const b = this.bridge();
         if (!b) return;
 
@@ -250,9 +255,10 @@ export class VoiceManager {
           await b.handle({ userId, channelId, guildId, rawContent: "I'm here." });
         }
       }
-
     } catch (e) {
-      this.log.warn('voice processing error', { error: e instanceof Error ? e.message : String(e) });
+      this.log.warn('voice processing error', {
+        error: e instanceof Error ? e.message : String(e),
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -261,19 +267,20 @@ export class VoiceManager {
   public async playAudio(channelId: string, text: string): Promise<void> {
     const guildId = this.channelToGuild.get(channelId);
     if (!guildId) return;
-    
+
     const player = this.players.get(guildId);
     if (!player) return;
 
-    const piperBin = this.host.settings.get<string>('piper_bin', 'piper');
-    const ffmpegBin = this.host.settings.get<string>('ffmpeg_bin', 'ffmpeg');
-    
-    const rows = this.host.db.prepare(
-      `SELECT key, value FROM extension_settings WHERE extension = 'gurney-voice'`
-    ).all() as Array<{ key: string; value: string }>;
-    
-    const voiceSettings = new Map(rows.map(r => [r.key, r.value]));
-    const voiceModelPath = voiceSettings.get('tts_model_path') || voiceSettings.get('voice_model_path');
+    // Source the piper/ffmpeg binaries and the voice model from gurney-voice's
+    // settings (its setup wizard persisted resolved absolute paths there);
+    // gurney-discord's own bare-name defaults would only work if they happen to
+    // be on $PATH.
+    const voiceSettings = this.voiceSettings();
+    const piperBin =
+      voiceSettings.get('piper_bin') || this.host.settings.get<string>('piper_bin', 'piper');
+    const ffmpegBin =
+      voiceSettings.get('ffmpeg_bin') || this.host.settings.get<string>('ffmpeg_bin', 'ffmpeg');
+    const voiceModelPath = voiceSettings.get('voice_model_path');
 
     if (!voiceModelPath) {
       this.log.debug('voice-out skipped: gurney-voice voice_model_path is missing');
@@ -304,7 +311,6 @@ export class VoiceManager {
       player.once('idle', () => {
         result.cleanup();
       });
-      
     } catch (e) {
       this.log.warn('tts processing error', { error: e instanceof Error ? e.message : String(e) });
     }
@@ -320,21 +326,24 @@ export class VoiceManager {
       const ourGuild = this.channelToGuild.get(newChannelId);
       if (ourGuild === guildId) {
         const entranceSoundsStr = this.host.settings.get<string>('entrance_sounds', '');
-        if (!entranceSoundsStr) return;
-
-        const pairs = entranceSoundsStr.split(',').map((s) => s.trim()).filter(Boolean);
-        for (const pair of pairs) {
-          const idx = pair.indexOf(':');
-          if (idx === -1) continue;
-          const uid = pair.slice(0, idx);
-          const mp3Path = pair.slice(idx + 1);
-          if (uid === userId && mp3Path) {
-            void this.playLocalFile(guildId, mp3Path);
+        for (const { uid, path } of parseUserAudioMap(entranceSoundsStr)) {
+          if (uid === userId) {
+            void this.playLocalFile(guildId, path);
             break;
           }
         }
       }
     }
+  }
+
+  // Read the sibling gurney-voice extension's settings. Settings are
+  // extension-scoped, so we query the shared extension_settings table directly
+  // to reach gurney-voice's resolved binary/model paths.
+  private voiceSettings(): Map<string, string> {
+    const rows = this.host.db
+      .prepare(`SELECT key, value FROM extension_settings WHERE extension = 'gurney-voice'`)
+      .all() as Array<{ key: string; value: string }>;
+    return new Map(rows.map((r) => [r.key, r.value]));
   }
 
   private async playLocalFile(guildId: string, filePath: string): Promise<void> {
@@ -357,7 +366,30 @@ export class VoiceManager {
       player.play(resource);
       this.log.info('playLocalFile: played sound', { guildId, filePath });
     } catch (e) {
-      this.log.warn('failed to play local file', { error: e instanceof Error ? e.message : String(e) });
+      this.log.warn('failed to play local file', {
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
   }
+}
+
+// Parse the `<user_id>:<path>,<user_id>:<path>,...` map used by the
+// entrance_sounds / talking_sounds settings. A naive split on every comma
+// corrupts file paths that themselves contain commas (e.g.
+// "Liam - Energetic, Social Media Creator.mp3"). Discord user ids are numeric
+// snowflakes, so a new entry always begins with `<digits>:` — split only on a
+// comma that precedes such a boundary, which leaves commas inside paths intact.
+export function parseUserAudioMap(raw: string): Array<{ uid: string; path: string }> {
+  if (!raw) return [];
+  const out: Array<{ uid: string; path: string }> = [];
+  for (const entry of raw.split(/,(?=\s*\d+\s*:)/)) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const idx = trimmed.indexOf(':');
+    if (idx === -1) continue;
+    const uid = trimmed.slice(0, idx).trim();
+    const path = trimmed.slice(idx + 1).trim();
+    if (uid && path) out.push({ uid, path });
+  }
+  return out;
 }
