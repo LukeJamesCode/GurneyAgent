@@ -1,10 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createConfirmRenderer, type ConfirmTransport } from './confirm.js';
-import type {
-  ChatConfirmRequest,
-  ChatConfirmHandler,
-} from '../../../src/core/extensions.js';
+import type { ChatConfirmRequest, ChatConfirmHandler } from '../../../src/core/extensions.js';
 import { DISCORD_CHAT_ID_BASE, type DiscordChatRow } from './identity.js';
 
 const SILENT_LOG = {
@@ -150,7 +147,14 @@ test('confirm: timeout fires after the configured budget and fails closed', asyn
   await Promise.resolve();
   transport.resolveLastSend();
 
+  // The production timeout timer is unref'd so a forgotten confirm can't block
+  // process shutdown. That means it's the only handle this test would leave on
+  // the loop — run in isolation, Node drains the loop before the 10ms timer
+  // fires and the awaited promise never settles. A ref'd guard keeps the loop
+  // alive across the timeout window; we clear it once the promise settles.
+  const guard = setTimeout(() => {}, 1000);
   const result = await promise;
+  clearTimeout(guard);
   assert.equal(result, false);
   // The prompt was edited to reflect the timeout state.
   assert.ok(transport.edits.some((e) => e.text.includes('Timed out')));

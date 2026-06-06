@@ -4,13 +4,9 @@ import { decide, parseCsvSet, type AllowlistConfig } from './allowlist.js';
 
 const BOT_ID = 'bot-1';
 
-function cfg(opts: {
-  dmAllow?: string[];
-  channelAllow?: string[];
-}): AllowlistConfig {
+function cfg(opts: { dmAllow?: string[] }): AllowlistConfig {
   return {
     allowedDmUserIds: new Set(opts.dmAllow ?? []),
-    allowedChannelKeys: new Set(opts.channelAllow ?? []),
     botUserId: BOT_ID,
   };
 }
@@ -47,9 +43,14 @@ test('allowlist: DM from non-allowlisted user denied', () => {
   if (!d.allow) assert.equal(d.reason, 'dm_not_allowed');
 });
 
-test('allowlist: guild channel requires both opt-in AND mention', () => {
-  // Channel opted in, but no mention → denied.
-  const noMention = decide(cfg({ channelAllow: ['g-1:c-1'] }), {
+test('allowlist: guild channel requires both user-allowlist AND mention', () => {
+  // Per-channel opt-in was removed (commit "Remove discord channel
+  // verification"): a guild message is allowed only when the author is on the
+  // global user allowlist AND the bot is @-mentioned. The mention requirement
+  // is non-negotiable — the safety doc forbids default-on group-chat intercept.
+
+  // Allowlisted user, but no mention → denied (mention is mandatory).
+  const noMention = decide(cfg({ dmAllow: ['u-1'] }), {
     authorId: 'u-1',
     authorIsBot: false,
     isWebhook: false,
@@ -60,8 +61,8 @@ test('allowlist: guild channel requires both opt-in AND mention', () => {
   assert.equal(noMention.allow, false);
   if (!noMention.allow) assert.equal(noMention.reason, 'guild_not_mentioned');
 
-  // Mention but no opt-in → denied.
-  const noOptIn = decide(cfg({}), {
+  // Mention but author not on the user allowlist → denied.
+  const notAllowed = decide(cfg({}), {
     authorId: 'u-1',
     authorIsBot: false,
     isWebhook: false,
@@ -69,11 +70,11 @@ test('allowlist: guild channel requires both opt-in AND mention', () => {
     guildId: 'g-1',
     mentionedUserIds: new Set([BOT_ID]),
   });
-  assert.equal(noOptIn.allow, false);
-  if (!noOptIn.allow) assert.equal(noOptIn.reason, 'channel_not_opted_in');
+  assert.equal(notAllowed.allow, false);
+  if (!notAllowed.allow) assert.equal(notAllowed.reason, 'dm_not_allowed');
 
-  // Both → allowed.
-  const ok = decide(cfg({ channelAllow: ['g-1:c-1'] }), {
+  // Allowlisted user AND mention → allowed.
+  const ok = decide(cfg({ dmAllow: ['u-1'] }), {
     authorId: 'u-1',
     authorIsBot: false,
     isWebhook: false,
@@ -82,6 +83,7 @@ test('allowlist: guild channel requires both opt-in AND mention', () => {
     mentionedUserIds: new Set([BOT_ID]),
   });
   assert.equal(ok.allow, true);
+  if (ok.allow) assert.equal(ok.kind, 'mention');
 });
 
 test('allowlist: default-off — empty allowlists deny every message', () => {
