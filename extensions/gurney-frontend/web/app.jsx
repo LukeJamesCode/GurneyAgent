@@ -12,7 +12,6 @@ const { useState, useEffect, useCallback, useRef } = React;
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: 'home' },
   { id: 'agents', label: 'Agents', icon: 'spark' },
-  { id: 'builder', label: 'Builder', icon: 'grid' },
   { id: 'history', label: 'History', icon: 'doc' },
   { id: 'learn', label: 'Learn', icon: 'spark', requiresExt: 'gurney-tudor' },
   { id: 'extensions', label: 'Extensions', icon: 'plug' },
@@ -281,7 +280,6 @@ function App() {
             <window.LearnHub agentRunning={agentStatus === 'running'} />
           )}
           {route === 'agents' && <window.AgentsTab state={state} />}
-          {route === 'builder' && <window.WorkflowBuilder state={state} />}
           {route === 'extensions' && <window.ExtensionsTab />}
           {route === 'settings' && (
             <window.SettingsTab onReRunWizard={() => setForcedView('wizard')} onSaved={refresh} />

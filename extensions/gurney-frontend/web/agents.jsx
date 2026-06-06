@@ -6,7 +6,7 @@
 //
 // The panel only does CRUD + dispatch over HTTP; the daemon's resource-aware
 // queue actually runs the tasks (and the heavy-model slot stays single-owner).
-const { useState, useEffect, useCallback } = React;
+const { useState, useEffect, useCallback, useMemo } = React;
 
 const STATUS_TONE = {
   queued: 'neutral',
@@ -74,7 +74,19 @@ function wfClip(text, n) {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 }
 
-function buildWorkflows(tasks, filter = 'Active Workflows') {
+function matchesRunFilter(status, filter) {
+  if (filter === 'Active')
+    return status === 'queued' || status === 'running' || status === 'paused';
+  if (filter === 'Inactive')
+    return status === 'done' || status === 'error' || status === 'cancelled';
+  return true;
+}
+
+// Build the unified Run feed: agent task-trees AND authored-workflow runs,
+// normalised into one card model so they live in a single list. An agent item
+// keeps {root, children} for its delegation diagram; a workflow item keeps
+// {run}. `kind` drives which actions/detail view a card offers.
+function buildFeed(tasks, wfRuns, wfNameById, filter) {
   const childrenByParent = new Map();
   for (const t of tasks) {
     if (t.parentId != null) {
@@ -83,21 +95,17 @@ function buildWorkflows(tasks, filter = 'Active Workflows') {
       childrenByParent.set(t.parentId, list);
     }
   }
-  return tasks
-    .filter((t) => {
-      if (t.parentId != null) return false;
-      if (filter === 'Active Workflows') return t.status === 'queued' || t.status === 'running' || t.status === 'paused';
-      if (filter === 'Inactive Workflows') return t.status === 'done' || t.status === 'error' || t.status === 'cancelled';
-      return true;
-    })
-    .slice(0, 6)
+  const agentItems = tasks
+    .filter((t) => t.parentId == null && matchesRunFilter(t.status, filter))
     .map((root) => {
       const children = (childrenByParent.get(root.id) || []).sort((a, b) => a.id - b.id);
       const doneKids = children.filter((c) => c.status === 'done').length;
       const meta = wfStatusOf(root.status);
       const percent = children.length
         ? Math.round((doneKids / children.length) * 100)
-        : ({ queued: 5, running: 50, done: 100, error: 100, cancelled: 100, paused: 50 }[root.status] ?? 0);
+        : ({ queued: 5, running: 50, done: 100, error: 100, cancelled: 100, paused: 50 }[
+            root.status
+          ] ?? 0);
       const stepLabel = children.length
         ? `${doneKids} / ${children.length} sub-agents`
         : meta.label;
@@ -109,54 +117,104 @@ function buildWorkflows(tasks, filter = 'Active Workflows') {
           tags.push({ tone: wfTagTone(t.agentId), label: t.agentName });
         }
       }
-      return { root, children, percent, stepLabel, meta, tags };
+      return {
+        kind: 'agent',
+        key: `agent:${root.id}`,
+        id: root.id,
+        title: root.agentName || `Task #${root.id}`,
+        prompt: root.prompt,
+        status: root.status,
+        when: root.createdAt || 0,
+        meta,
+        percent,
+        stepLabel,
+        tags,
+        root,
+        children,
+      };
     });
+  const workflowItems = (wfRuns || [])
+    .filter((r) => matchesRunFilter(r.status, filter))
+    .map((r) => {
+      const name = (wfNameById && wfNameById.get(r.workflowId)) || `Workflow #${r.workflowId}`;
+      const meta = wfStatusOf(r.status);
+      return {
+        kind: 'workflow',
+        key: `workflow:${r.id}`,
+        id: r.id,
+        title: name,
+        prompt: r.input || '',
+        status: r.status,
+        when: r.createdAt || 0,
+        meta,
+        percent: { queued: 5, running: 50, done: 100, error: 100, cancelled: 100 }[r.status] ?? 0,
+        stepLabel: meta.label,
+        tags: [{ tone: wfTagTone(r.workflowId), label: name }],
+        run: r,
+      };
+    });
+  return [...agentItems, ...workflowItems].sort((a, b) => b.when - a.when).slice(0, 12);
 }
 
-function WorkflowCard({ wf, selected, onSelect, onOpen, onCancel, onPause, onResume, onViewOutput }) {
-  const title = wf.root.agentName || `Task #${wf.root.id}`;
-  const active = wf.root.status === 'running' || wf.root.status === 'queued';
-  const paused = wf.root.status === 'paused';
+function WorkflowCard({
+  item,
+  selected,
+  onSelect,
+  onOpen,
+  onCancel,
+  onPause,
+  onResume,
+  onViewOutput,
+}) {
+  const isAgent = item.kind === 'agent';
+  const active = item.status === 'running' || item.status === 'queued';
+  const paused = item.status === 'paused';
   return (
     <div
       className={`dash-card clickable${selected ? ' selected' : ''}`}
-      onClick={() => onSelect(wf.root.id)}
+      onClick={() => onSelect(item.key)}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          onSelect(wf.root.id);
+          onSelect(item.key);
         }
       }}
       aria-pressed={selected}
     >
       <div className="card-header">
-        <div className={`card-icon ${wf.meta.tone}`}>
-          <window.Icon name="spark" size={20} className={wf.meta.spin ? 'spin' : undefined} />
+        <div className={`card-icon ${item.meta.tone}`}>
+          <window.Icon
+            name={isAgent ? 'spark' : 'git-merge'}
+            size={20}
+            className={item.meta.spin ? 'spin' : undefined}
+          />
         </div>
         <div className="card-title">
-          <h3 title={wf.root.prompt}>{wfClip(title, 30)}</h3>
-          <span className={`status-label ${wf.meta.tone}`}>
-            <span className={`dot ${wf.meta.tone}`}></span> {wf.meta.label}
+          <h3 title={item.prompt}>{wfClip(item.title, 30)}</h3>
+          <span className={`status-label ${item.meta.tone}`}>
+            <span className={`dot ${item.meta.tone}`}></span>
+            {isAgent ? '' : 'Workflow · '}
+            {item.meta.label}
           </span>
         </div>
       </div>
       <div className="progress-section">
         <div className="progress-labels">
-          <span>{wf.stepLabel}</span>
-          <span>{wf.percent}%</span>
+          <span>{item.stepLabel}</span>
+          <span>{item.percent}%</span>
         </div>
         <div className="progress-bar">
           <div
-            className={`progress-fill ${wf.meta.tone}`}
-            style={{ width: `${wf.percent}%` }}
+            className={`progress-fill ${item.meta.tone}`}
+            style={{ width: `${item.percent}%` }}
           ></div>
         </div>
       </div>
-      {wf.tags.length > 0 && (
+      {item.tags.length > 0 && (
         <div className="agent-tags">
-          {wf.tags.slice(0, 3).map((tag, i) => (
+          {item.tags.slice(0, 3).map((tag, i) => (
             <span key={i} className={`agent-tag ${tag.tone}`}>
               <window.Icon name="spark" size={12} /> {tag.label}
             </span>
@@ -168,27 +226,29 @@ function WorkflowCard({ wf, selected, onSelect, onOpen, onCancel, onPause, onRes
           className="dash-btn"
           onClick={(e) => {
             e.stopPropagation();
-            onOpen(wf.root.id);
+            onOpen(item);
           }}
         >
           <window.Icon name="external-link" size={14} /> Open
         </button>
         {active ? (
           <>
+            {isAgent && (
+              <button
+                className="dash-btn sub"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onPause) onPause(item);
+                }}
+              >
+                <window.Icon name="pause-circle" size={14} /> Pause
+              </button>
+            )}
             <button
               className="dash-btn sub"
               onClick={(e) => {
                 e.stopPropagation();
-                if (onPause) onPause(wf.root);
-              }}
-            >
-              <window.Icon name="pause-circle" size={14} /> Pause
-            </button>
-            <button
-              className="dash-btn sub"
-              onClick={(e) => {
-                e.stopPropagation();
-                onCancel(wf.root);
+                onCancel(item);
               }}
             >
               <window.Icon name="stop" size={14} /> Cancel
@@ -200,7 +260,7 @@ function WorkflowCard({ wf, selected, onSelect, onOpen, onCancel, onPause, onRes
               className="dash-btn sub"
               onClick={(e) => {
                 e.stopPropagation();
-                if (onResume) onResume(wf.root);
+                if (onResume) onResume(item);
               }}
             >
               <window.Icon name="play-circle" size={14} /> Resume
@@ -209,27 +269,24 @@ function WorkflowCard({ wf, selected, onSelect, onOpen, onCancel, onPause, onRes
               className="dash-btn sub"
               onClick={(e) => {
                 e.stopPropagation();
-                onCancel(wf.root);
+                onCancel(item);
               }}
             >
               <window.Icon name="stop" size={14} /> Cancel
             </button>
           </>
         ) : (
-          <>
-
-            {wf.root.status === 'done' && (
-              <button
-                className="dash-btn sub"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (onViewOutput) onViewOutput(wf.root);
-                }}
-              >
-                <window.Icon name="file-text" size={14} /> View Output
-              </button>
-            )}
-          </>
+          item.status === 'done' && (
+            <button
+              className="dash-btn sub"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (onViewOutput) onViewOutput(item);
+              }}
+            >
+              <window.Icon name="file-text" size={14} /> View Output
+            </button>
+          )
         )}
       </div>
     </div>
@@ -501,54 +558,65 @@ function ApprovalsPanel({ approvals, onResolve, busyId }) {
 // the left, a status/health/approvals/memory sidebar down the right.
 function MissionControl({
   tasks,
+  wfRuns,
+  wfNameById,
   agents,
   state,
   approvals,
   onResolveApproval,
   approvalBusyId,
-  onOpenTask,
-  onCancelTask,
-  onPauseTask,
-  onResumeTask,
+  onOpenItem,
+  onCancelItem,
+  onPauseItem,
+  onResumeItem,
   onPauseAll,
   onCancelAll,
   onResumeAll,
-  onViewOutput,
-  onConfigureAgents,
+  onViewOutputItem,
+  onManageAgents,
   onNewAgent,
   onEditAgent,
 }) {
-  const [selectedId, setSelectedId] = useState(null);
-  const [workflowFilter, setWorkflowFilter] = useState('Active Workflows');
-  const workflows = buildWorkflows(tasks, workflowFilter);
-  const selected = workflows.find((w) => w.root.id === selectedId) || workflows[0] || null;
+  const [selectedKey, setSelectedKey] = useState(null);
+  const [filter, setFilter] = useState('Active');
+  const items = buildFeed(tasks, wfRuns, wfNameById, filter);
+  const selected = items.find((it) => it.key === selectedKey) || items[0] || null;
   return (
     <div className="dash-bottom-grid" style={{ marginBottom: 26 }}>
       <div className="dash-col-left">
         <div className="dash-header" style={{ marginBottom: 0 }}>
-          <h2>{workflowFilter}</h2>
-          <div className="dash-header-actions" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <h2>{filter} runs</h2>
+          <div
+            className="dash-header-actions"
+            style={{ display: 'flex', gap: 8, alignItems: 'center' }}
+          >
             <div style={{ position: 'relative', display: 'inline-block' }}>
               <select
                 className="dash-btn sub"
-                value={workflowFilter}
+                value={filter}
                 onChange={(e) => {
-                  setWorkflowFilter(e.target.value);
-                  setSelectedId(null);
+                  setFilter(e.target.value);
+                  setSelectedKey(null);
                 }}
                 style={{ appearance: 'none', paddingRight: 24, cursor: 'pointer' }}
               >
-                <option value="All Workflows">All Workflows</option>
-                <option value="Active Workflows">Active Workflows</option>
-                <option value="Inactive Workflows">Inactive Workflows</option>
+                <option value="All">All</option>
+                <option value="Active">Active</option>
+                <option value="Inactive">Inactive</option>
               </select>
-              <window.Icon 
-                name="chevron-down" 
-                size={14} 
-                style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} 
+              <window.Icon
+                name="chevron-down"
+                size={14}
+                style={{
+                  position: 'absolute',
+                  right: 8,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  pointerEvents: 'none',
+                }}
               />
             </div>
-            {workflowFilter === 'Active Workflows' && (
+            {filter === 'Active' && (
               <>
                 <button className="dash-btn sub" onClick={onPauseAll}>
                   <window.Icon name="pause-circle" size={14} /> Pause All
@@ -557,21 +625,21 @@ function MissionControl({
                   <window.Icon name="stop" size={14} /> Stop All
                 </button>
                 <button className="dash-btn sub" onClick={onResumeAll}>
-                  <window.Icon name="play-circle" size={14} /> Start All
+                  <window.Icon name="play-circle" size={14} /> Resume All
                 </button>
               </>
             )}
-            <button className="dash-btn sub" onClick={onConfigureAgents}>
-              <window.Icon name="gear" size={14} /> Configure Agents
+            <button className="dash-btn sub" onClick={onManageAgents}>
+              <window.Icon name="gear" size={14} /> Manage Agents
             </button>
           </div>
         </div>
 
-        {workflows.length === 0 ? (
+        {items.length === 0 ? (
           <div className="dash-card">
             <div style={{ color: 'var(--text-3)', fontSize: 14, padding: '8px 2px' }}>
-              No {workflowFilter.toLowerCase()} found. Dispatch a task to an agent and it shows up here, with any
-              sub-agents it delegates to.
+              No {filter.toLowerCase()} runs. Launch a workflow or dispatch an agent above and it
+              shows up here — agent task-trees and authored-workflow runs alike.
             </div>
           </div>
         ) : (
@@ -582,17 +650,17 @@ function MissionControl({
               gap: 16,
             }}
           >
-            {workflows.map((wf) => (
+            {items.map((it) => (
               <WorkflowCard
-                key={wf.root.id}
-                wf={wf}
-                selected={selected && wf.root.id === selected.root.id}
-                onSelect={setSelectedId}
-                onOpen={onOpenTask}
-                onCancel={onCancelTask}
-                onPause={onPauseTask}
-                onResume={onResumeTask}
-                onViewOutput={onViewOutput}
+                key={it.key}
+                item={it}
+                selected={selected && it.key === selected.key}
+                onSelect={setSelectedKey}
+                onOpen={onOpenItem}
+                onCancel={onCancelItem}
+                onPause={onPauseItem}
+                onResume={onResumeItem}
+                onViewOutput={onViewOutputItem}
               />
             ))}
           </div>
@@ -602,18 +670,37 @@ function MissionControl({
           <div className="dash-section" style={{ marginBottom: 0 }}>
             <div className="section-header">
               <h3>
-                <window.Icon name="git-merge" size={16} className="green-text" /> Workflow:{' '}
-                {selected.root.agentName || `Task #${selected.root.id}`}
+                <window.Icon name="git-merge" size={16} className="green-text" />{' '}
+                {selected.kind === 'agent' ? 'Agent run' : 'Workflow run'}: {selected.title}
               </h3>
               <span className={`status-label ${selected.meta.tone}`}>
                 <span className={`dot ${selected.meta.tone}`}></span> {selected.meta.label}
               </span>
             </div>
-            <WorkflowDiagram wf={selected} />
+            {selected.kind === 'agent' ? (
+              <WorkflowDiagram wf={selected} />
+            ) : (
+              <div
+                className="dash-card"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                }}
+              >
+                <span style={{ color: 'var(--text-3)', fontSize: 13.5 }}>
+                  Authored workflow run — open it to see each node’s status and output.
+                </span>
+                <button className="dash-btn" onClick={() => onOpenItem(selected)}>
+                  <window.Icon name="external-link" size={14} /> Open run
+                </button>
+              </div>
+            )}
           </div>
         )}
 
-        <LiveRunLog tasks={tasks} onOpen={onOpenTask} />
+        <LiveRunLog tasks={tasks} onOpen={(id) => onOpenItem({ kind: 'agent', id })} />
       </div>
 
       <div className="dash-col-right">
@@ -629,79 +716,169 @@ function MissionControl({
   );
 }
 
-function ConfigureAgentsModal({ agents, onClose, onEdit, onNew, onDelete, onDispatch, onSchedule }) {
+function AgentsFleet({ agents, onNew, onEdit, onDelete, onDispatch, onSchedule }) {
   return (
-    <window.Modal
-      open
-      onClose={onClose}
-      width={560}
-      title="Configure Agents"
-      footer={
-        <>
-          <window.Button variant="subtle" onClick={onClose}>
-            Close
-          </window.Button>
-          <window.Button variant="primary" icon="plus" onClick={onNew}>
-            New Agent
-          </window.Button>
-        </>
-      }
-    >
+    <div>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 16,
+        }}
+      >
+        <h2>Agents</h2>
+        <window.Button variant="primary" icon="plus" onClick={onNew}>
+          New Agent
+        </window.Button>
+      </div>
       {agents.length === 0 ? (
-        <div style={{ color: 'var(--text-3)', fontSize: 14, padding: '8px 2px' }}>
-          No agents yet. Click &ldquo;New Agent&rdquo; to create one.
-        </div>
+        <div style={{ color: 'var(--text-3)' }}>No agents yet. Click New Agent to create one.</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {agents.map((a) => (
-            <div
-              key={a.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                padding: '10px 12px',
-                background: 'var(--surface-2)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-sm)',
-              }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 14 }}>{a.name}</div>
-                {a.role && (
-                  <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginTop: 2 }}>
-                    {a.role}
-                  </div>
-                )}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+            gap: 16,
+          }}
+        >
+          {agents.map((agent) => (
+            <div key={agent.id} className="dash-card">
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'flex-start',
+                  marginBottom: 12,
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 'bold', fontSize: 15 }}>{agent.name}</div>
+                  {agent.role && (
+                    <div style={{ color: 'var(--text-3)', fontSize: 12.5, marginTop: 4 }}>
+                      {agent.role}
+                    </div>
+                  )}
+                </div>
+                <window.Badge tone="accent">{agent.profile}</window.Badge>
               </div>
-              <window.Badge tone="accent">{a.profile}</window.Badge>
-              <window.Button size="sm" variant="primary" icon="send" onClick={() => onDispatch(a)}>
-                Dispatch
-              </window.Button>
-              <window.Button size="sm" variant="subtle" icon="send" onClick={() => onSchedule(a)}>
-                Schedule
-              </window.Button>
-              <window.Button size="sm" variant="subtle" icon="gear" onClick={() => onEdit(a)}>
-                Edit
-              </window.Button>
-              <window.Button size="sm" variant="subtle" icon="trash" onClick={() => onDelete(a)} />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <window.Button variant="primary" icon="send" onClick={() => onDispatch(agent)}>
+                  Dispatch
+                </window.Button>
+                <window.Button variant="subtle" icon="send" onClick={() => onSchedule(agent)}>
+                  Schedule
+                </window.Button>
+                <window.Button variant="subtle" icon="gear" onClick={() => onEdit(agent)}>
+                  Edit
+                </window.Button>
+                <window.Button variant="subtle" icon="trash" onClick={() => onDelete(agent)}>
+                  Delete
+                </window.Button>
+              </div>
             </div>
           ))}
         </div>
       )}
-    </window.Modal>
+    </div>
+  );
+}
+
+// One bar to start work: dispatch a task to an agent, or run a saved workflow.
+// This is what makes "New Run" actually launch something.
+function LaunchComposer({ agents, workflows, onDispatchAgent, onRunWorkflow }) {
+  const [mode, setMode] = useState('agent');
+  const [agentId, setAgentId] = useState('');
+  const [workflowId, setWorkflowId] = useState('');
+  const [text, setText] = useState('');
+  const canLaunch = mode === 'agent' ? !!agentId && !!text.trim() : !!workflowId;
+  const launch = () => {
+    if (!canLaunch) return;
+    if (mode === 'agent') onDispatchAgent(Number(agentId), text.trim());
+    else onRunWorkflow(Number(workflowId), text.trim() || null);
+    setText('');
+  };
+  return (
+    <div className="dash-card" style={{ marginBottom: 20 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          marginBottom: 12,
+          flexWrap: 'wrap',
+        }}
+      >
+        <window.Icon name="play" size={18} className="green-text" />
+        <h3 style={{ fontSize: 16, margin: 0 }}>Launch</h3>
+        <window.Segmented
+          size="sm"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: 'agent', label: 'Agent' },
+            { value: 'workflow', label: 'Workflow' },
+          ]}
+        />
+        <div style={{ flex: 1, minWidth: 180 }}>
+          {mode === 'agent' ? (
+            <window.Select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+              <option value="">— Select agent —</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </window.Select>
+          ) : (
+            <window.Select value={workflowId} onChange={(e) => setWorkflowId(e.target.value)}>
+              <option value="">— Select workflow —</option>
+              {workflows.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </window.Select>
+          )}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={2}
+          placeholder={mode === 'agent' ? 'Task for the agent…' : 'Workflow input (optional)…'}
+          style={{
+            flex: 1,
+            resize: 'vertical',
+            padding: '10px 12px',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--border)',
+            background: 'var(--surface-2)',
+            color: 'var(--text)',
+            font: 'inherit',
+          }}
+        />
+        <window.Button variant="primary" icon="play" disabled={!canLaunch} onClick={launch}>
+          Launch
+        </window.Button>
+      </div>
+    </div>
   );
 }
 
 function AgentsTab({ state }) {
+  const [view, setView] = useState('run'); // run | agents | workflows
   const [agents, setAgents] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [workflows, setWorkflows] = useState([]); // authored workflow definitions
+  const [wfRuns, setWfRuns] = useState([]); // authored workflow runs
   const [schedules, setSchedules] = useState([]);
   const [editing, setEditing] = useState(null); // agent object or EMPTY_AGENT when creating
-  const [showConfigureAgents, setShowConfigureAgents] = useState(false);
   const [dispatchFor, setDispatchFor] = useState(null); // agent to dispatch to
   const [scheduleFor, setScheduleFor] = useState(null); // agent preselected for scheduling; null = choose in modal
-  const [openTask, setOpenTask] = useState(null); // task id whose detail is open
+  const [openTask, setOpenTask] = useState(null); // agent task id whose detail is open
+  const [openWfRun, setOpenWfRun] = useState(null); // workflow run id whose detail is open
   const [viewOutputFor, setViewOutputFor] = useState(null); // task object
   const [pauseTarget, setPauseTarget] = useState(null); // { task, isBulk }
   const [approvals, setApprovals] = useState({ pending: [], recent: [] });
@@ -709,17 +886,27 @@ function AgentsTab({ state }) {
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
-    const [a, t, s, p] = await Promise.all([
+    const [a, t, w, wr, s, p] = await Promise.all([
       window.api.get('/api/agents'),
       window.api.get('/api/agents/tasks'),
+      window.api.get('/api/workflows'),
+      window.api.get('/api/workflows/runs?limit=50'),
       window.api.get('/api/agents/schedules'),
       window.api.get('/api/agents/approvals'),
     ]);
     if (a.ok) setAgents(a.data.agents || []);
     if (t.ok) setTasks(t.data.tasks || []);
+    if (w.ok) setWorkflows(w.data.workflows || []);
+    if (wr.ok) setWfRuns(wr.data.runs || []);
     if (s.ok) setSchedules(s.data.schedules || []);
     if (p.ok) setApprovals({ pending: p.data.pending || [], recent: p.data.recent || [] });
   }, []);
+
+  const wfNameById = useMemo(() => {
+    const m = new Map();
+    for (const w of workflows) m.set(w.id, w.name);
+    return m;
+  }, [workflows]);
 
   const resolveApproval = async (id, approved) => {
     setApprovalBusyId(id);
@@ -767,11 +954,37 @@ function AgentsTab({ state }) {
     load();
   };
 
+  // Launch composer: dispatch by id / run a saved workflow by id.
+  const dispatchById = async (agentId, prompt) => {
+    setError('');
+    const r = await window.api.post(`/api/agents/${agentId}/dispatch`, { prompt });
+    if (!r.ok) setError(r.error || 'Dispatch failed');
+    load();
+  };
+  const runWorkflowById = async (workflowId, input) => {
+    setError('');
+    const r = await window.api.post(`/api/workflows/${workflowId}/run`, { input });
+    if (!r.ok) setError(r.error || 'Run failed');
+    load();
+  };
+
   const cancelTask = async (task) => {
     if (!task || !['queued', 'running', 'paused'].includes(task.status)) return;
     await window.api.post(`/api/agents/tasks/${task.id}/cancel`);
     load();
   };
+
+  const cancelWfRun = async (id) => {
+    await window.api.post(`/api/workflows/runs/${id}/cancel`);
+    load();
+  };
+
+  // Kind-aware handlers for the merged Run feed (item = normalized feed entry).
+  const openItem = (item) => (item.kind === 'agent' ? setOpenTask(item.id) : setOpenWfRun(item.id));
+  const cancelItem = (item) =>
+    item.kind === 'agent' ? cancelTask(item.root) : cancelWfRun(item.id);
+  const viewOutputItem = (item) =>
+    item.kind === 'agent' ? setViewOutputFor(item.root) : setOpenWfRun(item.id);
 
   const requestPauseTask = (task) => setPauseTarget({ task, isBulk: false });
   const requestPauseAll = () => setPauseTarget({ task: null, isBulk: true });
@@ -799,8 +1012,13 @@ function AgentsTab({ state }) {
   };
 
   const cancelAll = async () => {
-    if (!window.confirm("Are you sure you want to stop all active workflows?")) return;
+    if (!window.confirm('Are you sure you want to stop all active runs?')) return;
     await window.api.post('/api/agents/tasks/cancel_all');
+    await Promise.all(
+      wfRuns
+        .filter((r) => r.status === 'queued' || r.status === 'running')
+        .map((r) => window.api.post(`/api/workflows/runs/${r.id}/cancel`)),
+    );
     load();
   };
 
@@ -822,61 +1040,82 @@ function AgentsTab({ state }) {
 
   return (
     <div style={{ maxWidth: 1320, margin: '0 auto', width: '100%' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
+        <window.Segmented
+          value={view}
+          onChange={setView}
+          options={[
+            { value: 'run', label: 'Run' },
+            { value: 'agents', label: 'Agents' },
+            { value: 'workflows', label: 'Workflows' },
+          ]}
+        />
+      </div>
+
       {error && (
         <div style={{ marginBottom: 14 }}>
           <window.Badge tone="err">{error}</window.Badge>
         </div>
       )}
 
-      <MissionControl
-        tasks={tasks}
-        agents={agents}
-        state={state}
-        approvals={approvals}
-        onResolveApproval={resolveApproval}
-        approvalBusyId={approvalBusyId}
-        onOpenTask={(id) => setOpenTask(id)}
-        onCancelTask={cancelTask}
-        onPauseTask={requestPauseTask}
-        onResumeTask={resumeTask}
-        onPauseAll={requestPauseAll}
-        onCancelAll={cancelAll}
-        onResumeAll={resumeAll}
-        onViewOutput={(task) => setViewOutputFor(task)}
-        onConfigureAgents={() => setShowConfigureAgents(true)}
-        onNewAgent={() => setEditing({ ...EMPTY_AGENT })}
-        onEditAgent={(a) => setEditing(a)}
-      />
+      {view === 'run' && (
+        <>
+          <LaunchComposer
+            agents={agents}
+            workflows={workflows}
+            onDispatchAgent={dispatchById}
+            onRunWorkflow={runWorkflowById}
+          />
 
-      <window.SectionTitle 
-        sub="Timed one-shot and recurring agent work."
-        right={
-          <window.Button variant="primary" icon="plus" onClick={() => setScheduleFor({})}>
-            Add Schedule
-          </window.Button>
-        }
-      >
-        Schedules
-      </window.SectionTitle>
-      <ScheduleList schedules={schedules} onDelete={removeSchedule} />
+          <MissionControl
+            tasks={tasks}
+            wfRuns={wfRuns}
+            wfNameById={wfNameById}
+            agents={agents}
+            state={state}
+            approvals={approvals}
+            onResolveApproval={resolveApproval}
+            approvalBusyId={approvalBusyId}
+            onOpenItem={openItem}
+            onCancelItem={cancelItem}
+            onPauseItem={(item) => requestPauseTask(item.root)}
+            onResumeItem={(item) => resumeTask(item.root)}
+            onPauseAll={requestPauseAll}
+            onCancelAll={cancelAll}
+            onResumeAll={resumeAll}
+            onViewOutputItem={viewOutputItem}
+            onManageAgents={() => setView('agents')}
+            onNewAgent={() => setEditing({ ...EMPTY_AGENT })}
+            onEditAgent={(a) => setEditing(a)}
+          />
 
-      {showConfigureAgents && (
-        <ConfigureAgentsModal
+          <window.SectionTitle
+            sub="Timed one-shot and recurring agent work."
+            right={
+              <window.Button variant="primary" icon="plus" onClick={() => setScheduleFor({})}>
+                Add Schedule
+              </window.Button>
+            }
+          >
+            Schedules
+          </window.SectionTitle>
+          <ScheduleList schedules={schedules} onDelete={removeSchedule} />
+        </>
+      )}
+
+      {view === 'agents' && (
+        <AgentsFleet
           agents={agents}
-          onClose={() => setShowConfigureAgents(false)}
-          onEdit={(a) => setEditing(a)}
           onNew={() => setEditing({ ...EMPTY_AGENT })}
+          onEdit={(a) => setEditing(a)}
           onDelete={removeAgent}
-          onDispatch={(a) => {
-            setShowConfigureAgents(false);
-            setDispatchFor(a);
-          }}
-          onSchedule={(a) => {
-            setShowConfigureAgents(false);
-            setScheduleFor(a);
-          }}
+          onDispatch={(a) => setDispatchFor(a)}
+          onSchedule={(a) => setScheduleFor(a)}
         />
       )}
+
+      {view === 'workflows' && <window.WorkflowBuilder state={state} />}
+
       {editing && (
         <AgentEditor
           initial={editing}
@@ -919,12 +1158,10 @@ function AgentsTab({ state }) {
           }}
         />
       )}
-      {viewOutputFor && (
-        <OutputModal
-          task={viewOutputFor}
-          onClose={() => setViewOutputFor(null)}
-        />
+      {openWfRun != null && (
+        <WorkflowRunDetail runId={openWfRun} onClose={() => setOpenWfRun(null)} />
       )}
+      {viewOutputFor && <OutputModal task={viewOutputFor} onClose={() => setViewOutputFor(null)} />}
     </div>
   );
 }
@@ -984,7 +1221,7 @@ function PauseModal({ task, isBulk, onClose, onConfirm }) {
     <window.Modal
       open
       onClose={onClose}
-      title={isBulk ? "Pause All Workflows" : `Pause Workflow ${task ? `#${task.id}` : ''}`}
+      title={isBulk ? 'Pause All Workflows' : `Pause Workflow ${task ? `#${task.id}` : ''}`}
       footer={
         <>
           <window.Button variant="subtle" onClick={onClose}>
@@ -1005,26 +1242,29 @@ function PauseModal({ task, isBulk, onClose, onConfirm }) {
       }
     >
       <div style={{ marginBottom: 16 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, cursor: 'pointer' }}>
-          <input
-            type="radio"
-            checked={mode === 'forever'}
-            onChange={() => setMode('forever')}
-          />
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            marginBottom: 8,
+            cursor: 'pointer',
+          }}
+        >
+          <input type="radio" checked={mode === 'forever'} onChange={() => setMode('forever')} />
           Pause indefinitely
         </label>
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-          <input
-            type="radio"
-            checked={mode === 'until'}
-            onChange={() => setMode('until')}
-          />
+          <input type="radio" checked={mode === 'until'} onChange={() => setMode('until')} />
           Pause until a specific date and time
         </label>
       </div>
 
       {mode === 'until' && (
-        <Field label="Resume At" hint="The system will automatically resume the workflow at this time.">
+        <Field
+          label="Resume At"
+          hint="The system will automatically resume the workflow at this time."
+        >
           <input
             type="datetime-local"
             value={until}
@@ -1568,4 +1808,108 @@ function OutputModal({ task, onClose }) {
   );
 }
 
-Object.assign(window, { AgentsTab });
+function WorkflowRunDetail({ runId, onClose }) {
+  const [detail, setDetail] = useState(null);
+  const load = useCallback(async () => {
+    const r = await window.api.get(`/api/workflows/runs/${runId}`);
+    if (r.ok) setDetail(r.data);
+  }, [runId]);
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 2500);
+    return () => clearInterval(id);
+  }, [load]);
+
+  const run = detail && detail.run;
+  const steps = detail && detail.steps;
+
+  return (
+    <window.Modal
+      open
+      onClose={onClose}
+      width={640}
+      title={`Workflow run #${runId}`}
+      footer={
+        <window.Button variant="primary" onClick={onClose}>
+          Close
+        </window.Button>
+      }
+    >
+      {!detail ? (
+        <div style={{ color: 'var(--text-3)' }}>Loading…</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <window.Badge tone={STATUS_TONE[run.status] || 'neutral'}>{run.status}</window.Badge>
+          </div>
+          {run.input && (
+            <div>
+              <window.Label>Input</window.Label>
+              <div style={{ fontSize: 13.5, color: 'var(--text-2)', whiteSpace: 'pre-wrap' }}>
+                {run.input}
+              </div>
+            </div>
+          )}
+          {steps && steps.length > 0 && (
+            <div>
+              <window.Label>Steps</window.Label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {steps.map((step) => (
+                  <div
+                    key={step.id}
+                    style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}
+                  >
+                    <window.Badge tone={STATUS_TONE[step.status] || 'neutral'}>
+                      {step.status}
+                    </window.Badge>
+                    <span style={{ fontWeight: 600, color: 'var(--text)' }}>{step.nodeType}</span>
+                    {step.error ? (
+                      <span style={{ color: 'var(--err)', marginLeft: 8 }}>{step.error}</span>
+                    ) : step.output ? (
+                      <span
+                        style={{
+                          color: 'var(--text-2)',
+                          marginLeft: 8,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {wfClip(step.output, 80)}
+                      </span>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {(run.output || run.error) && (
+            <div>
+              <window.Label>Result</window.Label>
+              {run.error ? (
+                <div style={{ fontSize: 13, color: 'var(--err)' }}>{run.error}</div>
+              ) : (
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontFamily: 'var(--font-mono)',
+                    whiteSpace: 'pre-wrap',
+                    color: 'var(--text-2)',
+                    background: 'var(--surface-2)',
+                    padding: '8px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border)',
+                  }}
+                >
+                  {run.output}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </window.Modal>
+  );
+}
+
+Object.assign(window, { AgentsTab, AgentsFleet, WorkflowRunDetail });
