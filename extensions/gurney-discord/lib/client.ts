@@ -12,6 +12,7 @@ import {
   ButtonStyle,
   type Message,
   type Interaction,
+  type VoiceState,
 } from 'discord.js';
 import type { DiscordGatewayAdapterCreator } from '@discordjs/voice';
 import type { Logger } from '../../../src/util/log.js';
@@ -73,6 +74,7 @@ export interface DiscordClientOptions {
   // Build the client only after these intents are present. Tests pass an
   // override; production uses the default factory.
   clientFactory?: () => Client;
+  handleVoiceStateUpdate?: (ctx: { userId: string, oldChannelId: string | null, newChannelId: string | null, guildId: string }) => void;
 }
 
 const DEFAULT_INTENTS: GatewayIntentBits[] = [
@@ -127,6 +129,20 @@ export function createDiscordClient(opts: DiscordClientOptions): DiscordClientHa
         error: e instanceof Error ? e.message : String(e),
       }),
     );
+  });
+
+  client.on('voiceStateUpdate', (oldState: VoiceState, newState: VoiceState) => {
+    if (opts.handleVoiceStateUpdate) {
+      const userId = newState.member?.id || newState.id;
+      if (userId) {
+        opts.handleVoiceStateUpdate({
+          userId,
+          oldChannelId: oldState.channelId,
+          newChannelId: newState.channelId,
+          guildId: newState.guild.id
+        });
+      }
+    }
   });
 
   async function handleMessage(msg: Message): Promise<void> {

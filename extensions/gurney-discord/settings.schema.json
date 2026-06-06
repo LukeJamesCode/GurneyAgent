@@ -35,6 +35,16 @@
       "type": "number",
       "description": "Disconnect the Discord gateway after this many minutes with no inbound messages (0 = stay connected). Useful on Pi targets.",
       "default": 0
+    },
+    "entrance_sounds": {
+      "type": "string",
+      "description": "Comma-separated list of <user_id>:<absolute_path_to_mp3> for playing an entrance sound when a specific user joins a voice channel Gurney is in.",
+      "default": ""
+    },
+    "talking_sounds": {
+      "type": "string",
+      "description": "Comma-separated list of <user_id>:<absolute_path_to_mp3> for playing a sound whenever a specific user starts talking in a voice channel.",
+      "default": ""
     }
   },
   "required": ["bot_token"]

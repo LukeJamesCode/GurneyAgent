@@ -81,6 +81,9 @@ export async function register(host: Host): Promise<void> {
     bridge: () => bridgeRef,
     allowlist: allowlistAccessor,
     handleConfirmButton: (customId, by) => (confirmRef ? confirmRef.onButton(customId, by) : false),
+    handleVoiceStateUpdate: (ctx) => {
+      voiceManager?.handleVoiceStateUpdate(ctx.userId, ctx.oldChannelId, ctx.newChannelId, ctx.guildId);
+    },
   });
 
   voiceManager = new VoiceManager({

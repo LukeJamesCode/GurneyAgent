@@ -102,6 +102,22 @@ export class VoiceManager {
       end: { behavior: EndBehaviorType.AfterSilence, duration: 500 },
     });
 
+    const talkingSoundsStr = this.host.settings.get<string>('talking_sounds', '');
+    if (talkingSoundsStr) {
+      const pairs = talkingSoundsStr.split(',').map((s) => s.trim()).filter(Boolean);
+      for (const pair of pairs) {
+        const idx = pair.indexOf(':');
+        if (idx !== -1) {
+          const uid = pair.slice(0, idx);
+          const mp3Path = pair.slice(idx + 1);
+          if (uid === userId && mp3Path) {
+            this.playLocalFile(guildId, mp3Path);
+            break;
+          }
+        }
+      }
+    }
+
     const dir = mkdtempSync(join(tmpdir(), 'gurney-discord-vc-'));
     const oggPath = join(dir, 'in.ogg');
 
@@ -232,6 +248,46 @@ export class VoiceManager {
       
     } catch (e) {
       this.log.warn('tts processing error', { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  public handleVoiceStateUpdate(
+    userId: string,
+    oldChannelId: string | null,
+    newChannelId: string | null,
+    guildId: string,
+  ): void {
+    if (newChannelId && newChannelId !== oldChannelId) {
+      const ourGuild = this.channelToGuild.get(newChannelId);
+      if (ourGuild === guildId) {
+        const entranceSoundsStr = this.host.settings.get<string>('entrance_sounds', '');
+        if (!entranceSoundsStr) return;
+
+        const pairs = entranceSoundsStr.split(',').map((s) => s.trim()).filter(Boolean);
+        for (const pair of pairs) {
+          const idx = pair.indexOf(':');
+          if (idx === -1) continue;
+          const uid = pair.slice(0, idx);
+          const mp3Path = pair.slice(idx + 1);
+          if (uid === userId && mp3Path) {
+            this.playLocalFile(guildId, mp3Path);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  private playLocalFile(guildId: string, filePath: string): void {
+    const player = this.players.get(guildId);
+    if (!player) return;
+
+    try {
+      const resource = createAudioResource(filePath);
+      player.play(resource);
+      this.log.info('played entrance sound', { guildId, filePath });
+    } catch (e) {
+      this.log.warn('failed to play local file', { error: e instanceof Error ? e.message : String(e) });
     }
   }
 }
