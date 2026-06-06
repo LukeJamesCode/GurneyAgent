@@ -292,57 +292,6 @@ function LiveRunLog({ tasks, onOpen }) {
   );
 }
 
-function AgentStatusPanel({ agents, tasks, onNew, onEdit }) {
-  const stateOf = (id) => {
-    const mine = tasks.filter((t) => t.agentId === id);
-    if (mine.some((t) => t.status === 'running')) return { tone: 'yellow', label: 'Busy' };
-    if (mine.some((t) => t.status === 'queued')) return { tone: 'blue', label: 'Queued' };
-    return { tone: 'green', label: 'Online' };
-  };
-  return (
-    <div className="dash-panel">
-      <div className="panel-header">
-        <h3>
-          <window.Icon name="activity" size={16} /> Agent Status
-        </h3>
-        <a
-          href="#"
-          onClick={(e) => {
-            e.preventDefault();
-            onNew();
-          }}
-        >
-          + New
-        </a>
-      </div>
-      {agents.length === 0 ? (
-        <div style={{ color: 'var(--text-3)', fontSize: 13 }}>No agents yet.</div>
-      ) : (
-        <div className="status-list">
-          {agents.map((a) => {
-            const st = stateOf(a.id);
-            return (
-              <div
-                className="status-item"
-                key={a.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => onEdit(a)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') onEdit(a);
-                }}
-                style={{ cursor: 'pointer' }}
-                title="Edit agent"
-              >
-                <span className={`dot ${st.tone}`}></span> {a.name} <span>{st.label}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function SystemHealthPanel({ state }) {
   const sys = state && state.system ? state.system : null;
@@ -453,34 +402,17 @@ function ApprovalsPanel({ approvals, onResolve, busyId }) {
   );
 }
 
-function MemoryPanel() {
-  return (
-    <div className="dash-panel">
-      <div className="panel-header">
-        <h3>
-          <window.Icon name="database" size={16} /> Memory
-        </h3>
-      </div>
-      <div style={{ color: 'var(--text-3)', fontSize: 13, lineHeight: 1.5 }}>
-        Project memory isn’t wired up. Enable the memory extension to surface stored facts here.
-      </div>
-    </div>
-  );
-}
-
 // The mission-control layout: workflow cards + pipeline diagram + run log down
 // the left, a status/health/approvals/memory sidebar down the right.
 function MissionControl({
   tasks,
-  agents,
   state,
   approvals,
   onResolveApproval,
   approvalBusyId,
   onOpenTask,
   onCancelTask,
-  onNewAgent,
-  onEditAgent,
+  onConfigureAgents,
 }) {
   const [selectedId, setSelectedId] = useState(null);
   const workflows = buildWorkflows(tasks);
@@ -493,6 +425,9 @@ function MissionControl({
           <div className="dash-header-actions">
             <button className="dash-btn sub">
               All Workflows <window.Icon name="chevron-down" size={14} />
+            </button>
+            <button className="dash-btn sub" onClick={onConfigureAgents}>
+              <window.Icon name="gear" size={14} /> Configure Agents
             </button>
           </div>
         </div>
@@ -544,16 +479,78 @@ function MissionControl({
       </div>
 
       <div className="dash-col-right">
-        <AgentStatusPanel agents={agents} tasks={tasks} onNew={onNewAgent} onEdit={onEditAgent} />
         <SystemHealthPanel state={state} />
         <ApprovalsPanel
           approvals={approvals}
           onResolve={onResolveApproval}
           busyId={approvalBusyId}
         />
-        <MemoryPanel />
       </div>
     </div>
+  );
+}
+
+function ConfigureAgentsModal({ agents, onClose, onEdit, onNew, onDelete, onDispatch, onSchedule }) {
+  return (
+    <window.Modal
+      open
+      onClose={onClose}
+      width={560}
+      title="Configure Agents"
+      footer={
+        <>
+          <window.Button variant="subtle" onClick={onClose}>
+            Close
+          </window.Button>
+          <window.Button variant="primary" icon="plus" onClick={onNew}>
+            New Agent
+          </window.Button>
+        </>
+      }
+    >
+      {agents.length === 0 ? (
+        <div style={{ color: 'var(--text-3)', fontSize: 14, padding: '8px 2px' }}>
+          No agents yet. Click &ldquo;New Agent&rdquo; to create one.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {agents.map((a) => (
+            <div
+              key={a.id}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '10px 12px',
+                background: 'var(--surface-2)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-sm)',
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{a.name}</div>
+                {a.role && (
+                  <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginTop: 2 }}>
+                    {a.role}
+                  </div>
+                )}
+              </div>
+              <window.Badge tone="accent">{a.profile}</window.Badge>
+              <window.Button size="sm" variant="primary" icon="send" onClick={() => onDispatch(a)}>
+                Dispatch
+              </window.Button>
+              <window.Button size="sm" variant="subtle" icon="send" onClick={() => onSchedule(a)}>
+                Schedule
+              </window.Button>
+              <window.Button size="sm" variant="subtle" icon="gear" onClick={() => onEdit(a)}>
+                Edit
+              </window.Button>
+              <window.Button size="sm" variant="subtle" icon="trash" onClick={() => onDelete(a)} />
+            </div>
+          ))}
+        </div>
+      )}
+    </window.Modal>
   );
 }
 
@@ -562,6 +559,7 @@ function AgentsTab({ state }) {
   const [tasks, setTasks] = useState([]);
   const [schedules, setSchedules] = useState([]);
   const [editing, setEditing] = useState(null); // agent object or EMPTY_AGENT when creating
+  const [showConfigureAgents, setShowConfigureAgents] = useState(false);
   const [dispatchFor, setDispatchFor] = useState(null); // agent to dispatch to
   const [scheduleFor, setScheduleFor] = useState(null); // agent preselected for scheduling; null = choose in modal
   const [openTask, setOpenTask] = useState(null); // task id whose detail is open
@@ -660,70 +658,37 @@ function AgentsTab({ state }) {
 
       <MissionControl
         tasks={tasks}
-        agents={agents}
         state={state}
         approvals={approvals}
         onResolveApproval={resolveApproval}
         approvalBusyId={approvalBusyId}
         onOpenTask={(id) => setOpenTask(id)}
         onCancelTask={cancelTask}
-        onNewAgent={() => setEditing({ ...EMPTY_AGENT })}
-        onEditAgent={(a) => setEditing(a)}
+        onConfigureAgents={() => setShowConfigureAgents(true)}
       />
-
-      <window.SectionTitle
-        sub="Personas you can dispatch tasks to or schedule."
-        right={
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <window.Button icon="send" variant="subtle" onClick={() => setScheduleFor({})}>
-              Schedule
-            </window.Button>
-            <window.Button
-              icon="plus"
-              variant="primary"
-              onClick={() => setEditing({ ...EMPTY_AGENT })}
-            >
-              New agent
-            </window.Button>
-          </div>
-        }
-      >
-        Fleet
-      </window.SectionTitle>
-      {agents.length === 0 ? (
-        <window.Card>
-          <div style={{ color: 'var(--text-3)', fontSize: 14, padding: '8px 2px' }}>
-            No agents yet. Create a persona — a name, a system prompt, a model, and the tools it may
-            use — then dispatch a task to it.
-          </div>
-        </window.Card>
-      ) : (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-            gap: 14,
-            marginBottom: 26,
-          }}
-        >
-          {agents.map((a) => (
-            <AgentCard
-              key={a.id}
-              agent={a}
-              onEdit={() => setEditing(a)}
-              onDelete={() => removeAgent(a)}
-              onDispatch={() => setDispatchFor(a)}
-              onSchedule={() => setScheduleFor(a)}
-            />
-          ))}
-        </div>
-      )}
 
       <window.SectionTitle sub="Timed one-shot and recurring agent work.">
         Schedules
       </window.SectionTitle>
       <ScheduleList schedules={schedules} onDelete={removeSchedule} />
 
+      {showConfigureAgents && (
+        <ConfigureAgentsModal
+          agents={agents}
+          onClose={() => setShowConfigureAgents(false)}
+          onEdit={(a) => setEditing(a)}
+          onNew={() => setEditing({ ...EMPTY_AGENT })}
+          onDelete={removeAgent}
+          onDispatch={(a) => {
+            setShowConfigureAgents(false);
+            setDispatchFor(a);
+          }}
+          onSchedule={(a) => {
+            setShowConfigureAgents(false);
+            setScheduleFor(a);
+          }}
+        />
+      )}
       {editing && (
         <AgentEditor
           initial={editing}
@@ -759,49 +724,6 @@ function AgentsTab({ state }) {
         />
       )}
     </div>
-  );
-}
-
-function AgentCard({ agent, onEdit, onDelete, onDispatch, onSchedule }) {
-  const tools =
-    agent.toolAllowlist === null
-      ? 'all tools'
-      : agent.toolAllowlist.length === 0
-        ? 'no tools'
-        : `${agent.toolAllowlist.length} tool grant${agent.toolAllowlist.length === 1 ? '' : 's'}`;
-  return (
-    <window.Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>{agent.name}</span>
-        <window.Badge tone="accent">{agent.profile}</window.Badge>
-        <window.Badge tone="neutral">{agent.executionMode}</window.Badge>
-      </div>
-      {agent.role && <div style={{ fontSize: 13, color: 'var(--text-2)' }}>{agent.role}</div>}
-      <div
-        style={{
-          fontSize: 12.5,
-          color: 'var(--text-3)',
-          display: 'flex',
-          gap: 8,
-          flexWrap: 'wrap',
-        }}
-      >
-        <span>{tools}</span>
-        {agent.canDelegate && <window.Badge tone="warn">can delegate</window.Badge>}
-      </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
-        <window.Button size="sm" variant="primary" icon="send" onClick={onDispatch}>
-          Dispatch
-        </window.Button>
-        <window.Button size="sm" variant="subtle" icon="send" onClick={onSchedule}>
-          Schedule
-        </window.Button>
-        <window.Button size="sm" variant="subtle" icon="gear" onClick={onEdit}>
-          Edit
-        </window.Button>
-        <window.Button size="sm" variant="subtle" icon="trash" onClick={onDelete} />
-      </div>
-    </window.Card>
   );
 }
 
