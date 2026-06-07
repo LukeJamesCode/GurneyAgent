@@ -186,11 +186,17 @@ Voice is gated by the same allowlist as text: only speech from a user on
 is ignored.
 
 **Sound effects.** Two optional settings play a local MP3 for a specific
-user (handy for entrance stings or talk-over gags):
+user (handy for entrance stings or talk-over gags). They fire **alongside**
+the wake-word assistant — you don't have to choose between them:
 
 - `entrance_sounds` — plays when that user **joins** a voice channel
   Gurney is already in.
 - `talking_sounds` — plays when that user **starts talking**.
+
+If you want a pure soundboard with no assistant at all, flip `taunt_mode`
+on: Gurney then plays the sounds but stops transcribing speech and ignores
+the wake word. With `taunt_mode` off (the default), the wake word and the
+sound effects both work at once.
 
 Both take the form `<user_id>:<absolute_path_to_mp3>`, comma-separated for
 multiple users:

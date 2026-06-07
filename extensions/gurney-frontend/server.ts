@@ -41,7 +41,11 @@ import {
 } from '../../src/core/agents.js';
 import { createAgentScheduleStore } from '../../src/core/agent-schedules.js';
 import { createAgentApprovalStore } from '../../src/core/agent-approvals.js';
-import { createWorkflowRegistry, type WorkflowGraphError } from '../../src/core/workflows.js';
+import {
+  createWorkflowRegistry,
+  type WorkflowGraph,
+  type WorkflowRunStatus,
+} from '../../src/core/workflows.js';
 import type { ProfileName } from '../../src/core/llm.js';
 import { createLogger } from '../../src/util/log.js';
 import { createOllama } from '../../src/core/llm.js';
@@ -224,7 +228,12 @@ function normalizeAgentScheduleInput(body: Record<string, unknown>): {
       : [];
   const agentIds = rawIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0);
   const recurrence =
-    body['recurrence'] === 'daily' || body['recurrence'] === 'weekly' || body['recurrence'] === 'monthly' || body['recurrence'] === 'yearly' ? (body['recurrence'] as any) : 'once';
+    body['recurrence'] === 'daily' ||
+    body['recurrence'] === 'weekly' ||
+    body['recurrence'] === 'monthly' ||
+    body['recurrence'] === 'yearly'
+      ? (body['recurrence'] as 'daily' | 'weekly' | 'monthly' | 'yearly')
+      : 'once';
   return {
     agentIds,
     prompt: String(body['prompt'] ?? '').trim(),
@@ -2332,7 +2341,7 @@ async function handleApi(
           return reg.create({
             name: String(body['name']).trim(),
             description: String(body['description'] ?? ''),
-            graph: body['graph'] as any,
+            graph: body['graph'] as WorkflowGraph,
             active: body['active'] !== false,
           });
         });
@@ -2357,7 +2366,7 @@ async function handleApi(
           return reg.update(id, {
             ...(body['name'] !== undefined ? { name: String(body['name']).trim() } : {}),
             ...(body['description'] !== undefined ? { description: String(body['description']) } : {}),
-            ...(body['graph'] !== undefined ? { graph: body['graph'] as any } : {}),
+            ...(body['graph'] !== undefined ? { graph: body['graph'] as WorkflowGraph } : {}),
             ...(body['active'] !== undefined ? { active: !!body['active'] } : {}),
           });
         });
@@ -2389,7 +2398,7 @@ async function handleApi(
       const runs = withDb((db) =>
         createWorkflowRegistry(db).listRuns({
           ...(workflowId ? { workflowId: Number(workflowId) } : {}),
-          ...(status ? { status: status as any } : {}),
+          ...(status ? { status: status as WorkflowRunStatus } : {}),
           ...(limit ? { limit: Number(limit) } : {}),
         }),
       ) ?? [];

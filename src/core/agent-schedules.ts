@@ -89,7 +89,7 @@ function normalizeRecurrence(value: unknown): AgentScheduleRecurrence {
 
 function advanceNextRun(from: number, recurrence: AgentScheduleRecurrence, now: number): number {
   if (recurrence === 'monthly' || recurrence === 'yearly') {
-    let next = new Date(from);
+    const next = new Date(from);
     while (next.getTime() <= now) {
       if (recurrence === 'monthly') {
         next.setMonth(next.getMonth() + 1);

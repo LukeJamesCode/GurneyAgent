@@ -143,19 +143,24 @@ export class VoiceManager {
       return;
     }
 
-    // Taunt mode swaps the channel's personality: ON = soundboard (play this
-    // user's talking sound, no assistant), OFF = normal voice assistant
-    // (transcribe and listen for the "gurney" wake word). The two are mutually
-    // exclusive, so in taunt mode we don't even subscribe to the audio.
-    if (this.host.settings.get<boolean>('taunt_mode', false)) {
-      const talkingSoundsStr = this.host.settings.get<string>('talking_sounds', '');
-      for (const { uid, path } of parseUserAudioMap(talkingSoundsStr)) {
-        if (uid === userId) {
-          this.log.info('matched user talking sound', { userId, path });
-          this.playLocalFile(guildId, path);
-          break;
-        }
+    // Play this user's talking sound, if one is configured. This is
+    // independent of the voice assistant: it fires whenever a configured user
+    // starts talking, whether or not we then go on to transcribe their speech.
+    const talkingSoundsStr = this.host.settings.get<string>('talking_sounds', '');
+    for (const { uid, path } of parseUserAudioMap(talkingSoundsStr)) {
+      if (uid === userId) {
+        this.log.info('matched user talking sound', { userId, path });
+        void this.playLocalFile(guildId, path);
+        break;
       }
+    }
+
+    // Taunt mode = pure soundboard: play the sound effects (above and on join)
+    // but keep the assistant out of the way — don't subscribe to or transcribe
+    // the audio. Normal mode (the default) falls through to the wake-word
+    // ("hey gurney" / "gurney") voice assistant below, so the sounds and the
+    // assistant work side by side.
+    if (this.host.settings.get<boolean>('taunt_mode', false)) {
       return;
     }
 
@@ -332,9 +337,9 @@ export class VoiceManager {
     if (newChannelId && newChannelId !== oldChannelId) {
       const ourGuild = this.channelToGuild.get(newChannelId);
       if (ourGuild === guildId) {
-        // Entrance sounds are a taunt-mode feature; in normal voice-assistant
-        // mode the bot stays quiet when people come and go.
-        if (!this.host.settings.get<boolean>('taunt_mode', false)) return;
+        // Play this user's entrance sound, if one is configured. Independent of
+        // taunt mode — it fires whenever a configured user joins the channel
+        // Gurney is in, and coexists with the normal voice assistant.
         const entranceSoundsStr = this.host.settings.get<string>('entrance_sounds', '');
         for (const { uid, path } of parseUserAudioMap(entranceSoundsStr)) {
           if (uid === userId) {
