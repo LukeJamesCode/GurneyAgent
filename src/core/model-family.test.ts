@@ -19,7 +19,7 @@ test('modelFamily treats gemma 2/3 as non-thinking', () => {
 });
 
 test('modelFamily treats gemma 4+ as thinking (configurable reasoner)', () => {
-  for (const tag of ['gemma4:12b', 'gemma4:26b', 'gemma5:8b']) {
+  for (const tag of ['gemma4:12b', 'gemma-4:26b', 'gemma5:8b', 'hf.co/unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL']) {
     assert.deepEqual(modelFamily(tag), { family: 'gemma', thinking: 'yes' });
   }
 });

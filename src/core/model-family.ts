@@ -24,8 +24,9 @@ export interface ModelCapabilities {
 }
 
 export function modelFamily(tag: string): ModelCapabilities {
-  if (/^gemma/i.test(tag)) {
-    const ver = Number(/^gemma(\d+)/i.exec(tag)?.[1] ?? 0);
+  if (/(?:^|\/)gemma/i.test(tag)) {
+    const match = /(?:^|\/)gemma(?:[-_]?(\d+))?/i.exec(tag);
+    const ver = Number(match?.[1] ?? 0);
     // Gemma 4+ are reasoners with a configurable thinking mode; 2/3 are not.
     return { family: 'gemma', thinking: ver >= 4 ? 'yes' : 'no' };
   }
