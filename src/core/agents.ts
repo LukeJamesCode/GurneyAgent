@@ -616,6 +616,10 @@ export interface AgentRuntimeOptions {
   // User id stamped on the agent's conversation row (telegram_chats.user_id is
   // NOT NULL). The bot owner's id; tests pass any number.
   ownerUserId: number;
+  // Maximum number of tokens allowed for the agent's prompt context.
+  budgetTokens?: number;
+  // Maximum number of characters of a tool's output to inject into context.
+  toolResultMaxChars?: number;
 }
 
 export interface RunResult {
@@ -678,7 +682,12 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
       // 'auto' keeps the profile/model default; only force when explicitly set.
       ...(agent.thinkMode !== 'auto' ? { defaultThinkMode: agent.thinkMode } : {}),
       maxToolRounds: agent.maxToolRounds,
-      ...(agent.budgetTokens ? { budgetTokens: agent.budgetTokens } : {}),
+      ...(agent.budgetTokens
+        ? { budgetTokens: agent.budgetTokens }
+        : opts.budgetTokens
+          ? { budgetTokens: opts.budgetTokens }
+          : {}),
+      ...(opts.toolResultMaxChars ? { toolResultMaxChars: opts.toolResultMaxChars } : {}),
     });
   }
 

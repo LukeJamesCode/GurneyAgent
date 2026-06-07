@@ -28,6 +28,36 @@
       "tier": "smoke",
       "kind": "slash",
       "message": "/voice off"
+    },
+
+    {
+      "id": "stt.status.smoke",
+      "ability": "stt:status",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/voice transcribe status"
+    },
+    {
+      "id": "stt.on.smoke",
+      "ability": "stt:toggle",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/voice transcribe on"
+    },
+    {
+      "id": "stt.usage.std",
+      "ability": "stt:toggle",
+      "tier": "standard",
+      "kind": "slash",
+      "message": "/voice transcribe maybe",
+      "note": "An invalid subcommand should return the usage string, not toggle the pref."
+    },
+    {
+      "id": "stt.off.smoke",
+      "ability": "stt:toggle",
+      "tier": "smoke",
+      "kind": "slash",
+      "message": "/voice transcribe off"
     }
   ]
 }

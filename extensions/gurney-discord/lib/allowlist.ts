@@ -4,9 +4,10 @@
 // Rules:
 //   * DMs are allowed only when the sender's user id is in
 //     `allowed_dm_user_ids`. Empty list = no DM access.
-//   * Guild channels respond only to @-mentions of the bot, and only when
-//     `<guild_id>:<channel_id>` is in `allowed_channel_keys`. This is the
-//     per-chat opt-in the safety doc requires for non-DM intercept.
+//   * Guild channels respond only to @-mentions of the bot, and only when the
+//     mentioning user is also in `allowed_dm_user_ids` — the same user
+//     allowlist gates every surface, so the bot never answers a stranger even
+//     in an opted-in guild.
 //   * Bot messages and webhook messages are always ignored.
 //
 // Returns a structured decision so the caller can log why something was
@@ -26,7 +27,6 @@ export type AllowDenialReason =
   | 'is_webhook'
   | 'dm_not_allowed'
   | 'guild_not_mentioned'
-  | 'channel_not_opted_in'
   | 'self_message';
 
 export interface InboundMessageMeta {
@@ -56,12 +56,13 @@ export function decide(cfg: AllowlistConfig, m: InboundMessageMeta): AllowDecisi
   if (!m.mentionedUserIds.has(cfg.botUserId)) {
     return { allow: false, reason: 'guild_not_mentioned' };
   }
-  
-  // Enforce user allowlist globally instead of channel allowlist
+
+  // The same user allowlist gates guild mentions as DMs — a mention from a
+  // non-allowlisted user is dropped even in a channel the bot can see.
   if (!cfg.allowedDmUserIds.has(m.authorId)) {
     return { allow: false, reason: 'dm_not_allowed' };
   }
-  
+
   return { allow: true, kind: 'mention' };
 }
 

@@ -89,13 +89,21 @@ function normalizeRecurrence(value: unknown): AgentScheduleRecurrence {
 
 function advanceNextRun(from: number, recurrence: AgentScheduleRecurrence, now: number): number {
   if (recurrence === 'monthly' || recurrence === 'yearly') {
-    let next = new Date(from);
+    // Re-anchor on the original day-of-month each step so a schedule set on the
+    // 31st doesn't permanently drift after passing through a short month — a
+    // naive setMonth(+1) turns Jan 31 into Mar 3. Instead clamp the day to the
+    // target month's length (Jan 31 → Feb 28 → Mar 31; leap Feb 29 → next-year
+    // Feb 28) while preserving the wall-clock time of day.
+    const anchorDay = new Date(from).getDate();
+    const monthsPerStep = recurrence === 'monthly' ? 1 : 12;
+    const next = new Date(from);
     while (next.getTime() <= now) {
-      if (recurrence === 'monthly') {
-        next.setMonth(next.getMonth() + 1);
-      } else {
-        next.setFullYear(next.getFullYear() + 1);
-      }
+      const monthIndex = next.getFullYear() * 12 + next.getMonth() + monthsPerStep;
+      const targetYear = Math.floor(monthIndex / 12);
+      const targetMonth = monthIndex % 12;
+      // Day 0 of the following month is the last day of the target month.
+      const daysInTarget = new Date(targetYear, targetMonth + 1, 0).getDate();
+      next.setFullYear(targetYear, targetMonth, Math.min(anchorDay, daysInTarget));
     }
     return next.getTime();
   }

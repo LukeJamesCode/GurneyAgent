@@ -387,6 +387,8 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     log,
     registry: agentRegistry,
     ownerUserId: ownerId,
+    budgetTokens,
+    toolResultMaxChars,
   });
   const agentQueue = createAgentQueue({
     registry: agentRegistry,

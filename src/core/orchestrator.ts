@@ -31,8 +31,8 @@ import { LLMEmptyResponseError, LLMHttpError } from './llm.js';
 export function looksLikeFakeToolCall(text: string, allowedTools: ReadonlySet<string>): boolean {
   const t = text.trim();
   if (!t) return false;
-  // Shape 1: markdown JSON block with a `"type": "<tool_name>"` field.
-  const jsonBlock = /^```(?:json)?\s*\n?\s*\{[\s\S]{0,400}?"type"\s*:\s*"([a-z_][a-z0-9_]*)"/i.exec(
+  // Shape 1: markdown JSON block with a `"type": "<tool_name>"` or `"name": "<tool_name>"` field.
+  const jsonBlock = /^```(?:json)?\s*\n?\s*\{[\s\S]{0,400}?"(?:type|name)"\s*:\s*"([a-z_][a-z0-9_]*)"/i.exec(
     t,
   );
   if (jsonBlock && allowedTools.has(jsonBlock[1]!)) return true;

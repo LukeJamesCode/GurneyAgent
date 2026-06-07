@@ -185,6 +185,15 @@
       "kind": "slash",
       "message": "/done Buy bread"
     },
+    {
+      "id": "tasks.delete.full",
+      "ability": "tasks:delete",
+      "tier": "full",
+      "kind": "freeform",
+      "message": "Delete \"buy milk\" from my todos",
+      "note": "Destructive on the real task list — relies on tasks.add.smoke having created \"buy milk\" earlier in the run; cleanup removes any leftover.",
+      "expects": { "tool": "tasks_delete" }
+    },
 
     {
       "id": "rem.set.smoke",
@@ -238,6 +247,15 @@
       "tier": "smoke",
       "kind": "slash",
       "message": "/reminders"
+    },
+    {
+      "id": "rem.cancel.std",
+      "ability": "reminders:cancel",
+      "tier": "standard",
+      "kind": "freeform",
+      "message": "Cancel my reminder to take the trash out",
+      "note": "Relies on rem.set.* having created the trash reminder earlier in the run; only test-created reminders are affected and cleanup removes the rest.",
+      "expects": { "tool": "reminder_cancel" }
     },
 
     {

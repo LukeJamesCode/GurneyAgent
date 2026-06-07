@@ -770,7 +770,7 @@ function AgentsFleet({ agents, onNew, onEdit, onDelete, onDispatch, onSchedule }
                   <window.Badge tone="accent">{agent.profile}</window.Badge>
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <window.Button variant="primary" icon="send" onClick={() => onDispatch(agent)}>
                   Dispatch
                 </window.Button>
