@@ -54,6 +54,19 @@ function saveStoredMessages(messages) {
   }
 }
 
+// Per-turn think toggle, remembered across reloads. 'auto' lets each model use
+// its default; 'on'/'off' force reasoning for thinking-capable models (qwen3,
+// gemma4) and are a no-op on models without a thinking mode.
+const THINK_KEY = 'gurney_think_mode';
+function loadThinkMode() {
+  try {
+    const v = localStorage.getItem(THINK_KEY);
+    return v === 'on' || v === 'off' ? v : 'auto';
+  } catch (e) {
+    return 'auto';
+  }
+}
+
 function ChatHub({
   agent,
   onStart,
@@ -78,6 +91,7 @@ function ChatHub({
   const [streamText, setStreamText] = useStateCH('');
   const [commands, setCommands] = useStateCH({ core: [], extensions: [] });
   const [confirmReq, setConfirmReq] = useStateCH(null); // { id, prompt, tool }
+  const [thinkMode, setThinkMode] = useStateCH(loadThinkMode); // 'auto' | 'on' | 'off'
   const [devmode, setDevmode] = useDevmode();
   const scrollRef = useRefCH(null);
   const streamRef = useRefCH(null); // active postStream handle (for abort)
@@ -98,6 +112,14 @@ function ChatHub({
   useEffectCH(() => {
     saveStoredMessages(messages);
   }, [messages]);
+
+  useEffectCH(() => {
+    try {
+      localStorage.setItem(THINK_KEY, thinkMode);
+    } catch (e) {
+      /* quota — non-fatal, toggle just won't persist */
+    }
+  }, [thinkMode]);
 
   // Pull the live command reference (core + enabled extension commands) so the
   // command bar can surface buttons. Refreshes whenever the agent comes up or
@@ -140,7 +162,7 @@ function ChatHub({
     let metaAcc = null;
     streamRef.current = window.api.postStream(
       '/api/chat',
-      { text },
+      { text, thinkMode },
       {
         onEvent: (ev, data) => {
           if (ev === 'delta' && data && data.delta) {
@@ -449,6 +471,29 @@ function ChatHub({
                 onCommand={runCommandButton}
               />
             )}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginBottom: 8,
+                fontSize: 12,
+                color: 'var(--text-dim)',
+              }}
+              title="Reasoning mode for thinking-capable models (qwen3, gemma4). No-op on models without a thinking mode."
+            >
+              <span>Reasoning</span>
+              <window.Segmented
+                size="sm"
+                value={thinkMode}
+                onChange={setThinkMode}
+                options={[
+                  { value: 'auto', label: 'Auto' },
+                  { value: 'on', label: 'Think' },
+                  { value: 'off', label: 'No-think' },
+                ]}
+              />
+            </div>
             <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
               <textarea
                 ref={inputRef}

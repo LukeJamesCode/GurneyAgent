@@ -112,6 +112,60 @@ test('handleUserMessage streams a reply and persists user+assistant messages', a
   }
 });
 
+test('a per-message thinkMode is forwarded to llm.chat', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const llm = fakeLlm([stream(['ok'])]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    const orch = createOrchestrator({ db, llm, tools, log: silentLogger() });
+    await orch.handleUserMessage({
+      chatId: 1,
+      userId: 1,
+      text: 'Hello',
+      thinkMode: 'on',
+      send: () => {},
+    });
+    assert.equal(llm.calls[0]!.thinkMode, 'on');
+    await orch.shutdown();
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('defaultThinkMode applies when a message has none; the message overrides it', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const llm = fakeLlm([stream(['a']), stream(['b'])]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    const orch = createOrchestrator({
+      db,
+      llm,
+      tools,
+      log: silentLogger(),
+      defaultThinkMode: 'off',
+    });
+    // No per-message thinkMode => the orchestrator default is used.
+    await orch.handleUserMessage({ chatId: 1, userId: 1, text: 'a', send: () => {} });
+    assert.equal(llm.calls[0]!.thinkMode, 'off');
+    // A per-message thinkMode wins over the default.
+    await orch.handleUserMessage({
+      chatId: 1,
+      userId: 1,
+      text: 'b',
+      thinkMode: 'on',
+      send: () => {},
+    });
+    assert.equal(llm.calls[1]!.thinkMode, 'on');
+    await orch.shutdown();
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('handleUserMessage resolves only after the final reply chunk is sent', async () => {
   const dir = tmp();
   try {

@@ -111,6 +111,7 @@ test('AgentRegistry: create/get/update/remove round-trips every field', () => {
       systemPrompt: 'You plan.',
       toolAllowlist: ['gurney-everyday-assistant'],
       profile: 'reason',
+      thinkMode: 'on',
       maxToolRounds: 6,
       budgetTokens: 8192,
       executionMode: 'sequential',
@@ -121,6 +122,7 @@ test('AgentRegistry: create/get/update/remove round-trips every field', () => {
     assert.equal(created.name, 'planner');
     assert.deepEqual(created.toolAllowlist, ['gurney-everyday-assistant']);
     assert.equal(created.profile, 'reason');
+    assert.equal(created.thinkMode, 'on');
     assert.equal(created.canDelegate, true);
     assert.deepEqual(created.delegatableAgents, ['researcher']);
 
@@ -133,12 +135,19 @@ test('AgentRegistry: create/get/update/remove round-trips every field', () => {
     // agent and a chat-only one.
     const open2 = reg.create({ name: 'open', systemPrompt: 'hi', toolAllowlist: null });
     assert.equal(open2.toolAllowlist, null);
+    // thinkMode defaults to 'auto' when unspecified.
+    assert.equal(open2.thinkMode, 'auto');
     const locked = reg.create({ name: 'locked', systemPrompt: 'hi', toolAllowlist: [] });
     assert.deepEqual(locked.toolAllowlist, []);
 
-    const updated = reg.update(created.id, { role: 'new role', canDelegate: false });
+    const updated = reg.update(created.id, {
+      role: 'new role',
+      canDelegate: false,
+      thinkMode: 'off',
+    });
     assert.equal(updated?.role, 'new role');
     assert.equal(updated?.canDelegate, false);
+    assert.equal(updated?.thinkMode, 'off');
     // Unpatched fields are preserved.
     assert.equal(updated?.profile, 'reason');
 

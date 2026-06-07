@@ -25,7 +25,7 @@ export async function run(): Promise<void> {
   }
   if (probe.ok && choices.length === 0) {
     process.stderr.write(
-      'x Ollama is up but reports zero models. `ollama pull qwen3.5:0.8b` first.\n',
+      'x Ollama is up but reports zero models. `ollama pull qwen3.5:0.8b` (or `ollama pull gemma3:4b`) first.\n',
     );
     process.exit(1);
   }

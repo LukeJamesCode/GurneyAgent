@@ -69,8 +69,10 @@ test('chat() streams ndjson chunks and records prompt/completion tokens', async 
   assert.equal(chunks[2]!.done, true);
   assert.equal(chunks[2]!.promptTokens, 10);
   assert.equal(chunks[2]!.completionTokens, 4);
-  assert.equal(calls.length, 1);
-  assert.match(calls[0]!.url, /\/api\/chat$/);
+  // One /api/chat call. (A capability probe to /api/show may also be issued;
+  // filter to the inference call so this stays robust to that.)
+  const chatCalls = calls.filter((c) => c.url.endsWith('/api/chat'));
+  assert.equal(chatCalls.length, 1);
   llm.stopIdleEviction();
 });
 
@@ -357,4 +359,135 @@ test('idle sweep unloads a heavy profile that has not been used recently', async
   assert.ok(unload, 'idle sweep should have issued an unload');
   assert.equal(unload!.body.model, 'qwen3.5:9b');
   llm.stopIdleEviction();
+});
+
+// --- thinking suppression, driven by the Ollama capability probe ----------
+// Capture the /api/chat request body of a single chat() call so we can assert
+// on the `think` parameter and the /no_think system prefix. `capabilities`
+// simulates what Ollama's /api/show reports for the model; pass 'unavailable'
+// to simulate a probe that can't answer (old Ollama / model not pulled), which
+// forces the tag-heuristic fallback.
+async function captureChatBody(opts: {
+  model: string;
+  thinkMode?: 'auto' | 'on' | 'off';
+  // Per-call ChatOptions.thinkMode override (distinct from the profile's).
+  callThinkMode?: 'auto' | 'on' | 'off';
+  capabilities: string[] | 'unavailable';
+  messages: { role: 'system' | 'user'; content: string }[];
+}): Promise<{ think?: boolean; messages: Array<{ role: string; content: string }> }> {
+  let captured: { think?: boolean; messages: Array<{ role: string; content: string }> } | null =
+    null;
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).endsWith('/api/show')) {
+      if (opts.capabilities === 'unavailable') return new Response('not found', { status: 404 });
+      return new Response(JSON.stringify({ capabilities: opts.capabilities }), { status: 200 });
+    }
+    captured = JSON.parse(String(init?.body));
+    return streamingResponse([
+      JSON.stringify({ model: opts.model, message: { content: 'ok' }, done: true }),
+    ]);
+  };
+  const llm = createOllama({
+    baseUrl: 'http://x',
+    log: silentLogger(),
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    profiles: {
+      chat: {
+        model: opts.model,
+        contextTokens: 2048,
+        heavy: false,
+        ...(opts.thinkMode ? { thinkMode: opts.thinkMode } : {}),
+      },
+    },
+  });
+  await collect(
+    llm.chat({
+      profile: 'chat',
+      messages: opts.messages,
+      ...(opts.callThinkMode ? { thinkMode: opts.callThinkMode } : {}),
+    }),
+  );
+  llm.stopIdleEviction();
+  assert.ok(captured, 'expected a captured chat body');
+  return captured!;
+}
+
+const SYS_USER = [
+  { role: 'system' as const, content: 'You are Gurney.' },
+  { role: 'user' as const, content: 'hi' },
+];
+
+test('a probed thinking model is suppressed under auto (think:false + /no_think)', async () => {
+  // Gemma 4 advertises a thinking capability, so on the small-device default it
+  // must be suppressed exactly like qwen3 — otherwise it burns CPU on hidden
+  // <think> blocks the user never sees.
+  const body = await captureChatBody({
+    model: 'gemma4:12b',
+    capabilities: ['completion', 'tools', 'thinking', 'vision'],
+    messages: SYS_USER,
+  });
+  assert.equal(body.think, false);
+  assert.match(body.messages[0]!.content, /^\/no_think/);
+});
+
+test('a probed non-thinking model is never suppressed, even under thinkMode off', async () => {
+  // Gemma 3 reports no thinking capability; Ollama errors if sent the `think`
+  // parameter, so an explicit thinkMode:'off' must be a no-op for it.
+  const body = await captureChatBody({
+    model: 'gemma3:4b',
+    thinkMode: 'off',
+    capabilities: ['completion', 'tools', 'vision'],
+    messages: SYS_USER,
+  });
+  assert.equal('think' in body, false);
+  assert.equal(body.messages[0]!.content, 'You are Gurney.');
+});
+
+test('qwen3 with a thinking capability is suppressed under auto', async () => {
+  const body = await captureChatBody({
+    model: 'qwen3.5:0.8b',
+    capabilities: ['completion', 'tools', 'thinking'],
+    messages: SYS_USER,
+  });
+  assert.equal(body.think, false);
+  assert.match(body.messages[0]!.content, /^\/no_think/);
+});
+
+test('when the probe is unavailable, the tag heuristic decides (gemma4 → suppress)', async () => {
+  // Probe fails => fall back to modelFamily(), which knows gemma4+ reasons.
+  const body = await captureChatBody({
+    model: 'gemma4:12b',
+    capabilities: 'unavailable',
+    messages: SYS_USER,
+  });
+  assert.equal(body.think, false);
+  assert.match(body.messages[0]!.content, /^\/no_think/);
+});
+
+test('a per-call thinkMode overrides the profile (force think on a suppressing profile)', async () => {
+  // The panel's per-turn toggle sets ChatOptions.thinkMode, which must beat the
+  // profile default. Profile says 'off' (suppress), the call says 'on' — the
+  // model should be allowed to think: no think:false, no /no_think.
+  const body = await captureChatBody({
+    model: 'qwen3.5:0.8b',
+    thinkMode: 'off',
+    callThinkMode: 'on',
+    capabilities: ['completion', 'tools', 'thinking'],
+    messages: SYS_USER,
+  });
+  assert.equal('think' in body, false);
+  assert.equal(body.messages[0]!.content, 'You are Gurney.');
+});
+
+test('when the probe is unavailable, an unknown model still honours explicit off', async () => {
+  // Probe can't answer and the tag is unrecognised => 'unknown', so an explicit
+  // thinkMode:'off' is honoured (the historical behaviour for opted-in users).
+  const body = await captureChatBody({
+    model: 'llama3.2:3b',
+    thinkMode: 'off',
+    capabilities: 'unavailable',
+    messages: SYS_USER,
+  });
+  assert.equal(body.think, false);
+  assert.match(body.messages[0]!.content, /^\/no_think/);
 });

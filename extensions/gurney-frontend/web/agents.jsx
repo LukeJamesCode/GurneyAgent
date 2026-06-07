@@ -21,6 +21,7 @@ const EMPTY_AGENT = {
   role: '',
   systemPrompt: '',
   profile: 'chat',
+  thinkMode: 'auto', // auto | on | off — reasoning for thinking-capable models
   toolAllowlist: null, // null = all tools
   maxToolRounds: 4,
   budgetTokens: null,
@@ -760,7 +761,14 @@ function AgentsFleet({ agents, onNew, onEdit, onDelete, onDispatch, onSchedule }
                     </div>
                   )}
                 </div>
-                <window.Badge tone="accent">{agent.profile}</window.Badge>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {agent.thinkMode && agent.thinkMode !== 'auto' && (
+                    <window.Badge tone="neutral">
+                      {agent.thinkMode === 'on' ? 'think' : 'no-think'}
+                    </window.Badge>
+                  )}
+                  <window.Badge tone="accent">{agent.profile}</window.Badge>
+                </div>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <window.Button variant="primary" icon="send" onClick={() => onDispatch(agent)}>
@@ -1503,6 +1511,21 @@ function AgentEditor({ initial, agents, onClose, onSave, error }) {
             </window.Select>
           </Field>
         </Row>
+        <Field
+          label="Reasoning"
+          hint="Thinking-capable models (qwen3, gemma4) only; no-op otherwise. Auto = model default."
+        >
+          <window.Segmented
+            size="sm"
+            value={d.thinkMode || 'auto'}
+            onChange={(v) => set('thinkMode', v)}
+            options={[
+              { value: 'auto', label: 'Auto' },
+              { value: 'on', label: 'Think' },
+              { value: 'off', label: 'No-think' },
+            ]}
+          />
+        </Field>
         <Field label="Role" hint="One line; shown on the card.">
           <window.Input
             value={d.role}

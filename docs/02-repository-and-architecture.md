@@ -49,6 +49,10 @@ This deterministic prefix allows Ollama to reuse its KV cache slot across turns,
 ### Model Interface (`src/core/llm.ts`)
 Wraps the Ollama HTTP API and manages Profile routing (`chat`, `reason`, `tools`), heavy-model eviction, the circuit breaker (for quick failures during Ollama downtime), and streaming via async generators.
 
+The one model quirk core handles is **thinking suppression**: reasoning models (qwen3, Gemma 4) emit `<think>` blocks that waste CPU tokens, so Gurney sends Ollama `think: false` and prepends `/no_think` for them. A model that has no thinking mode (Gemma 2/3) must *not* be sent the `think` parameter — Ollama errors — so suppression is skipped for it even when a profile's `thinkMode` is `off`.
+
+To decide which is which, the LLM layer probes Ollama's `/api/show` `capabilities` list per model (cached for the process). When the probe can't answer — pre-capabilities Ollama, a model that isn't pulled, a network error — it falls back to a tag heuristic in `src/core/model-family.ts` (which knows qwen3 and Gemma 4+ reason, Gemma 2/3 don't, and leaves unknown tags to honour an explicit `thinkMode`).
+
 ### Tool Engine (`src/core/tools.ts`)
 Owns the registry of tool handlers.
 - **Permission tiers:** `auto` (runs silently), `confirm` (Telegram prompt), `owner` (admin-only).

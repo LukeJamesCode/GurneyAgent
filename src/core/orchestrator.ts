@@ -11,7 +11,7 @@
 
 import type { DB } from '../storage/db.js';
 import type { Logger } from '../util/log.js';
-import type { LLM, ChatChunk, ProfileName, ToolCall } from './llm.js';
+import type { LLM, ChatChunk, ProfileName, ThinkMode, ToolCall } from './llm.js';
 import { LLMEmptyResponseError, LLMHttpError } from './llm.js';
 
 // The 0.8b/2b chat models occasionally answer a tool-routed question by
@@ -153,6 +153,9 @@ export interface UserMessage {
   // Sink for streamed reply chunks. The Telegram adapter wires this to a
   // chunked-edit Telegram message.
   send: (chunk: ReplyChunk) => void | Promise<void>;
+  // Per-turn override of the model's thinking mode (the panel's think toggle).
+  // Overrides the orchestrator's defaultThinkMode and the profile default.
+  thinkMode?: ThinkMode;
 }
 
 export interface OrchestratorOptions {
@@ -166,6 +169,10 @@ export interface OrchestratorOptions {
   // defaultProfile when unset, so deployments that haven't configured a
   // dedicated tool-use model keep their old behaviour.
   toolProfile?: ProfileName;
+  // Default thinking mode for every turn this orchestrator runs, unless a
+  // UserMessage overrides it. Used by per-agent think settings; left unset for
+  // the main bot, which relies on the profile/auto default.
+  defaultThinkMode?: ThinkMode;
   budgetTokens?: number;
   // Cap on how many chars of a tool's output are re-fed to the model on the
   // next round. Defaults to TOOL_RESULT_MAX_CHARS. Scaled up on larger tiers
@@ -628,6 +635,12 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
       return final;
     };
 
+    // Per-turn thinking mode: the message's explicit toggle wins, else the
+    // orchestrator's configured default (per-agent). Undefined leaves the LLM
+    // to fall back to the profile/auto default. Spread into every llm.chat call
+    // below so a forced think/no-think holds across tool-loop followups too.
+    const turnThinkMode: ThinkMode | undefined = msg.thinkMode ?? opts.defaultThinkMode;
+    const thinkOpt = turnThinkMode ? { thinkMode: turnThinkMode } : {};
     try {
       const profileForTurn: ProfileName = toolSchemas.length > 0 ? toolProfile : defaultProfile;
       if (forcedCall) {
@@ -641,6 +654,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           profile: profileForTurn,
           messages: built.messages,
           ...(toolSchemas.length > 0 ? { tools: toolSchemas } : {}),
+          ...thinkOpt,
           signal: abort.signal,
           context: { chatId: msg.chatId, conversationId },
         });
@@ -816,6 +830,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           profile: profileForTurn,
           messages: buildPromptForTurn(true).messages,
           maxTokens: FOLLOWUP_MAX_TOKENS,
+          ...thinkOpt,
           signal: abort.signal,
           context: { chatId: msg.chatId, conversationId },
         });
@@ -840,6 +855,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         const noToolsFollowup = opts.llm.chat({
           profile: defaultProfile,
           messages: buildPromptForTurn(true).messages,
+          ...thinkOpt,
           signal: abort.signal,
           context: { chatId: msg.chatId, conversationId },
         });
@@ -872,6 +888,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           const noToolsFollowup = opts.llm.chat({
             profile: defaultProfile,
             messages: buildPromptForTurn(true).messages,
+            ...thinkOpt,
             signal: abort.signal,
             context: { chatId: msg.chatId, conversationId },
           });

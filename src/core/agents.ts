@@ -15,7 +15,7 @@
 
 import type { DB } from '../storage/db.js';
 import type { Logger } from '../util/log.js';
-import type { LLM, ProfileName } from './llm.js';
+import type { LLM, ProfileName, ThinkMode } from './llm.js';
 import type { ToolHandler, ToolRegistry } from './tools.js';
 import { createOrchestrator, type Orchestrator, type ReplyChunk } from './orchestrator.js';
 
@@ -73,6 +73,8 @@ export interface AgentDefinition {
   // specific tool names the agent may call.
   toolAllowlist: string[] | null;
   profile: ProfileName;
+  // Whether this agent's model reasons. 'auto' = per-model default.
+  thinkMode: ThinkMode;
   maxToolRounds: number;
   // null => orchestrator default.
   budgetTokens: number | null;
@@ -113,6 +115,7 @@ export interface CreateAgentInput {
   systemPrompt: string;
   toolAllowlist?: string[] | null;
   profile?: ProfileName;
+  thinkMode?: ThinkMode;
   maxToolRounds?: number;
   budgetTokens?: number | null;
   executionMode?: AgentExecutionMode;
@@ -151,6 +154,7 @@ interface AgentRow {
   system_prompt: string;
   tool_allowlist: string | null;
   profile: string;
+  think_mode: string;
   max_tool_rounds: number;
   budget_tokens: number | null;
   execution_mode: string;
@@ -179,6 +183,7 @@ function rowToAgent(r: AgentRow): AgentDefinition {
     systemPrompt: r.system_prompt,
     toolAllowlist: r.tool_allowlist === null ? null : parseStringArray(r.tool_allowlist),
     profile: r.profile as ProfileName,
+    thinkMode: r.think_mode as ThinkMode,
     maxToolRounds: r.max_tool_rounds,
     budgetTokens: r.budget_tokens,
     executionMode: r.execution_mode as AgentExecutionMode,
@@ -262,10 +267,10 @@ export interface AgentRegistry {
 export function createAgentRegistry(db: DB): AgentRegistry {
   const insertAgent = db.prepare(
     `INSERT INTO agents
-       (name, role, system_prompt, tool_allowlist, profile, max_tool_rounds,
+       (name, role, system_prompt, tool_allowlist, profile, think_mode, max_tool_rounds,
         budget_tokens, execution_mode, max_concurrency, can_delegate,
         delegatable_agents, created_at, updated_at)
-     VALUES (@name, @role, @system_prompt, @tool_allowlist, @profile, @max_tool_rounds,
+     VALUES (@name, @role, @system_prompt, @tool_allowlist, @profile, @think_mode, @max_tool_rounds,
              @budget_tokens, @execution_mode, @max_concurrency, @can_delegate,
              @delegatable_agents, @created_at, @updated_at)`,
   );
@@ -302,6 +307,7 @@ export function createAgentRegistry(db: DB): AgentRegistry {
       system_prompt: input.systemPrompt,
       tool_allowlist: allowlist === null ? null : JSON.stringify(allowlist),
       profile: input.profile ?? 'chat',
+      think_mode: input.thinkMode ?? 'auto',
       max_tool_rounds: input.maxToolRounds ?? 4,
       budget_tokens: input.budgetTokens ?? null,
       execution_mode: input.executionMode ?? 'sequential',
@@ -326,6 +332,9 @@ export function createAgentRegistry(db: DB): AgentRegistry {
         : {}),
       ...('toolAllowlist' in patch ? { toolAllowlist: patch.toolAllowlist ?? null } : {}),
       ...('profile' in patch && patch.profile !== undefined ? { profile: patch.profile } : {}),
+      ...('thinkMode' in patch && patch.thinkMode !== undefined
+        ? { thinkMode: patch.thinkMode }
+        : {}),
       ...('maxToolRounds' in patch && patch.maxToolRounds !== undefined
         ? { maxToolRounds: patch.maxToolRounds }
         : {}),
@@ -347,7 +356,7 @@ export function createAgentRegistry(db: DB): AgentRegistry {
     db.prepare(
       `UPDATE agents SET
          name = @name, role = @role, system_prompt = @system_prompt,
-         tool_allowlist = @tool_allowlist, profile = @profile,
+         tool_allowlist = @tool_allowlist, profile = @profile, think_mode = @think_mode,
          max_tool_rounds = @max_tool_rounds, budget_tokens = @budget_tokens,
          execution_mode = @execution_mode, max_concurrency = @max_concurrency,
          can_delegate = @can_delegate, delegatable_agents = @delegatable_agents,
@@ -360,6 +369,7 @@ export function createAgentRegistry(db: DB): AgentRegistry {
       system_prompt: next.systemPrompt,
       tool_allowlist: next.toolAllowlist === null ? null : JSON.stringify(next.toolAllowlist),
       profile: next.profile,
+      think_mode: next.thinkMode,
       max_tool_rounds: next.maxToolRounds,
       budget_tokens: next.budgetTokens,
       execution_mode: next.executionMode,
@@ -665,6 +675,8 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
       // The persona runs on a single model; use it for tool turns too rather
       // than falling back to the global chat model.
       toolProfile: agent.profile,
+      // 'auto' keeps the profile/model default; only force when explicitly set.
+      ...(agent.thinkMode !== 'auto' ? { defaultThinkMode: agent.thinkMode } : {}),
       maxToolRounds: agent.maxToolRounds,
       ...(agent.budgetTokens ? { budgetTokens: agent.budgetTokens } : {}),
     });

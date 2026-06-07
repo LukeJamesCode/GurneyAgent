@@ -43,6 +43,8 @@ On Standard and Heavy tiers, only one 7–9B model is kept resident at a time. T
 
 > [!IMPORTANT]
 > Pull the models in Ollama before starting: `ollama pull qwen3.5:0.8b`
+>
+> qwen3.5 is the default, but any Ollama model works. **Gemma** is supported natively — pick it in `gurney models` like any other tag. Gurney reads each model's capabilities from Ollama, so thinking suppression is handled correctly per model: Gemma 4 (`ollama pull gemma4:12b`) is a configurable reasoner and is suppressed on small devices like qwen3; Gemma 2/3 (`ollama pull gemma3:4b`) have no thinking mode and are left alone.
 
 ---
 

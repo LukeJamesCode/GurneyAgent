@@ -22,6 +22,7 @@
 
 import type { Logger } from '../util/log.js';
 import { composeAbort } from '../util/abort.js';
+import { modelFamily } from './model-family.js';
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
@@ -50,6 +51,14 @@ export interface ToolCall {
 
 export type ProfileName = 'chat' | 'reason' | 'tools';
 
+// Whether to let a thinking-capable model emit its reasoning blocks.
+//   'auto' — per-model default (suppress on models known to think).
+//   'on'   — never suppress; let the model think.
+//   'off'  — suppress where the model supports it.
+// Settable per-profile (ProfileConfig) or overridden per-turn (ChatOptions),
+// e.g. by the panel's think toggle. No-op on models with no thinking mode.
+export type ThinkMode = 'auto' | 'on' | 'off';
+
 export interface ProfileConfig {
   // Ollama model tag, e.g. "qwen3.5:0.8b".
   model: string;
@@ -73,18 +82,26 @@ export interface ProfileConfig {
   // little RAM per batch (trivial on a 16/32 GB host). Omitted => Ollama's
   // default (512). Per-profile because only the bigger tiers raise it.
   numBatch?: number;
-  // Controls the /no_think hint we inject for Qwen3-family models.
-  //   'auto' (default) — disable thinking when the model name matches qwen3.
+  // Controls the /no_think hint we inject for thinking-capable model families.
+  //   'auto' (default) — disable thinking when the family is known to think (qwen3).
   //   'on'             — never inject /no_think; let the model think.
-  //   'off'            — always inject /no_think regardless of model family.
+  //   'off'            — inject /no_think where the model supports it.
   // Reasoning profiles on bigger hosts may want 'on'; tool-call profiles want 'off'.
-  thinkMode?: 'auto' | 'on' | 'off';
+  // No-op for families known not to support thinking (e.g. Gemma 2/3): sending
+  // Ollama's `think` parameter to them errors the turn, so suppression is
+  // never applied there regardless of this setting. See model-family.ts.
+  // A per-turn ChatOptions.thinkMode overrides this.
+  thinkMode?: ThinkMode;
 }
 
 export interface ChatOptions {
   profile: ProfileName | { model: string };
   messages: ChatMessage[];
   tools?: ToolSchema[];
+  // Per-turn override of the profile's thinkMode. Takes precedence over
+  // ProfileConfig.thinkMode; falls back to it (then 'auto') when unset. Used by
+  // the panel's per-turn think toggle and per-agent think setting.
+  thinkMode?: ThinkMode;
   // AbortSignal forwarded to fetch so /stop can cancel a streaming reply.
   signal?: AbortSignal;
   // Per-call timeout override in ms. Defaults to the instance inferenceTimeoutMs
@@ -246,11 +263,19 @@ export function createOllama(opts: OllamaOptions): LLM {
     halfOpen: false,
   };
   // Tracks which heavy model is currently resident, so we can evict it before
-  // loading a different heavy model.
+  // loading a different heavy model. residentHeavyProfile is the profile name
+  // that maps to it, cached so the idle sweep doesn't rescan opts.profiles
+  // every tick to recover it.
   let residentHeavy: string | null = null;
+  let residentHeavyProfile: string | null = null;
   // Last-used timestamps per profile name. The idle sweep reads this to
   // decide whether to unload a heavy profile.
   const lastCallAt = new Map<string, number>();
+  // Per-model thinking-capability cache, populated from Ollama's /api/show
+  // probe. Only successful probes are cached (a failure leaves the entry unset
+  // so a later turn retries once Ollama is reachable). Capabilities don't change
+  // within a process, so a hit avoids re-probing on every turn.
+  const thinkingCache = new Map<string, 'yes' | 'no'>();
   let idleTimer: ReturnType<typeof setInterval> | null = null;
   // Serializes eviction. Two concurrent chat() calls onto different heavy
   // profiles would otherwise both see `residentHeavy === X` and race the
@@ -345,15 +370,18 @@ export function createOllama(opts: OllamaOptions): LLM {
   async function evictIfNeeded(target: {
     model: string;
     cfg: ProfileConfig | null;
+    profileName: string;
   }): Promise<void> {
     if (!target.cfg?.heavy) return;
     const run = async (): Promise<void> => {
       if (residentHeavy === null || residentHeavy === target.model) {
         residentHeavy = target.model;
+        residentHeavyProfile = target.profileName;
         return;
       }
       await unloadModel(residentHeavy, 'switching heavy profiles');
       residentHeavy = target.model;
+      residentHeavyProfile = target.profileName;
     };
     evictionLock = evictionLock.then(run, run);
     await evictionLock;
@@ -392,19 +420,8 @@ export function createOllama(opts: OllamaOptions): LLM {
   }
 
   async function runIdleSweep(): Promise<void> {
-    if (!residentHeavy) return;
-    // Find the profile name that maps to residentHeavy so we can read its
-    // last-call time. There's only ever one heavy resident at a time, so the
-    // search is a no-op past the first hit.
-    let profileName: string | null = null;
-    for (const [name, cfg] of Object.entries(opts.profiles)) {
-      if (cfg && cfg.model === residentHeavy && cfg.heavy) {
-        profileName = name;
-        break;
-      }
-    }
-    if (!profileName) return;
-    const last = lastCallAt.get(profileName);
+    if (!residentHeavy || !residentHeavyProfile) return;
+    const last = lastCallAt.get(residentHeavyProfile);
     if (last === undefined) return;
     if (now() - last < idleEvictionMs) return;
     log.info('idle eviction firing', {
@@ -414,6 +431,7 @@ export function createOllama(opts: OllamaOptions): LLM {
     });
     const evicted = residentHeavy;
     residentHeavy = null;
+    residentHeavyProfile = null;
     await unloadModel(evicted, 'idle eviction');
   }
 
@@ -424,6 +442,49 @@ export function createOllama(opts: OllamaOptions): LLM {
     }
   }
 
+  // Ask Ollama whether a model advertises a thinking mode. Returns 'yes'/'no'
+  // from the authoritative /api/show `capabilities` list, or null when the
+  // probe can't answer (pre-capabilities Ollama, model not pulled, network/
+  // timeout). Never throws and never touches the circuit breaker — a failed
+  // capability lookup must not look like an inference outage.
+  async function probeThinking(model: string): Promise<'yes' | 'no' | null> {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 5_000);
+    try {
+      const res = await fetchImpl(`${opts.baseUrl}/api/show`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model }),
+        signal: ctl.signal,
+      });
+      if (!res.ok) return null;
+      const j = (await res.json()) as { capabilities?: unknown };
+      if (!Array.isArray(j.capabilities)) return null;
+      return j.capabilities.includes('thinking') ? 'yes' : 'no';
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Resolve a model's thinking support, preferring Ollama's capability probe
+  // and falling back to the tag heuristic when the probe is unavailable. The
+  // tri-state matters: a probe that authoritatively reports no thinking yields
+  // 'no' (never send think:false — Ollama errors), whereas a probe failure on
+  // an unknown model yields 'unknown' so an explicit thinkMode:'off' is still
+  // honoured.
+  async function resolveThinking(model: string): Promise<'yes' | 'no' | 'unknown'> {
+    const cached = thinkingCache.get(model);
+    if (cached) return cached;
+    const probed = await probeThinking(model);
+    if (probed) {
+      thinkingCache.set(model, probed);
+      return probed;
+    }
+    return modelFamily(model).thinking;
+  }
+
   async function* chat(o: ChatOptions): AsyncIterable<ChatChunk> {
     checkBreaker();
     ensureIdleSweep();
@@ -431,15 +492,21 @@ export function createOllama(opts: OllamaOptions): LLM {
     await evictIfNeeded(target);
     lastCallAt.set(target.profileName, now());
 
-    // /no_think for qwen3 family. qwen3 is a thinking model: by default it
-    // emits <think>…</think> blocks of hidden reasoning that count toward
-    // eval_count but never reach the user. On CPU this routinely burned
-    // hundreds of completion tokens producing nothing visible. ATLAS pins
-    // think:false at the API level AND prepends /no_think to the system
-    // prompt as belt-and-suspenders — we mirror both.
-    const thinkMode = target.cfg?.thinkMode ?? 'auto';
-    const isQwen3 = /qwen3/i.test(target.model);
-    const suppressThink = thinkMode === 'off' || (thinkMode === 'auto' && isQwen3);
+    // /no_think for thinking-capable families (qwen3). qwen3 is a thinking
+    // model: by default it emits <think>…</think> blocks of hidden reasoning
+    // that count toward eval_count but never reach the user. On CPU this
+    // routinely burned hundreds of completion tokens producing nothing visible.
+    // ATLAS pins think:false at the API level AND prepends /no_think to the
+    // system prompt as belt-and-suspenders — we mirror both. Whether a model
+    // thinks is resolved from Ollama's capability probe (Gemma 4 reasons,
+    // Gemma 2/3 don't); non-thinking models skip this entirely.
+    const thinkMode = o.thinkMode ?? target.cfg?.thinkMode ?? 'auto';
+    const thinking = await resolveThinking(target.model);
+    // A model we *know* can't think (Gemma 2/3) is never suppressed — sending
+    // Ollama's `think` parameter to it errors the turn. 'unknown' families keep
+    // the historical behaviour: honour an explicit 'off', stay quiet on 'auto'.
+    const suppressThink =
+      thinking !== 'no' && (thinkMode === 'off' || (thinkMode === 'auto' && thinking === 'yes'));
     let messages = o.messages;
     if (suppressThink) {
       const sysIdx = messages.findIndex((m) => m.role === 'system');
