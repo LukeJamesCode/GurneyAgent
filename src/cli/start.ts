@@ -44,7 +44,7 @@ import { setupAgentApprovals } from '../core/agent-approvals.js';
 import { setupAgentDelegation } from '../core/agent-delegation.js';
 import { setupAgentPlanning } from '../core/agent-planning.js';
 import { setupAgentSchedules } from '../core/agent-schedules.js';
-import { createWorkflowRegistry } from '../core/workflows.js';
+import { createWorkflowRegistry, seedStarterWorkflows } from '../core/workflows.js';
 import { createWorkflowRunner } from '../core/workflow-runner.js';
 import type { Tier } from './profiles.js';
 import {
@@ -460,6 +460,9 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   // Authored-workflow engine. Mirrors the agent queue: the panel inserts a
   // queued workflow_runs row, and this runner polls + claims + executes them.
   const workflowRegistry = createWorkflowRegistry(db);
+  // Seed the bundled "Code Review Pipeline" example (and its agents) on a fresh
+  // install, so the Agents → Workflows tab opens with a real, editable graph.
+  seedStarterWorkflows(workflowRegistry, agentRegistry);
   // Re-queue any workflow runs left 'running' by a crash (same pattern as agent tasks).
   const requeued_wf = db
     .prepare(

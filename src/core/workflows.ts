@@ -9,6 +9,7 @@
 // createAgentRegistry (via withDb) without pulling in the live runtime.
 
 import type { DB } from '../storage/db.js';
+import type { AgentDefinition, AgentRegistry, CreateAgentInput } from './agents.js';
 
 // ---------------------------------------------------------------------------
 // Graph types
@@ -590,4 +591,165 @@ export function createWorkflowRegistry(db: DB): WorkflowRegistry {
     updateStepRun,
     listStepRuns: (runId: number) => (selectStepsByRun.all(runId) as StepRow[]).map(rowToStep),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Starter workflow — a worked example for the Agents → Workflows tab
+// ---------------------------------------------------------------------------
+
+// Name of the bundled example workflow. The seed keys idempotency off the two
+// agents it creates (below), so a user who deletes the workflow from the panel
+// keeps it deleted across restarts — same contract as seedStarterAgents.
+export const CODE_REVIEW_WORKFLOW_NAME = 'Code Review Pipeline';
+const PR_REVIEWER_AGENT = 'pr-reviewer';
+const CODE_AUDITOR_AGENT = 'code-auditor';
+
+function ensureAgent(agents: AgentRegistry, input: CreateAgentInput): AgentDefinition {
+  return agents.getByName(input.name) ?? agents.create(input);
+}
+
+// Seed a single, end-to-end code-review workflow (and the two agents it drives)
+// on a fresh install. This is the canonical "what does the workflow engine do?"
+// example: it touches every interesting node type so a new user can open it in
+// the builder, see a real graph, and edit from there.
+//
+// What it demonstrates, mapped to the three things people want a code reviewer
+// to do:
+//   - *Check PRs*       — a `loop` node fans the autonomous `pr-reviewer` agent
+//                         over every pull request in the run input (one per
+//                         line), so one run reviews a whole batch.
+//   - *Find bugs and    — the autonomous `code-auditor` agent then sweeps the
+//      dead code*          touched modules for latent bugs and unreachable code.
+//   - *Run on long       — both agents are `autonomous` (plan→act→reflect across
+//      loops*              many rounds), and the loop node iterates PR-by-PR, so
+//                         a single trigger drives a long-running review pass.
+//                         To run it on a cadence, point an agent schedule (or any
+//                         cron) at this workflow's /run endpoint.
+//
+// A `condition` gate routes the result: blockers go to Telegram loudly, a clean
+// pass goes out as an all-clear. Idempotent — no-op once pr-reviewer exists.
+export function seedStarterWorkflows(workflows: WorkflowRegistry, agents: AgentRegistry): void {
+  // Sentinel: if the reviewer agent already exists we've seeded before. Guarding
+  // on the agent (not the workflow) means deleting the workflow sticks.
+  if (agents.getByName(PR_REVIEWER_AGENT)) return;
+
+  // Both agents are scoped to the tool surface a reviewer actually needs: the
+  // browser to read a PR diff or source on the host, web search for unfamiliar
+  // APIs, and codex_handoff to escalate the hard reasoning. Allowlist entries
+  // match by extension name, so each grants every tool that extension ships.
+  const reviewerTools = ['gurney-browser', 'gurney-websearch', 'gurney-codex'];
+
+  const prReviewer = ensureAgent(agents, {
+    name: PR_REVIEWER_AGENT,
+    role: 'Reviews a single pull request for correctness, security, and style',
+    systemPrompt:
+      'You are PR Reviewer, an autonomous code-review agent. Given one pull request — a URL, a PR ' +
+      'number, or a pasted diff — inspect the changes and produce a focused review. For anything ' +
+      'non-trivial, use your tools instead of guessing: open the PR in the browser to read the diff, ' +
+      'search the web for unfamiliar APIs, and hand deep or multi-file reasoning to codex_handoff. ' +
+      'Report findings grouped by severity using the exact tags BLOCKER, MAJOR, and MINOR, each with ' +
+      'file/line context and a concrete fix. If the change is clean, say LGTM.',
+    profile: 'reason',
+    thinkMode: 'on',
+    toolAllowlist: reviewerTools,
+    mode: 'autonomous',
+    maxToolRounds: 6,
+    maxTotalRounds: 16,
+    maxWallClockMs: 20 * 60_000,
+  });
+
+  const codeAuditor = ensureAgent(agents, {
+    name: CODE_AUDITOR_AGENT,
+    role: 'Scans a codebase for latent bugs and dead or unreachable code',
+    systemPrompt:
+      'You are Code Auditor, an autonomous agent that hunts for latent bugs and dead code. Given a ' +
+      'set of changed areas or PR reviews, look for correctness bugs, race conditions, resource ' +
+      'leaks, and unreachable / unused / never-called code. Use codex_handoff for deep multi-file ' +
+      'reasoning and the browser to read source you do not already have. Return one prioritized ' +
+      'findings list; tag anything that can break production with BLOCKER.',
+    profile: 'reason',
+    thinkMode: 'on',
+    toolAllowlist: reviewerTools,
+    mode: 'autonomous',
+    maxToolRounds: 8,
+    maxTotalRounds: 24,
+    maxWallClockMs: 30 * 60_000,
+  });
+
+  const graph: WorkflowGraph = {
+    nodes: [
+      { id: 'trigger', type: 'trigger', pos: { x: 40, y: 200 }, config: { mode: 'manual' } },
+      // Loop body is an agent node run once per PR; {{item}} is the current line.
+      {
+        id: 'reviews',
+        type: 'loop',
+        pos: { x: 320, y: 120 },
+        config: {
+          items: '{{trigger.input}}',
+          body: {
+            type: 'agent',
+            config: {
+              agentId: prReviewer.id,
+              promptTemplate:
+                'Review this pull request. List issues as BLOCKER/MAJOR/MINOR with file context ' +
+                'and a concrete fix.\n\nPR: {{item}}',
+              thinkMode: 'on',
+            },
+          },
+        },
+      },
+      {
+        id: 'audit',
+        type: 'agent',
+        pos: { x: 620, y: 120 },
+        config: {
+          agentId: codeAuditor.id,
+          promptTemplate:
+            'Per-PR reviews so far:\n\n{{steps.reviews.output}}\n\nNow audit the affected modules ' +
+            'for additional bugs and dead / unreachable code. Return one prioritized findings list; ' +
+            'tag production-breaking issues BLOCKER.',
+          thinkMode: 'on',
+        },
+      },
+      {
+        id: 'gate',
+        type: 'condition',
+        pos: { x: 920, y: 120 },
+        config: { left: '{{steps.audit.output}}', op: 'contains', right: 'BLOCKER' },
+      },
+      {
+        id: 'report',
+        type: 'output',
+        pos: { x: 1220, y: 40 },
+        config: { channel: 'telegram', template: '🔴 Code review found blockers:\n\n{{steps.audit.output}}' },
+      },
+      {
+        id: 'clear',
+        type: 'output',
+        pos: { x: 1220, y: 240 },
+        config: {
+          channel: 'telegram',
+          template: '✅ Code review complete — no blockers found.\n\n{{steps.audit.output}}',
+        },
+      },
+    ],
+    edges: [
+      { from: 'trigger', to: 'reviews' },
+      { from: 'reviews', to: 'audit' },
+      { from: 'audit', to: 'gate' },
+      { from: 'gate', to: 'report', branch: 'true' },
+      { from: 'gate', to: 'clear', branch: 'false' },
+    ],
+  };
+
+  workflows.create({
+    name: CODE_REVIEW_WORKFLOW_NAME,
+    description:
+      'Example: paste one pull request per line as the run input. The loop fans pr-reviewer over ' +
+      'each PR, code-auditor then sweeps the touched code for bugs and dead code, and the result is ' +
+      'reported to Telegram — blockers loudly, a clean pass as an all-clear. Edit the agents, ' +
+      'prompts, and branches to taste.',
+    graph,
+    active: true,
+  });
 }

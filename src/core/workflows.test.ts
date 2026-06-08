@@ -7,12 +7,15 @@ import { open } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import {
   createWorkflowRegistry,
+  seedStarterWorkflows,
+  CODE_REVIEW_WORKFLOW_NAME,
   validateGraph,
   topoOrder,
   parseGraph,
   WorkflowGraphError,
   type WorkflowGraph,
 } from './workflows.js';
+import { createAgentRegistry } from './agents.js';
 
 function silentLogger() {
   return createLogger({ level: 'error', out: () => {}, err: () => {} });
@@ -124,6 +127,48 @@ test('claimNextQueuedRun hands each queued run to exactly one caller', () => {
     assert.deepEqual([c1.id, c2.id].sort(), [r1.id, r2.id].sort());
     assert.equal(c1.status, 'running');
     assert.equal(c3, undefined);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('seedStarterWorkflows: seeds the code-review example once and is idempotent', () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 't.db'), log: silentLogger() });
+    const workflows = createWorkflowRegistry(db);
+    const agents = createAgentRegistry(db);
+
+    seedStarterWorkflows(workflows, agents);
+
+    // The example workflow and its two driving agents now exist.
+    const seeded = workflows.list().find((w) => w.name === CODE_REVIEW_WORKFLOW_NAME);
+    assert.ok(seeded, 'expected the code-review workflow to be seeded');
+    assert.deepEqual(validateGraph(seeded.graph), [], 'seeded graph must be a valid DAG');
+    const reviewer = agents.getByName('pr-reviewer');
+    const auditor = agents.getByName('code-auditor');
+    assert.ok(reviewer && auditor, 'expected both reviewer agents to be seeded');
+    assert.equal(reviewer.mode, 'autonomous');
+    assert.equal(auditor.mode, 'autonomous');
+
+    // Agent nodes reference the seeded agents by id (loop body + standalone).
+    const auditNode = seeded.graph.nodes.find((n) => n.id === 'audit');
+    assert.equal(auditNode?.config['agentId'], auditor.id);
+    const loopNode = seeded.graph.nodes.find((n) => n.id === 'reviews');
+    const body = loopNode?.config['body'] as { config?: Record<string, unknown> } | undefined;
+    assert.equal(body?.config?.['agentId'], reviewer.id);
+
+    // Re-running seeds nothing new (sentinel = pr-reviewer already exists)...
+    seedStarterWorkflows(workflows, agents);
+    assert.equal(workflows.list().filter((w) => w.name === CODE_REVIEW_WORKFLOW_NAME).length, 1);
+    assert.equal(agents.list().filter((a) => a.name === 'pr-reviewer').length, 1);
+
+    // ...and deleting the workflow sticks: a later seed won't resurrect it.
+    workflows.remove(seeded.id);
+    seedStarterWorkflows(workflows, agents);
+    assert.equal(workflows.list().some((w) => w.name === CODE_REVIEW_WORKFLOW_NAME), false);
+
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

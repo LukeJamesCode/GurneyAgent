@@ -7,8 +7,15 @@ import { open } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import { createToolRegistry, type ToolRegistry } from './tools.js';
 import type { AgentRegistry, AgentRuntime } from './agents.js';
-import { createWorkflowRegistry, type WorkflowGraph, type WorkflowRegistry } from './workflows.js';
+import {
+  createWorkflowRegistry,
+  seedStarterWorkflows,
+  CODE_REVIEW_WORKFLOW_NAME,
+  type WorkflowGraph,
+  type WorkflowRegistry,
+} from './workflows.js';
 import { createWorkflowRunner, type WorkflowRunner } from './workflow-runner.js';
+import { createAgentRegistry } from './agents.js';
 
 function silentLogger() {
   return createLogger({ level: 'error', out: () => {}, err: () => {} });
@@ -281,5 +288,65 @@ test('cancellation between nodes stops the walk', async () => {
     assert.ok(!h.reg.listStepRuns(run.id).some((s) => s.nodeId === 'after'));
   } finally {
     h.close();
+  }
+});
+
+test('seeded Code Review Pipeline runs end to end: loop fans over PRs, gate routes blockers', async () => {
+  // Drives the *actual* bundled example against a real AgentRegistry (so the
+  // node agentIds resolve) and a fake runtime, proving the graph the user opens
+  // in the builder executes: one agent task per PR line, an auditor pass, the
+  // condition gate, and the matching output.
+  const dir = tmp();
+  const db = open({ path: join(dir, 't.db'), log: silentLogger() });
+  try {
+    const reg = createWorkflowRegistry(db);
+    const agents = createAgentRegistry(db);
+    const tools = createToolRegistry({ log: silentLogger() });
+    seedStarterWorkflows(reg, agents);
+
+    // Fake runtime: the auditor (its prompt asks to "audit the affected modules")
+    // returns a finding tagged BLOCKER so the gate takes the 'true' branch.
+    const runtime = {
+      runTask: async (taskId: number) => {
+        const task = agents.getTask(taskId)!;
+        const text = /audit the affected modules/.test(task.prompt)
+          ? 'Findings:\n- BLOCKER: null deref in foo.ts'
+          : `Reviewed ${task.prompt.split('PR: ')[1] ?? '?'} — LGTM`;
+        agents.updateTask(taskId, { status: 'done', result: text });
+        return { ok: true, text, conversationId: 0 };
+      },
+    } as unknown as Parameters<typeof createWorkflowRunner>[0]['runtime'];
+
+    const outputs: Array<{ channel: string; text: string }> = [];
+    const runner = createWorkflowRunner({
+      registry: reg,
+      agents,
+      runtime,
+      tools,
+      log: silentLogger(),
+      ownerUserId: 1,
+      onOutput: (channel, text) => {
+        outputs.push({ channel, text });
+      },
+    });
+
+    const wf = reg.list().find((w) => w.name === CODE_REVIEW_WORKFLOW_NAME)!;
+    const run = reg.enqueueRun(wf.id, 'https://example/pr/1\nhttps://example/pr/2');
+    assert.equal(await runner.runOnce(), true);
+
+    const done = reg.getRun(run.id)!;
+    assert.equal(done.status, 'done');
+    // Loop ran the reviewer once per PR line; the auditor ran once → 3 tasks.
+    assert.equal(agents.listTasks().length, 3);
+    // Gate matched BLOCKER → 'report' output ran, 'clear' was pruned.
+    const steps = reg.listStepRuns(run.id);
+    assert.ok(steps.some((s) => s.nodeId === 'report' && s.status === 'done'));
+    assert.ok(!steps.some((s) => s.nodeId === 'clear'));
+    assert.equal(outputs.length, 1);
+    assert.equal(outputs[0]!.channel, 'telegram');
+    assert.ok(outputs[0]!.text.includes('blockers'));
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
