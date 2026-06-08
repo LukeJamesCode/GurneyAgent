@@ -31,7 +31,7 @@ import type { Followups, FollowupRow } from '../core/followups.js';
 import type { AgentRegistry } from '../core/agents.js';
 import type { AgentQueue } from '../core/agent-queue.js';
 import type { AgentApproval } from '../core/agent-approvals.js';
-import { formatAgentList, handleDispatch } from './agent-commands.js';
+import { formatAgentList, handleDispatch, handleDispatchWithAttachments } from './agent-commands.js';
 import { formatWindow, parseDuration, parseWindow } from '../core/prefs.js';
 import type { Nudge, NudgeAction, SchedulerStats } from '../core/scheduler.js';
 import {
@@ -70,6 +70,9 @@ export interface TelegramOptions {
   // Multi-agent engine, for /agents and /dispatch. Optional in tests.
   agentRegistry?: AgentRegistry;
   agentQueue?: AgentQueue;
+  // ~/.gurney/agent-attachments — where a /dispatch's attached photos/documents
+  // are ingested per task. Optional; without it, attachment dispatch is off.
+  agentAttachmentsDir?: string;
   // Live scheduler stats for /status (nudge counts, fast-cache hit rate).
   schedulerStats?: () => SchedulerStats;
   // Live scheduler registry for /proactive.
@@ -1209,6 +1212,74 @@ export function createTelegram(opts: TelegramOptions): TelegramAdapter {
     }
 
     await dispatchTextMessage(ctx, transcript);
+  });
+
+  // A photo/document carrying a `/dispatch <agent> <task>` caption drops that
+  // file into the agent's run. grammY's command() doesn't match captions, so we
+  // parse the caption here. Telegram puts an album's caption on its first item
+  // only; the rest arrive caption-less and are ignored (single-file for now).
+  const DISPATCH_CAPTION = /^\/dispatch(?:@\S+)?(?:\s+([\s\S]*))?$/;
+
+  // Download a Telegram file id's bytes into memory (small inputs; the per-file
+  // intake ceiling is enforced downstream by ingestFiles/MAX_ATTACHMENT_BYTES).
+  const downloadFileBytes = async (fileId: string): Promise<Buffer> => {
+    const file = await bot.api.getFile(fileId);
+    if (!file.file_path) throw new Error('telegram file has no file_path');
+    const link = `https://api.telegram.org/file/bot${opts.token}/${file.file_path}`;
+    const res = await fetch(link, { redirect: 'follow' });
+    if (!res.ok) throw new Error(`telegram file download failed: HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  };
+
+  const dispatchWithFile = async (
+    ctx: Context,
+    caption: string | undefined,
+    file: { name: string; fileId: string; mime?: string },
+  ): Promise<boolean> => {
+    const m = caption ? DISPATCH_CAPTION.exec(caption.trim()) : null;
+    if (!m) return false; // not a dispatch — let other handlers/none deal with it.
+    if (!opts.agentRegistry || !opts.agentAttachmentsDir) {
+      await ctx.reply('Agents are not available.');
+      return true;
+    }
+    try {
+      const bytes = await downloadFileBytes(file.fileId);
+      const reply = await handleDispatchWithAttachments({
+        registry: opts.agentRegistry,
+        queue: opts.agentQueue,
+        llm: opts.llm,
+        baseDir: opts.agentAttachmentsDir,
+        arg: m[1] ?? '',
+        files: [{ name: file.name, bytes, ...(file.mime ? { mime: file.mime } : {}) }],
+      });
+      await ctx.reply(reply);
+    } catch (e) {
+      log.warn('dispatch attachment failed', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+      await ctx.reply("Couldn't attach that file — try again, or dispatch without it.");
+    }
+    return true;
+  };
+
+  bot.on('message:photo', async (ctx) => {
+    // Largest rendition is last; Telegram photos have no filename, so synthesize.
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    if (!photo) return;
+    await dispatchWithFile(ctx, ctx.message.caption, {
+      name: `photo_${photo.file_unique_id}.jpg`,
+      fileId: photo.file_id,
+      mime: 'image/jpeg',
+    });
+  });
+
+  bot.on('message:document', async (ctx) => {
+    const doc = ctx.message.document;
+    await dispatchWithFile(ctx, ctx.message.caption, {
+      name: doc.file_name ?? `document_${doc.file_unique_id}`,
+      fileId: doc.file_id,
+      ...(doc.mime_type ? { mime: doc.mime_type } : {}),
+    });
   });
 
   bot.catch((err) => {

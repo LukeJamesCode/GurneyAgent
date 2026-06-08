@@ -77,6 +77,12 @@ export function createRoutedLLM(base: LLM): RoutedLLM {
     base.stopIdleEviction();
   }
 
+  // Vision capability is a property of the underlying Ollama model; registered
+  // providers are routed by chat() and don't advertise it, so defer to the base.
+  async function supportsVision(model: string): Promise<boolean> {
+    return base.supportsVision ? base.supportsVision(model) : false;
+  }
+
   function registerProvider(provider: LLMProvider): () => void {
     providers.set(provider.id, provider);
     return () => {
@@ -89,6 +95,7 @@ export function createRoutedLLM(base: LLM): RoutedLLM {
     health,
     listProfiles,
     resolveModel,
+    supportsVision,
     breakerSnapshot,
     stopIdleEviction,
     registerProvider,

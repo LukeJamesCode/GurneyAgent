@@ -19,6 +19,7 @@ import type { LLM, ProfileName, ThinkMode } from './llm.js';
 import type { ToolHandler, ToolRegistry } from './tools.js';
 import { createOrchestrator, type Orchestrator, type ReplyChunk } from './orchestrator.js';
 import { allStepsDone, renderPlan } from './agent-planning.js';
+import { loadImageAttachmentsBase64 } from './agent-attachments.js';
 
 // Virtual chat ids for agent runs live in a reserved band well above any real
 // Telegram user id (currently < ~8e9 and growing slowly) and far below
@@ -85,8 +86,9 @@ export const AGENT_TASK_CANCELLED_MESSAGE = 'Agent task cancelled by user.';
 // task's original start so a resumed run keeps its overall deadline.
 export const DEFAULT_MAX_TOTAL_ROUNDS = 30;
 export const DEFAULT_MAX_WALL_CLOCK_MS = 30 * 60_000;
-// Consecutive no-progress turns (no plan change, no finish) before the loop
-// gives up and finalises — guards against a model that stalls without finishing.
+// Consecutive no-progress turns (no completed step, no finish) before the loop
+// gives up and finalises — guards against a model that stalls without finishing,
+// including one that keeps re-wording its plan without ever completing a step.
 export const AUTONOMOUS_STALL_LIMIT = 5;
 
 // Loop discipline appended to an autonomous agent's system prompt. The loop
@@ -141,6 +143,22 @@ export interface AgentArtifact {
   name: string;
   mime: string;
   content: string | null;
+  createdAt: number;
+}
+
+// A dropped-in INPUT for a task (agent_task_attachments row). Bytes live on disk
+// under the per-task attachment dir; `path` is relative to it. 'image' goes to a
+// multimodal model as base64; 'file'/'pdf' (the latter as extracted text) land
+// in the dir read_file/list_dir is pinned to.
+export type AttachmentKind = 'file' | 'image' | 'pdf';
+export interface AgentAttachment {
+  id: number;
+  taskId: number;
+  kind: AttachmentKind;
+  name: string;
+  path: string;
+  mime: string;
+  bytes: number;
   createdAt: number;
 }
 
@@ -429,6 +447,17 @@ export interface AgentRegistry {
     mime?: string;
   }): AgentArtifact;
   listArtifacts(taskId: number): AgentArtifact[];
+
+  // Input attachments dropped into a task (bytes live on disk; this is metadata).
+  addAttachment(input: {
+    taskId: number;
+    kind: AttachmentKind;
+    name: string;
+    path: string;
+    mime?: string;
+    bytes?: number;
+  }): AgentAttachment;
+  listAttachments(taskId: number): AgentAttachment[];
 }
 
 export function createAgentRegistry(db: DB): AgentRegistry {
@@ -715,6 +744,66 @@ export function createAgentRegistry(db: DB): AgentRegistry {
     }));
   }
 
+  const insertAttachment = db.prepare(
+    `INSERT INTO agent_task_attachments (task_id, kind, name, path, mime, bytes, created_at)
+     VALUES (@task_id, @kind, @name, @path, @mime, @bytes, @created_at)`,
+  );
+  function addAttachment(input: {
+    taskId: number;
+    kind: AttachmentKind;
+    name: string;
+    path: string;
+    mime?: string;
+    bytes?: number;
+  }): AgentAttachment {
+    const created = Date.now();
+    const mime = input.mime ?? 'application/octet-stream';
+    const bytes = input.bytes ?? 0;
+    const info = insertAttachment.run({
+      task_id: input.taskId,
+      kind: input.kind,
+      name: input.name,
+      path: input.path,
+      mime,
+      bytes,
+      created_at: created,
+    });
+    return {
+      id: Number(info.lastInsertRowid),
+      taskId: input.taskId,
+      kind: input.kind,
+      name: input.name,
+      path: input.path,
+      mime,
+      bytes,
+      createdAt: created,
+    };
+  }
+  function listAttachments(taskId: number): AgentAttachment[] {
+    const rows = db
+      .prepare(`SELECT * FROM agent_task_attachments WHERE task_id = ? ORDER BY id`)
+      .all(taskId) as Array<{
+      id: number;
+      task_id: number;
+      kind: AttachmentKind;
+      name: string;
+      path: string;
+      mime: string;
+      bytes: number;
+      created_at: number;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      taskId: r.task_id,
+      kind: r.kind,
+      name: r.name,
+      path: r.path,
+      mime: r.mime,
+      bytes: r.bytes,
+      createdAt: r.created_at,
+    }));
+  }
+
   return {
     create,
     get,
@@ -729,6 +818,8 @@ export function createAgentRegistry(db: DB): AgentRegistry {
     pushSteer,
     addArtifact,
     listArtifacts,
+    addAttachment,
+    listAttachments,
   };
 }
 
@@ -905,6 +996,10 @@ export interface AgentRuntimeOptions {
   // round — runs to completion instead of being aborted and mistaken for a
   // cancellation. Unset leaves the LLM default in force.
   inferenceTimeoutMs?: number;
+  // Base directory for per-task input attachments (~/.gurney/agent-attachments).
+  // When set, a task's image attachments are fed to a multimodal model on its
+  // first turn. The pinned read_file/list_dir root is wired separately (start.ts).
+  attachmentsDir?: string;
 }
 
 export interface RunResult {
@@ -1095,6 +1190,7 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     thinkMode: ThinkMode | null,
     taskId: number,
     onDelta?: (delta: string) => void,
+    images?: string[],
   ): Promise<TurnResult> {
     let buffer = '';
     let finalText: string | undefined;
@@ -1104,6 +1200,7 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
       userId: opts.ownerUserId,
       text,
       ...(thinkMode ? { thinkMode } : {}),
+      ...(images && images.length > 0 ? { images } : {}),
       send: (chunk: ReplyChunk) => {
         if (chunk.delta) {
           buffer += chunk.delta;
@@ -1132,6 +1229,8 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     virtualChatId: number;
     orch: Orchestrator;
     onDelta?: (delta: string) => void;
+    // Base64 image attachments for the first turn (multimodal models only).
+    images?: string[];
   }
 
   // -- single-mode run (today's behaviour) ----------------------------------
@@ -1140,7 +1239,15 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     const task = opts.registry.getTask(taskId)!;
     let turn: TurnResult;
     try {
-      turn = await driveTurn(orch, virtualChatId, task.prompt, task.thinkMode, taskId, onDelta);
+      turn = await driveTurn(
+        orch,
+        virtualChatId,
+        task.prompt,
+        task.thinkMode,
+        taskId,
+        onDelta,
+        ctx.images,
+      );
     } catch (e) {
       if (opts.registry.getTask(taskId)?.status === 'cancelled') {
         return { ok: false, text: '', error: AGENT_TASK_CANCELLED_MESSAGE, conversationId: 0 };
@@ -1207,7 +1314,6 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     let roundsUsed = opts.registry.getTask(taskId)?.roundsUsed ?? 0;
     let prevDone = -1;
     let stall = 0;
-    let prevPlanStr = '';
 
     const finalizeDone = (text: string): RunResult => {
       opts.registry.updateTask(taskId, {
@@ -1256,7 +1362,15 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
 
       let turn: TurnResult;
       try {
-        turn = await driveTurn(orch, virtualChatId, text, fresh.thinkMode, taskId, onDelta);
+        turn = await driveTurn(
+          orch,
+          virtualChatId,
+          text,
+          fresh.thinkMode,
+          taskId,
+          onDelta,
+          roundsUsed === 0 ? ctx.images : undefined,
+        );
       } catch (e) {
         if (opts.registry.getTask(taskId)?.status === 'cancelled') {
           return {
@@ -1281,10 +1395,16 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
       const after = opts.registry.getTask(taskId);
       const dc = doneCount(after);
       const finished = after?.result != null;
-      const planStr = JSON.stringify(after?.plan);
-      stall = !finished && planStr === prevPlanStr && dc === prevDone ? stall + 1 : 0;
+      // Progress is a completed step or an explicit finish — NOT a re-authored
+      // plan. Measuring against the done-count (rather than the plan JSON, which
+      // a model can perturb every turn by re-wording its steps) stops a run that
+      // keeps re-planning without ever completing anything from defeating the
+      // stall guard and grinding to the round/wall-clock budget. The trade-off:
+      // a single step that legitimately spans more than AUTONOMOUS_STALL_LIMIT
+      // tool turns without a complete_step will trip the guard — acceptable, and
+      // in line with the loop contract ("complete a step each turn").
+      stall = finished || dc > prevDone ? 0 : stall + 1;
       prevDone = dc;
-      prevPlanStr = planStr;
 
       // Checkpoint: everything needed to resume from here after a restart.
       opts.registry.updateTask(taskId, {
@@ -1324,7 +1444,14 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     emit(taskId, { type: 'phase', phase: 'finalizing' });
     try {
       const thinkMode = opts.registry.getTask(taskId)?.thinkMode ?? null;
-      const turn = await driveTurn(orch, virtualChatId, FINALIZE_PROMPT, thinkMode, taskId, onDelta);
+      const turn = await driveTurn(
+        orch,
+        virtualChatId,
+        FINALIZE_PROMPT,
+        thinkMode,
+        taskId,
+        onDelta,
+      );
       if (turn.conversationId) conversationId = turn.conversationId;
       const after = opts.registry.getTask(taskId);
       const summary =
@@ -1364,12 +1491,35 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
       ? buildOrchestrator(agent, task.toolAllowlistOverride)
       : orchestratorFor(agent);
     active.set(task.id, { orch, virtualChatId });
+
+    // Image attachments → the first turn, but only if the agent's model is
+    // multimodal. The upload surface already gates this; re-checking here means
+    // an attachment can never reach a text-only model (which would error the
+    // turn) even via a re-pointed agent or a direct enqueue.
+    let images: string[] | undefined;
+    if (opts.attachmentsDir) {
+      const imgs = loadImageAttachmentsBase64(opts.registry, opts.attachmentsDir, task.id);
+      if (imgs.length > 0) {
+        const model = opts.llm.resolveModel(agent.profile);
+        const ok = opts.llm.supportsVision ? await opts.llm.supportsVision(model) : false;
+        if (ok) images = imgs;
+        else
+          log.warn('task has image attachments but the agent model is not multimodal; skipping', {
+            taskId,
+            agent: agent.name,
+            model,
+            images: imgs.length,
+          });
+      }
+    }
+
     const ctx: RunCtx = {
       taskId,
       agent,
       virtualChatId,
       orch,
       ...(runOpts.onDelta ? { onDelta: runOpts.onDelta } : {}),
+      ...(images ? { images } : {}),
     };
     try {
       return agent.mode === 'autonomous' ? await runAutonomous(ctx) : await runSingle(ctx);
