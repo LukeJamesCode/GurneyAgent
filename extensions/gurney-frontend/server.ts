@@ -39,6 +39,7 @@ import {
   type AgentExecutionMode,
   type CreateAgentInput,
 } from '../../src/core/agents.js';
+import { ingestStagedDir } from '../../src/core/agent-attachments.js';
 import { createAgentScheduleStore } from '../../src/core/agent-schedules.js';
 import { createAgentApprovalStore } from '../../src/core/agent-approvals.js';
 import {
@@ -2164,10 +2165,42 @@ async function handleApi(
       const ok = withDb((db) => createAgentRegistry(db).remove(id)) ?? false;
       return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'not found' });
     }
+    // Whether an agent's model is multimodal — the panel uses this to allow or
+    // block image/PDF drops per agent.
+    const capMatch = /^\/api\/agents\/(\d+)\/capabilities$/.exec(path);
+    if (capMatch && method === 'GET') {
+      const id = Number(capMatch[1]);
+      const agent = withDb((db) => createAgentRegistry(db).get(id));
+      if (!agent) return sendJson(res, 404, { error: 'agent not found' });
+      const runtime = await getDirectChatRuntime(effectiveConfig(homeDir()));
+      const model = runtime.llm.resolveModel(agent.profile);
+      const multimodal = runtime.llm.supportsVision
+        ? await runtime.llm.supportsVision(model)
+        : false;
+      return sendJson(res, 200, { multimodal, model });
+    }
+
+    // Stage one dropped file's raw bytes before dispatch. The client sends a
+    // batch token (x-stage-token) and the file's path relative to the drop
+    // (x-filename, e.g. "src/index.ts" for a folder); dispatch then ingests the
+    // whole batch into the task. Doing the slow work here keeps dispatch fast.
+    if (path === '/api/agents/attachments/stage' && method === 'POST') {
+      const token = String(req.headers['x-stage-token'] ?? '');
+      const rel = String(req.headers['x-filename'] ?? '');
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(token)) return sendJson(res, 400, { error: 'bad token' });
+      const safeRel = normalize(rel).replace(/^[/\\]+/, '');
+      if (!safeRel || safeRel.split(/[/\\]/).includes('..'))
+        return sendJson(res, 400, { error: 'bad filename' });
+      const dest = join(homeDir(), 'agent-attachments', 'staging', token, safeRel);
+      ensurePrivateDir(dirname(dest));
+      writeFileSync(dest, await readRawBody(req));
+      return sendJson(res, 200, { ok: true });
+    }
+
     const dispatchMatch = /^\/api\/agents\/(\d+)\/dispatch$/.exec(path);
     if (dispatchMatch && method === 'POST') {
       const id = Number(dispatchMatch[1]);
-      const body = await readJson<{ prompt?: string; thinkMode?: string }>(req);
+      const body = await readJson<{ prompt?: string; thinkMode?: string; stageToken?: string }>(req);
       const prompt = String(body.prompt ?? '').trim();
       if (!prompt) return sendJson(res, 400, { error: 'prompt is required' });
       // Only a valid auto|on|off is a per-run override; anything else (absent,
@@ -2175,12 +2208,46 @@ async function handleApi(
       const thinkOverride = THINK_MODES.includes(body.thinkMode as ThinkMode)
         ? (body.thinkMode as ThinkMode)
         : undefined;
-      const task = withDb((db) => {
-        const reg = createAgentRegistry(db);
-        if (!reg.get(id)) return null;
-        return reg.enqueue({ agentId: id, prompt, ...(thinkOverride ? { thinkMode: thinkOverride } : {}) });
-      });
-      return sendJson(res, task ? 200 : 404, task ? { task } : { error: 'agent not found' });
+      const agent = withDb((db) => createAgentRegistry(db).get(id));
+      if (!agent) return sendJson(res, 404, { error: 'agent not found' });
+
+      const stageToken =
+        typeof body.stageToken === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(body.stageToken)
+          ? body.stageToken
+          : undefined;
+      const runtime = stageToken
+        ? await getDirectChatRuntime(effectiveConfig(homeDir()))
+        : undefined;
+      // Resolve multimodal capability up front to gate image/PDF attachments.
+      const allowVisual =
+        runtime?.llm.supportsVision !== undefined
+          ? await runtime.llm.supportsVision(runtime.llm.resolveModel(agent.profile))
+          : false;
+
+      const task = withDb((db) =>
+        createAgentRegistry(db).enqueue({
+          agentId: id,
+          prompt,
+          ...(thinkOverride ? { thinkMode: thinkOverride } : {}),
+        }),
+      );
+      if (!task) return sendJson(res, 500, { error: 'enqueue failed' });
+
+      // Ingest the staged batch into the new task before it's picked up. The
+      // queue polls on an interval, so this synchronous-ish ingest lands first.
+      let rejected: string[] = [];
+      if (stageToken && runtime) {
+        const baseDir = join(homeDir(), 'agent-attachments');
+        const r = await ingestStagedDir({
+          registry: createAgentRegistry(runtime.db),
+          baseDir,
+          taskId: task.id,
+          stagingDir: join(baseDir, 'staging', stageToken),
+          allowVisual,
+        });
+        rejected = r.rejected;
+      }
+      return sendJson(res, 200, { task, ...(rejected.length ? { rejected } : {}) });
     }
     if (path === '/api/agents/tasks' && method === 'GET') {
       const data = withDb((db) => {

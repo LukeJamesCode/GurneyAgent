@@ -518,6 +518,7 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     followups,
     agentRegistry,
     agentQueue,
+    agentAttachmentsDir: attachmentsDir,
     logFilePath: logFilePath(home),
     schedulerStats: () => scheduler.stats(),
     schedulerList: () => [...scheduler.list()],

@@ -12,8 +12,10 @@ import { join } from 'node:path';
 import { PDFDocument } from 'pdf-lib';
 import { open } from '../storage/db.js';
 import { createAgentRegistry, type AgentRegistry } from './agents.js';
+import { mkdirSync, writeFileSync as writeFile } from 'node:fs';
 import {
   ingestAttachment,
+  ingestStagedDir,
   pinnedFilesRoot,
   loadImageAttachmentsBase64,
   taskFilesDir,
@@ -133,6 +135,38 @@ test('ingest: an image lands under images/ and is base64-loadable; does not pin 
     const b64 = loadImageAttachmentsBase64(h.registry, h.baseDir, h.taskId);
     assert.equal(b64.length, 1);
     assert.equal(b64[0], pngBytes.toString('base64'));
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ingestStagedDir: ingests a folder, gating images out when not multimodal', async () => {
+  const h = harness();
+  try {
+    // Stage a folder with a code file and a screenshot.
+    const staging = join(h.baseDir, 'staging', 'tok1');
+    mkdirSync(join(staging, 'src'), { recursive: true });
+    writeFile(join(staging, 'src', 'a.ts'), 'export const a = 1;');
+    writeFile(join(staging, 'shot.png'), Buffer.from([0x89, 0x50]));
+
+    // Text-only agent: the image is rejected, the code file still lands.
+    const r = await ingestStagedDir({
+      registry: h.registry,
+      baseDir: h.baseDir,
+      taskId: h.taskId,
+      stagingDir: staging,
+      allowVisual: false,
+    });
+    assert.equal(r.ingested, 1);
+    assert.equal(r.rejected.length, 1);
+    assert.match(r.rejected[0]!, /multimodal/);
+    const kinds = h.registry.listAttachments(h.taskId).map((a) => a.kind);
+    assert.deepEqual(kinds, ['file']);
+    // Folder structure preserved under files/.
+    assert.equal(
+      readFileSync(join(taskFilesDir(h.baseDir, h.taskId), 'src', 'a.ts'), 'utf8'),
+      'export const a = 1;',
+    );
   } finally {
     h.cleanup();
   }

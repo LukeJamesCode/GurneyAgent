@@ -8,8 +8,8 @@
 // The base directory is injected (start.ts passes ~/.gurney/agent-attachments)
 // so this core module never imports the cli/config layer.
 
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
-import { join, dirname, normalize, isAbsolute, extname } from 'node:path';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
+import { join, dirname, normalize, isAbsolute, extname, relative } from 'node:path';
 import { extractText } from 'unpdf';
 import type { AgentRegistry, AgentAttachment, AttachmentKind } from './agents.js';
 
@@ -147,6 +147,73 @@ export async function ingestAttachment(opts: {
       bytes: bytes.length,
     }),
   };
+}
+
+// Recursively list every file (not directory) under a dir, as absolute paths.
+function walkFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const abs = join(dir, e.name);
+    if (e.isDirectory()) out.push(...walkFiles(abs));
+    else if (e.isFile()) out.push(abs);
+  }
+  return out;
+}
+
+// Ingest a batch of in-memory files into a task. Image/PDF drops are gated on
+// `allowVisual` (the agent's multimodal capability, resolved by the caller);
+// rejected ones are reported, not ingested. This is the single gate+ingest path
+// shared by every surface — the panel (staged to disk) and Telegram (downloaded
+// to memory) both funnel through here.
+export async function ingestFiles(opts: {
+  registry: AgentRegistry;
+  baseDir: string;
+  taskId: number;
+  allowVisual: boolean;
+  files: Array<{ relPath: string; bytes: Buffer; mime?: string }>;
+}): Promise<{ ingested: number; rejected: string[] }> {
+  const { registry, baseDir, taskId, allowVisual } = opts;
+  const rejected: string[] = [];
+  let ingested = 0;
+  for (const f of opts.files) {
+    const kind = classifyKind(f.relPath, f.mime);
+    if (!allowVisual && kind !== 'file') {
+      rejected.push(`${f.relPath} (needs a multimodal model)`);
+      continue;
+    }
+    const r = await ingestAttachment({
+      registry,
+      baseDir,
+      taskId,
+      relPath: f.relPath,
+      bytes: f.bytes,
+      ...(f.mime ? { mime: f.mime } : {}),
+    });
+    if (r.ok) ingested += 1;
+    else rejected.push(r.rejected);
+  }
+  return { ingested, rejected };
+}
+
+// Ingest every file staged under `stagingDir` into a task, preserving relative
+// folder structure, then remove the staging dir. This is the panel's entry
+// point — it stages raw bytes over HTTP, then calls this once on dispatch.
+export async function ingestStagedDir(opts: {
+  registry: AgentRegistry;
+  baseDir: string;
+  taskId: number;
+  stagingDir: string;
+  allowVisual: boolean;
+}): Promise<{ ingested: number; rejected: string[] }> {
+  const { registry, baseDir, taskId, stagingDir, allowVisual } = opts;
+  if (!existsSync(stagingDir)) return { ingested: 0, rejected: [] };
+  const files = walkFiles(stagingDir).map((abs) => ({
+    relPath: relative(stagingDir, abs),
+    bytes: readFileSync(abs),
+  }));
+  const result = await ingestFiles({ registry, baseDir, taskId, allowVisual, files });
+  rmSync(stagingDir, { recursive: true, force: true });
+  return result;
 }
 
 // Base64 of every image attached to a task, in drop order, for a multimodal

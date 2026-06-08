@@ -968,12 +968,21 @@ function AgentsTab({ state }) {
     load();
   };
 
-  const dispatch = async (agent, prompt, thinkMode) => {
+  const dispatch = async (agent, prompt, thinkMode, stageToken) => {
     setError('');
-    const r = await window.api.post(`/api/agents/${agent.id}/dispatch`, { prompt, thinkMode });
+    const r = await window.api.post(`/api/agents/${agent.id}/dispatch`, {
+      prompt,
+      thinkMode,
+      ...(stageToken ? { stageToken } : {}),
+    });
     if (!r.ok) {
       setError(r.error || 'Dispatch failed');
       return;
+    }
+    // Files dropped for an incompatible model are dropped on the floor server-side;
+    // surface that so the user isn't surprised the agent never saw them.
+    if (r.data && Array.isArray(r.data.rejected) && r.data.rejected.length) {
+      setError(`Some attachments were skipped: ${r.data.rejected.join('; ')}`);
     }
     setDispatchFor(null);
     load();
@@ -1154,7 +1163,7 @@ function AgentsTab({ state }) {
         <DispatchModal
           agent={dispatchFor}
           onClose={() => setDispatchFor(null)}
-          onDispatch={(p, tm) => dispatch(dispatchFor, p, tm)}
+          onDispatch={(p, tm, st) => dispatch(dispatchFor, p, tm, st)}
         />
       )}
       {scheduleFor && (
@@ -1191,10 +1200,95 @@ function AgentsTab({ state }) {
   );
 }
 
+// Mirror of the server's classifyKind so the UI can label chips and block
+// image/PDF drops before staging when the agent's model isn't multimodal.
+// A <label> styled like a subtle Button — clicking it opens the nested hidden
+// file input natively (a real <button> inside a <label> doesn't do that).
+const PICK_BTN = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  cursor: 'pointer',
+  fontWeight: 600,
+  fontSize: 14,
+  padding: '10px 15px',
+  borderRadius: 'var(--radius-sm)',
+  border: '1px solid var(--border)',
+  background: 'var(--surface-2)',
+  color: 'var(--text)',
+  userSelect: 'none',
+};
+const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'];
+function classifyDrop(name, type) {
+  const lower = name.toLowerCase();
+  if ((type || '').startsWith('image/') || IMAGE_EXTS.some((e) => lower.endsWith(e))) return 'image';
+  if ((type || '') === 'application/pdf' || lower.endsWith('.pdf')) return 'pdf';
+  return 'file';
+}
+
 function DispatchModal({ agent, onClose, onDispatch }) {
   const [prompt, setPrompt] = useState('');
   // 'inherit' keeps the agent's saved think mode; the rest override this run.
   const [think, setThink] = useState('inherit');
+  // null = still resolving the agent's model capability.
+  const [multimodal, setMultimodal] = useState(null);
+  // One staging batch per modal session; dispatch ingests this dir then deletes it.
+  // crypto.randomUUID needs a secure context — the panel is often plain HTTP on a
+  // LAN IP, so fall back to a Math.random token (matches the server's [a-z0-9] regex).
+  const stageToken = useMemo(
+    () =>
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID().replace(/-/g, '')
+        : Array.from({ length: 32 }, () => Math.floor(Math.random() * 36).toString(36)).join(''),
+    [],
+  );
+  // { rel, kind, status: 'staging'|'ready'|'blocked'|'error', err? }
+  const [files, setFiles] = useState([]);
+  const [staging, setStaging] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    window.api.get(`/api/agents/${agent.id}/capabilities`).then((r) => {
+      if (live) setMultimodal(r.ok && r.data ? !!r.data.multimodal : false);
+    });
+    return () => {
+      live = false;
+    };
+  }, [agent.id]);
+
+  const addFiles = async (fileList) => {
+    const picked = Array.from(fileList || []);
+    if (!picked.length) return;
+    setStaging(true);
+    for (const f of picked) {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const rel = f.webkitRelativePath || f.name;
+      const kind = classifyDrop(f.name, f.type);
+      // Block visual drops up front when the model can't see them.
+      if (kind !== 'file' && multimodal === false) {
+        setFiles((prev) => [...prev, { id, rel, kind, status: 'blocked' }]);
+        continue;
+      }
+      setFiles((prev) => [...prev, { id, rel, kind, status: 'staging' }]);
+      const r = await window.api.postRaw('/api/agents/attachments/stage', f, {
+        'x-stage-token': stageToken,
+        'x-filename': rel,
+      });
+      setFiles((prev) =>
+        prev.map((x) =>
+          x.id === id
+            ? { ...x, status: r.ok ? 'ready' : 'error', ...(r.ok ? {} : { err: r.error }) }
+            : x,
+        ),
+      );
+    }
+    setStaging(false);
+  };
+
+  const staged = files.filter((f) => f.status === 'ready');
+  const KIND_ICON = { image: 'image', pdf: 'file-text', file: 'doc' };
+  const TONE = { ready: 'ok', staging: 'neutral', blocked: 'err', error: 'err' };
+
   return (
     <window.Modal
       open
@@ -1208,8 +1302,14 @@ function DispatchModal({ agent, onClose, onDispatch }) {
           <window.Button
             variant="primary"
             icon="send"
-            disabled={!prompt.trim()}
-            onClick={() => onDispatch(prompt.trim(), think === 'inherit' ? undefined : think)}
+            disabled={!prompt.trim() || staging}
+            onClick={() =>
+              onDispatch(
+                prompt.trim(),
+                think === 'inherit' ? undefined : think,
+                staged.length ? stageToken : undefined,
+              )
+            }
           >
             Dispatch
           </window.Button>
@@ -1236,6 +1336,54 @@ function DispatchModal({ agent, onClose, onDispatch }) {
           font: 'inherit',
         }}
       />
+
+      <div style={{ marginTop: 12 }}>
+        <window.Label
+          hint={
+            multimodal === false
+              ? "This agent's model is text-only — images and PDFs will be skipped."
+              : 'Drop files or a folder for the agent to read. Images and PDFs supported.'
+          }
+        >
+          Attachments
+        </window.Label>
+        <div style={{ display: 'flex', gap: 8, marginBottom: staged.length || files.length ? 8 : 0 }}>
+          <label style={PICK_BTN}>
+            <input
+              type="file"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => addFiles(e.target.files)}
+            />
+            <window.Icon name="paperclip" size={15} /> Add files
+          </label>
+          <label style={PICK_BTN}>
+            <input
+              type="file"
+              webkitdirectory=""
+              directory=""
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => addFiles(e.target.files)}
+            />
+            <window.Icon name="folder" size={15} /> Add folder
+          </label>
+        </div>
+        {files.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {files.map((f) => (
+              <window.Badge key={f.id} tone={TONE[f.status] || 'neutral'}>
+                <window.Icon name={KIND_ICON[f.kind] || 'file'} size={12} />{' '}
+                {f.rel}
+                {f.status === 'staging' && ' …'}
+                {f.status === 'blocked' && ' (needs vision model)'}
+                {f.status === 'error' && ` (${f.err || 'failed'})`}
+              </window.Badge>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div style={{ marginTop: 12 }}>
         <window.Label hint={`Reasoning for this run. Default = ${agent.thinkMode || 'auto'} (the agent's saved setting).`}>
           Reasoning
