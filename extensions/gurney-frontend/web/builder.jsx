@@ -16,6 +16,21 @@ function generateId() {
   return Math.random().toString(36).substr(2, 9);
 }
 
+function JsonTextArea({ value, onChange }) {
+  const [text, setText] = useState(() => typeof value === 'string' ? value : JSON.stringify(value || {}, null, 2));
+  return (
+    <textarea
+      className="wf-textarea mono"
+      value={text}
+      onChange={e => setText(e.target.value)}
+      onBlur={e => {
+        try { onChange(JSON.parse(e.target.value)); }
+        catch { onChange(e.target.value); }
+      }}
+    />
+  );
+}
+
 function NodeComponent({ node, selected, onSelect, onDragStart, onDrag, status, output }) {
   const def = NODE_DEFS[node.type];
   const borderCol = selected ? 'var(--accent-ring)' : status === 'running' ? 'var(--info)' : status === 'done' ? 'var(--ok)' : status === 'error' ? 'var(--err)' : 'var(--border)';
@@ -61,8 +76,8 @@ function NodeComponent({ node, selected, onSelect, onDragStart, onDrag, status, 
       </div>
       <div className="wf-node-body">
         {node.type === 'agent' && <div className="wf-node-preview">{node.config?.agentId ? `Agent #${node.config.agentId}` : 'Unconfigured'}</div>}
-        {node.type === 'tool' && <div className="wf-node-preview">{node.config?.toolName || 'Unconfigured'}</div>}
-        {node.type === 'condition' && <div className="wf-node-preview">{node.config?.operator || 'if'}</div>}
+        {node.type === 'tool' && <div className="wf-node-preview">{node.config?.tool || 'Unconfigured'}</div>}
+        {node.type === 'condition' && <div className="wf-node-preview">{node.config?.op || 'if'}</div>}
       </div>
       
       {/* Ports */}
@@ -137,18 +152,18 @@ function Inspector({ node, onChange, onDelete, agents, tools }) {
           <>
             <div className="wf-form-group">
               <Label>Tool</Label>
-              <Select value={node.config.toolName || ''} onChange={(e) => setConfig('toolName', e.target.value)}>
+              <Select value={node.config.tool || ''} onChange={(e) => setConfig('tool', e.target.value)}>
                 <option value="">-- Select Tool --</option>
                 {tools.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
               </Select>
             </div>
             <div className="wf-form-group">
               <Label>Arguments (JSON Template)</Label>
-              <textarea 
-                className="wf-textarea mono" 
-                value={node.config.argsTemplate || '{}'} 
-                onChange={(e) => setConfig('argsTemplate', e.target.value)}
+              <JsonTextArea
+                value={node.config.args}
+                onChange={(val) => setConfig('args', val)}
               />
+              <div className="wf-hint">Values may use {'{{steps.node_id.output}}'} templates.</div>
             </div>
           </>
         )}
@@ -157,18 +172,12 @@ function Inspector({ node, onChange, onDelete, agents, tools }) {
           <>
             <div className="wf-form-group">
               <Label>Template</Label>
-              <textarea 
-                className="wf-textarea mono" 
-                value={node.config.template || ''} 
+              <textarea
+                className="wf-textarea mono"
+                value={node.config.template || ''}
                 onChange={(e) => setConfig('template', e.target.value)}
               />
-            </div>
-            <div className="wf-form-group">
-              <Label>Extract As Array</Label>
-              <Select value={node.config.as || 'string'} onChange={(e) => setConfig('as', e.target.value)}>
-                <option value="string">String</option>
-                <option value="array">Array</option>
-              </Select>
+              <div className="wf-hint">Combine prior outputs, e.g. {'{{steps.research.output}}'}.</div>
             </div>
           </>
         )}
@@ -181,7 +190,7 @@ function Inspector({ node, onChange, onDelete, agents, tools }) {
             </div>
             <div className="wf-form-group">
               <Label>Operator</Label>
-              <Select value={node.config.operator || 'contains'} onChange={(e) => setConfig('operator', e.target.value)}>
+              <Select value={node.config.op || 'contains'} onChange={(e) => setConfig('op', e.target.value)}>
                 <option value="contains">contains</option>
                 <option value="equals">equals</option>
                 <option value="not_equals">not_equals</option>
@@ -192,7 +201,7 @@ function Inspector({ node, onChange, onDelete, agents, tools }) {
                 <option value="not_empty">not_empty</option>
               </Select>
             </div>
-            {!['empty', 'not_empty'].includes(node.config.operator) && (
+            {!['empty', 'not_empty'].includes(node.config.op || 'contains') && (
               <div className="wf-form-group">
                 <Label>Right Value</Label>
                 <Input value={node.config.right || ''} onChange={(e) => setConfig('right', e.target.value)} />
@@ -210,28 +219,23 @@ function Inspector({ node, onChange, onDelete, agents, tools }) {
             </div>
             <div className="wf-form-group">
               <Label>Body Node Type</Label>
-              <Select value={node.config.bodyNodeType || 'agent'} onChange={(e) => setConfig('bodyNodeType', e.target.value)}>
+              <Select
+                value={(node.config.body && node.config.body.type) || 'agent'}
+                onChange={(e) => setConfig('body', { ...(node.config.body || {}), type: e.target.value })}
+              >
                 <option value="agent">Agent</option>
                 <option value="tool">Tool</option>
                 <option value="transform">Transform</option>
               </Select>
             </div>
-            {/* Minimal inline body editor (simplification for UI) */}
+            {/* Minimal inline body editor: the runner runs this config once per item. */}
             <div className="wf-form-group">
               <Label>Body Config (JSON)</Label>
-              <textarea 
-                className="wf-textarea mono" 
-                value={typeof node.config.bodyNodeConfig === 'string' ? node.config.bodyNodeConfig : JSON.stringify(node.config.bodyNodeConfig || {}, null, 2)} 
-                onChange={(e) => {
-                  try {
-                    const parsed = JSON.parse(e.target.value);
-                    setConfig('bodyNodeConfig', parsed);
-                  } catch {
-                    setConfig('bodyNodeConfig', e.target.value);
-                  }
-                }}
+              <JsonTextArea
+                value={node.config.body?.config}
+                onChange={(val) => setConfig('body', { ...(node.config.body || {}), config: val })}
               />
-              <div className="wf-hint">Use {'{{item}}'} to reference current loop item.</div>
+              <div className="wf-hint">Use {'{{item}}'} / {'{{index}}'} for the current loop item.</div>
             </div>
           </>
         )}
@@ -285,6 +289,7 @@ function WorkflowBuilder({ state }) {
   const [tools, setTools] = useState([]);
 
   // Run visualization state
+  const [runInput, setRunInput] = useState('');
   const [runId, setRunId] = useState(null);
   const [runSteps, setRunSteps] = useState([]); // Array of step rows
   const [runStatus, setRunStatus] = useState(null);
@@ -375,7 +380,7 @@ function WorkflowBuilder({ state }) {
     const targetId = activeWfId; // if just saved, it might not be in state yet synchronously, but let's assume it is or handle properly. 
     // better to save, get id, then run.
     if (!targetId) return;
-    const input = prompt('Enter workflow input (optional JSON or string):');
+    const input = runInput.trim() || null;
     clearRun();
     const res = await window.api.post(`/api/workflows/${targetId}/run`, { input });
     if (res.ok) {
@@ -438,8 +443,10 @@ function WorkflowBuilder({ state }) {
           const fromNode = nodes.find(n => n.id === drawingEdge.from);
           let branch = undefined;
           if (fromNode && fromNode.type === 'condition') {
-             branch = prompt('Which branch? (true/false)');
-             if (branch !== 'true' && branch !== 'false') branch = 'true';
+            // First outgoing edge is the 'true' branch, the next is 'false'
+            // (the runner lights edges by branch). Relabel by deleting + redrawing.
+            const hasTrue = edges.some(e => e.from === drawingEdge.from && e.branch === 'true');
+            branch = hasTrue ? 'false' : 'true';
           }
           setEdges(prev => {
             // Remove existing edge to the same node? Not strictly necessary in DAG, but let's allow multiple inward edges except for condition branching
@@ -476,6 +483,12 @@ function WorkflowBuilder({ state }) {
               Status: <span className={`status-label ${runStatus === 'running' ? 'blue pulse' : runStatus === 'done' ? 'green' : runStatus === 'error' ? 'red' : ''}`}>{runStatus}</span>
             </div>
           )}
+          <Input
+            value={runInput}
+            onChange={(e) => setRunInput(e.target.value)}
+            placeholder="Run input (optional)…"
+            style={{ minWidth: 180 }}
+          />
           <Button variant="ghost" onClick={saveWorkflow}><Icon name="save" size={16} /> Save</Button>
           <Button variant="primary" onClick={runWorkflow} disabled={!activeWfId}><Icon name="play" size={16} /> Run</Button>
           {activeWfId && <Button variant="danger" onClick={deleteWorkflow}><Icon name="trash" size={16} /> Delete</Button>}

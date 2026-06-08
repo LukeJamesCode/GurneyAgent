@@ -18,6 +18,7 @@ import type { Logger } from '../util/log.js';
 import type { LLM, ProfileName, ThinkMode } from './llm.js';
 import type { ToolHandler, ToolRegistry } from './tools.js';
 import { createOrchestrator, type Orchestrator, type ReplyChunk } from './orchestrator.js';
+import { allStepsDone, renderPlan } from './agent-planning.js';
 
 // Virtual chat ids for agent runs live in a reserved band well above any real
 // Telegram user id (currently < ~8e9 and growing slowly) and far below
@@ -50,11 +51,57 @@ export const SPAWN_AGENTS_TOOL_NAME = 'spawn_agents';
 // (agent-approvals.ts).
 export const REQUEST_APPROVAL_TOOL_NAME = 'request_approval';
 
+// Built-in planning tools, visible ONLY to autonomous agents (filtered out of
+// single-mode agents and the main chat orchestrator). Registered by
+// setupAgentPlanning (agent-planning.ts). They are how the model drives its own
+// plan->act->reflect loop: author/revise a todo, tick steps off, record
+// findings, save outputs, and declare the goal done.
+export const UPDATE_PLAN_TOOL_NAME = 'update_plan';
+export const COMPLETE_STEP_TOOL_NAME = 'complete_step';
+export const RECORD_FINDING_TOOL_NAME = 'record_finding';
+export const FINISH_TOOL_NAME = 'finish';
+export const SAVE_ARTIFACT_TOOL_NAME = 'save_artifact';
+
+const PLANNING_TOOL_NAMES = new Set<string>([
+  UPDATE_PLAN_TOOL_NAME,
+  COMPLETE_STEP_TOOL_NAME,
+  RECORD_FINDING_TOOL_NAME,
+  FINISH_TOOL_NAME,
+  SAVE_ARTIFACT_TOOL_NAME,
+]);
+
+export function isPlanningTool(name: string): boolean {
+  return PLANNING_TOOL_NAMES.has(name);
+}
+
 // Maximum delegation depth (supervisor -> worker -> ...). A top-level task is
 // depth 0; spawn_agent refuses once a child would exceed this, so a buggy
 // persona can't recurse without bound.
 export const MAX_DELEGATION_DEPTH = 3;
 export const AGENT_TASK_CANCELLED_MESSAGE = 'Agent task cancelled by user.';
+
+// Autonomous-run budget defaults (used when an agent leaves a ceiling null). A
+// "round" is one orchestrator turn of the loop; the wall-clock counts from the
+// task's original start so a resumed run keeps its overall deadline.
+export const DEFAULT_MAX_TOTAL_ROUNDS = 30;
+export const DEFAULT_MAX_WALL_CLOCK_MS = 30 * 60_000;
+// Consecutive no-progress turns (no plan change, no finish) before the loop
+// gives up and finalises — guards against a model that stalls without finishing.
+export const AUTONOMOUS_STALL_LIMIT = 5;
+
+// Loop discipline appended to an autonomous agent's system prompt. The loop
+// itself (createAgentRuntime) is deterministic code; this just teaches the model
+// the contract for the planning tools it is given.
+export const AUTONOMOUS_PREAMBLE = [
+  'You are an AUTONOMOUS agent. You work the task across many turns until it is fully done — you',
+  'are not answering a single question. Follow this loop:',
+  '1. First, call update_plan with a short, ordered list of concrete steps.',
+  '2. Each turn, do the next unfinished step with your tools, then call complete_step.',
+  '3. Use record_finding to keep facts you must not forget, and save_artifact for deliverables.',
+  '4. Revise the plan with update_plan whenever reality differs from it.',
+  '5. When the whole goal is met, call finish exactly once with the final answer for the user.',
+  'Do not ask the user questions — make reasonable assumptions and keep going. Keep each turn focused.',
+].join('\n');
 
 // Intersect two tool grants. null means "all tools". The result never grants
 // more than either input (fail-safe): the AND of two ceilings. For two
@@ -70,6 +117,32 @@ export function intersectGrants(a: string[] | null, b: string[] | null): string[
 
 export type AgentExecutionMode = 'sequential' | 'parallel';
 export type AgentTaskStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled' | 'paused';
+
+// 'single' = today's bounded one-turn run. 'autonomous' = the plan->act->reflect
+// loop that works a persisted todo until done or a budget trips (agents.ts loop).
+export type AgentMode = 'single' | 'autonomous';
+
+export type PlanStepStatus = 'pending' | 'active' | 'done';
+export interface PlanStep {
+  id: string;
+  title: string;
+  status: PlanStepStatus;
+}
+// The agent-authored todo an autonomous run works through. Persisted as
+// agent_tasks.plan_json and checkpointed after every step for durable resume.
+export interface AgentPlan {
+  steps: PlanStep[];
+}
+
+// A saved output of an autonomous run (agent_artifacts row).
+export interface AgentArtifact {
+  id: number;
+  taskId: number;
+  name: string;
+  mime: string;
+  content: string | null;
+  createdAt: number;
+}
 
 export interface AgentDefinition {
   id: number;
@@ -91,6 +164,11 @@ export interface AgentDefinition {
   // Agent names this agent may spawn; [] with canDelegate means "any". Ignored
   // when canDelegate is false.
   delegatableAgents: string[];
+  // 'single' bounded run vs 'autonomous' plan->act->reflect loop.
+  mode: AgentMode;
+  // Autonomous-run budget ceilings; null => engine default.
+  maxWallClockMs: number | null;
+  maxTotalRounds: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -111,6 +189,14 @@ export interface AgentTask {
   // Per-run thinking override. null = inherit the agent's thinkMode; otherwise
   // wins over it for this run only.
   thinkMode: ThinkMode | null;
+  // Autonomous-run state, checkpointed after each step for durable resume.
+  // null plan = not started yet (the loop asks the model to author one).
+  plan: AgentPlan | null;
+  stepCursor: number;
+  roundsUsed: number;
+  // Pending user interjections, drained by the loop between steps.
+  steerQueue: string[];
+  checkpointAt: number | null;
   result: string | null;
   error: string | null;
   createdAt: number;
@@ -132,6 +218,9 @@ export interface CreateAgentInput {
   maxConcurrency?: number;
   canDelegate?: boolean;
   delegatableAgents?: string[];
+  mode?: AgentMode;
+  maxWallClockMs?: number | null;
+  maxTotalRounds?: number | null;
 }
 
 export type UpdateAgentInput = Partial<Omit<CreateAgentInput, 'name'>> & { name?: string };
@@ -173,6 +262,9 @@ interface AgentRow {
   max_concurrency: number;
   can_delegate: number;
   delegatable_agents: string;
+  mode: string;
+  max_wall_clock_ms: number | null;
+  max_total_rounds: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -184,6 +276,29 @@ function parseStringArray(json: string | null): string[] {
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
   } catch {
     return [];
+  }
+}
+
+// Parse a checkpointed plan, tolerating partial/garbage JSON (returns null so
+// the loop re-authors rather than throwing mid-resume).
+function parsePlan(json: string | null): AgentPlan | null {
+  if (!json) return null;
+  try {
+    const v = JSON.parse(json) as { steps?: unknown };
+    if (!v || !Array.isArray(v.steps)) return null;
+    const steps = v.steps
+      .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+      .map((s) => ({
+        id: String(s['id'] ?? ''),
+        title: String(s['title'] ?? ''),
+        status: (['pending', 'active', 'done'].includes(String(s['status']))
+          ? s['status']
+          : 'pending') as PlanStepStatus,
+      }))
+      .filter((s) => s.id !== '');
+    return { steps };
+  } catch {
+    return null;
   }
 }
 
@@ -202,6 +317,9 @@ function rowToAgent(r: AgentRow): AgentDefinition {
     maxConcurrency: r.max_concurrency,
     canDelegate: r.can_delegate !== 0,
     delegatableAgents: parseStringArray(r.delegatable_agents),
+    mode: r.mode === 'autonomous' ? 'autonomous' : 'single',
+    maxWallClockMs: r.max_wall_clock_ms,
+    maxTotalRounds: r.max_total_rounds,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -220,6 +338,11 @@ interface TaskRow {
   virtual_chat_id: number | null;
   tool_allowlist_override: string | null;
   think_mode: string | null;
+  plan_json: string | null;
+  step_cursor: number;
+  rounds_used: number;
+  steer_queue_json: string | null;
+  checkpoint_at: number | null;
   result: string | null;
   error: string | null;
   created_at: number;
@@ -243,6 +366,11 @@ function rowToTask(r: TaskRow): AgentTask {
     toolAllowlistOverride:
       r.tool_allowlist_override === null ? null : parseStringArray(r.tool_allowlist_override),
     thinkMode: r.think_mode === null ? null : (r.think_mode as ThinkMode),
+    plan: parsePlan(r.plan_json),
+    stepCursor: r.step_cursor ?? 0,
+    roundsUsed: r.rounds_used ?? 0,
+    steerQueue: parseStringArray(r.steer_queue_json),
+    checkpointAt: r.checkpoint_at ?? null,
     result: r.result,
     error: r.error,
     createdAt: r.created_at,
@@ -275,10 +403,32 @@ export interface AgentRegistry {
     patch: Partial<
       Pick<
         AgentTask,
-        'status' | 'result' | 'error' | 'conversationId' | 'virtualChatId' | 'pausedUntil'
+        | 'status'
+        | 'result'
+        | 'error'
+        | 'conversationId'
+        | 'virtualChatId'
+        | 'pausedUntil'
+        | 'plan'
+        | 'stepCursor'
+        | 'roundsUsed'
+        | 'steerQueue'
+        | 'checkpointAt'
       >
     > & { startedAt?: number; finishedAt?: number },
   ): void;
+  // Append a user interjection to a task's steer queue (read-modify-write under
+  // the DB's single-writer lock). Returns false if the task is gone.
+  pushSteer(taskId: number, text: string): boolean;
+
+  // Artifacts an autonomous run saved.
+  addArtifact(input: {
+    taskId: number;
+    name: string;
+    content: string | null;
+    mime?: string;
+  }): AgentArtifact;
+  listArtifacts(taskId: number): AgentArtifact[];
 }
 
 export function createAgentRegistry(db: DB): AgentRegistry {
@@ -286,10 +436,10 @@ export function createAgentRegistry(db: DB): AgentRegistry {
     `INSERT INTO agents
        (name, role, system_prompt, tool_allowlist, profile, think_mode, max_tool_rounds,
         budget_tokens, execution_mode, max_concurrency, can_delegate,
-        delegatable_agents, created_at, updated_at)
+        delegatable_agents, mode, max_wall_clock_ms, max_total_rounds, created_at, updated_at)
      VALUES (@name, @role, @system_prompt, @tool_allowlist, @profile, @think_mode, @max_tool_rounds,
              @budget_tokens, @execution_mode, @max_concurrency, @can_delegate,
-             @delegatable_agents, @created_at, @updated_at)`,
+             @delegatable_agents, @mode, @max_wall_clock_ms, @max_total_rounds, @created_at, @updated_at)`,
   );
   const selectById = db.prepare(`SELECT * FROM agents WHERE id = ?`);
   const selectByName = db.prepare(`SELECT * FROM agents WHERE name = ?`);
@@ -331,6 +481,9 @@ export function createAgentRegistry(db: DB): AgentRegistry {
       max_concurrency: input.maxConcurrency ?? 1,
       can_delegate: input.canDelegate ? 1 : 0,
       delegatable_agents: JSON.stringify(input.delegatableAgents ?? []),
+      mode: input.mode ?? 'single',
+      max_wall_clock_ms: input.maxWallClockMs ?? null,
+      max_total_rounds: input.maxTotalRounds ?? null,
       created_at: now,
       updated_at: now,
     });
@@ -368,6 +521,9 @@ export function createAgentRegistry(db: DB): AgentRegistry {
       ...('delegatableAgents' in patch && patch.delegatableAgents !== undefined
         ? { delegatableAgents: patch.delegatableAgents }
         : {}),
+      ...('mode' in patch && patch.mode !== undefined ? { mode: patch.mode } : {}),
+      ...('maxWallClockMs' in patch ? { maxWallClockMs: patch.maxWallClockMs ?? null } : {}),
+      ...('maxTotalRounds' in patch ? { maxTotalRounds: patch.maxTotalRounds ?? null } : {}),
       updatedAt: Date.now(),
     };
     db.prepare(
@@ -377,7 +533,8 @@ export function createAgentRegistry(db: DB): AgentRegistry {
          max_tool_rounds = @max_tool_rounds, budget_tokens = @budget_tokens,
          execution_mode = @execution_mode, max_concurrency = @max_concurrency,
          can_delegate = @can_delegate, delegatable_agents = @delegatable_agents,
-         updated_at = @updated_at
+         mode = @mode, max_wall_clock_ms = @max_wall_clock_ms,
+         max_total_rounds = @max_total_rounds, updated_at = @updated_at
        WHERE id = @id`,
     ).run({
       id,
@@ -393,6 +550,9 @@ export function createAgentRegistry(db: DB): AgentRegistry {
       max_concurrency: next.maxConcurrency,
       can_delegate: next.canDelegate ? 1 : 0,
       delegatable_agents: JSON.stringify(next.delegatableAgents),
+      mode: next.mode,
+      max_wall_clock_ms: next.maxWallClockMs,
+      max_total_rounds: next.maxTotalRounds,
       updated_at: next.updatedAt,
     });
     return get(id);
@@ -457,7 +617,17 @@ export function createAgentRegistry(db: DB): AgentRegistry {
     patch: Partial<
       Pick<
         AgentTask,
-        'status' | 'result' | 'error' | 'conversationId' | 'virtualChatId' | 'pausedUntil'
+        | 'status'
+        | 'result'
+        | 'error'
+        | 'conversationId'
+        | 'virtualChatId'
+        | 'pausedUntil'
+        | 'plan'
+        | 'stepCursor'
+        | 'roundsUsed'
+        | 'steerQueue'
+        | 'checkpointAt'
       >
     > & { startedAt?: number; finishedAt?: number },
   ): void {
@@ -477,8 +647,72 @@ export function createAgentRegistry(db: DB): AgentRegistry {
     if (patch.startedAt !== undefined) add('started_at', 'started_at', patch.startedAt);
     if (patch.finishedAt !== undefined) add('finished_at', 'finished_at', patch.finishedAt);
     if (patch.pausedUntil !== undefined) add('paused_until', 'paused_until', patch.pausedUntil);
+    if (patch.plan !== undefined)
+      add('plan_json', 'plan_json', patch.plan === null ? null : JSON.stringify(patch.plan));
+    if (patch.stepCursor !== undefined) add('step_cursor', 'step_cursor', patch.stepCursor);
+    if (patch.roundsUsed !== undefined) add('rounds_used', 'rounds_used', patch.roundsUsed);
+    if (patch.steerQueue !== undefined)
+      add('steer_queue_json', 'steer_queue_json', JSON.stringify(patch.steerQueue));
+    if (patch.checkpointAt !== undefined) add('checkpoint_at', 'checkpoint_at', patch.checkpointAt);
     if (sets.length === 0) return;
     db.prepare(`UPDATE agent_tasks SET ${sets.join(', ')} WHERE id = @id`).run(params);
+  }
+
+  // Append to the steer queue read-modify-write. better-sqlite3 is synchronous
+  // and single-writer, so this is atomic with respect to the loop's drain.
+  function pushSteer(taskId: number, text: string): boolean {
+    const task = getTask(taskId);
+    if (!task) return false;
+    updateTask(taskId, { steerQueue: [...task.steerQueue, text] });
+    return true;
+  }
+
+  const insertArtifact = db.prepare(
+    `INSERT INTO agent_artifacts (task_id, name, mime, content, created_at)
+     VALUES (@task_id, @name, @mime, @content, @created_at)`,
+  );
+  function addArtifact(input: {
+    taskId: number;
+    name: string;
+    content: string | null;
+    mime?: string;
+  }): AgentArtifact {
+    const created = Date.now();
+    const info = insertArtifact.run({
+      task_id: input.taskId,
+      name: input.name,
+      mime: input.mime ?? 'text/plain',
+      content: input.content,
+      created_at: created,
+    });
+    return {
+      id: Number(info.lastInsertRowid),
+      taskId: input.taskId,
+      name: input.name,
+      mime: input.mime ?? 'text/plain',
+      content: input.content,
+      createdAt: created,
+    };
+  }
+  function listArtifacts(taskId: number): AgentArtifact[] {
+    const rows = db
+      .prepare(`SELECT * FROM agent_artifacts WHERE task_id = ? ORDER BY id`)
+      .all(taskId) as Array<{
+      id: number;
+      task_id: number;
+      name: string;
+      mime: string;
+      content: string | null;
+      created_at: number;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      taskId: r.task_id,
+      name: r.name,
+      mime: r.mime,
+      content: r.content,
+      createdAt: r.created_at,
+    }));
   }
 
   return {
@@ -492,6 +726,9 @@ export function createAgentRegistry(db: DB): AgentRegistry {
     getTask,
     listTasks,
     updateTask,
+    pushSteer,
+    addArtifact,
+    listArtifacts,
   };
 }
 
@@ -563,6 +800,28 @@ export function seedStarterAgents(registry: AgentRegistry): void {
       'then return an improved version. Be specific about what you changed.',
     profile: 'chat',
     toolAllowlist: [],
+  });
+  // The flagship long-horizon agent: it plans, works the plan over many turns,
+  // delegates to the workers above, and finishes on its own. Demonstrates the
+  // autonomous loop out of the box. Budgets are deliberately modest so a stray
+  // run can't grind forever on a small box; raise them in the editor.
+  registry.create({
+    name: 'operator',
+    role: 'Plans and runs a multi-step task end to end',
+    systemPrompt:
+      'You are the Operator, an autonomous agent that completes complex tasks end to end. ' +
+      'Break the goal into a concrete plan, work it step by step using your tools and the worker ' +
+      'agents available to you, keep notes of what you find, and deliver a clear final result. ' +
+      'Prefer delegating focused subtasks (research, drafting, review) to the smallest capable agent.',
+    profile: 'reason',
+    toolAllowlist: null,
+    mode: 'autonomous',
+    executionMode: 'sequential',
+    maxToolRounds: 6,
+    canDelegate: true,
+    delegatableAgents: [],
+    maxTotalRounds: 24,
+    maxWallClockMs: 30 * 60_000,
   });
 }
 
@@ -655,6 +914,21 @@ export interface RunResult {
   conversationId: number;
 }
 
+// Live events emitted during a run, for the panel's SSE stream. `delta` carries
+// streamed model text; the rest report autonomous-loop progress.
+export type AgentRunEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'plan'; plan: AgentPlan }
+  | { type: 'phase'; phase: 'planning' | 'working' | 'finalizing' }
+  | {
+      type: 'budget';
+      roundsUsed: number;
+      maxRounds: number;
+      wallMs: number;
+      maxWallMs: number;
+    }
+  | { type: 'done'; ok: boolean };
+
 export interface AgentRuntime {
   // Run a queued task to completion. Marks it running, drives the orchestrator,
   // persists result/error + the conversation link, returns the outcome.
@@ -662,6 +936,8 @@ export interface AgentRuntime {
   // Best-effort cancellation for a queued or running task. Running tasks abort
   // their active orchestrator turn; queued tasks are marked terminal.
   cancelTask(taskId: number): boolean;
+  // Subscribe to a task's live events (panel SSE). Returns an unsubscribe fn.
+  subscribe(taskId: number, fn: (e: AgentRunEvent) => void): () => void;
   shutdown(): Promise<void>;
 }
 
@@ -687,15 +963,17 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
         return agent.canDelegate;
       // Every agent may ask for human approval, regardless of its tool grant.
       if (h.name === REQUEST_APPROVAL_TOOL_NAME) return true;
+      // Planning/loop tools are meaningful only inside the autonomous loop.
+      if (isPlanningTool(h.name)) return agent.mode === 'autonomous';
       return own(h) && ceiling(h);
     };
   }
 
   function buildOrchestrator(agent: AgentDefinition, override: string[] | null): Orchestrator {
     const tools = filterToolRegistry(opts.tools, agentPredicate(agent, override));
-    const systemPrompt = agent.canDelegate
-      ? `${agent.systemPrompt}\n\n${delegateRosterPrompt(agent)}`
-      : agent.systemPrompt;
+    let systemPrompt = agent.systemPrompt;
+    if (agent.canDelegate) systemPrompt = `${systemPrompt}\n\n${delegateRosterPrompt(agent)}`;
+    if (agent.mode === 'autonomous') systemPrompt = `${systemPrompt}\n\n${AUTONOMOUS_PREAMBLE}`;
     return createOrchestrator({
       db: opts.db,
       llm: opts.llm,
@@ -775,6 +1053,290 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     return orch;
   }
 
+  // -- live event bus (panel SSE) -------------------------------------------
+  const subscribers = new Map<number, Set<(e: AgentRunEvent) => void>>();
+  function emit(taskId: number, e: AgentRunEvent): void {
+    const set = subscribers.get(taskId);
+    if (!set) return;
+    for (const fn of set) {
+      try {
+        fn(e);
+      } catch {
+        /* a dead subscriber must never kill the run */
+      }
+    }
+  }
+  function subscribe(taskId: number, fn: (e: AgentRunEvent) => void): () => void {
+    let set = subscribers.get(taskId);
+    if (!set) {
+      set = new Set();
+      subscribers.set(taskId, set);
+    }
+    set.add(fn);
+    return () => {
+      const s = subscribers.get(taskId);
+      if (!s) return;
+      s.delete(fn);
+      if (s.size === 0) subscribers.delete(taskId);
+    };
+  }
+
+  // Drive a single orchestrator turn against the task's virtual chat and collect
+  // its streamed output. Shared by single-mode and the autonomous loop.
+  interface TurnResult {
+    finalText: string | undefined;
+    buffer: string;
+    conversationId: number;
+  }
+  async function driveTurn(
+    orch: Orchestrator,
+    virtualChatId: number,
+    text: string,
+    thinkMode: ThinkMode | null,
+    taskId: number,
+    onDelta?: (delta: string) => void,
+  ): Promise<TurnResult> {
+    let buffer = '';
+    let finalText: string | undefined;
+    let conversationId = 0;
+    await orch.handleUserMessage({
+      chatId: virtualChatId,
+      userId: opts.ownerUserId,
+      text,
+      ...(thinkMode ? { thinkMode } : {}),
+      send: (chunk: ReplyChunk) => {
+        if (chunk.delta) {
+          buffer += chunk.delta;
+          onDelta?.(chunk.delta);
+          emit(taskId, { type: 'delta', text: chunk.delta });
+        }
+        if (chunk.done) {
+          // meta.afterTurn.assistantText is the canonical post-guard reply
+          // (after hallucination scrubbing / `replace`); prefer it over the raw
+          // streamed buffer.
+          if (chunk.meta?.afterTurn) {
+            finalText = chunk.meta.afterTurn.assistantText;
+            conversationId = chunk.meta.afterTurn.conversationId;
+          } else if (typeof chunk.replace === 'string') {
+            finalText = chunk.replace;
+          }
+        }
+      },
+    });
+    return { finalText, buffer, conversationId };
+  }
+
+  interface RunCtx {
+    taskId: number;
+    agent: AgentDefinition;
+    virtualChatId: number;
+    orch: Orchestrator;
+    onDelta?: (delta: string) => void;
+  }
+
+  // -- single-mode run (today's behaviour) ----------------------------------
+  async function runSingle(ctx: RunCtx): Promise<RunResult> {
+    const { taskId, agent, virtualChatId, orch, onDelta } = ctx;
+    const task = opts.registry.getTask(taskId)!;
+    let turn: TurnResult;
+    try {
+      turn = await driveTurn(orch, virtualChatId, task.prompt, task.thinkMode, taskId, onDelta);
+    } catch (e) {
+      if (opts.registry.getTask(taskId)?.status === 'cancelled') {
+        return { ok: false, text: '', error: AGENT_TASK_CANCELLED_MESSAGE, conversationId: 0 };
+      }
+      const msg = e instanceof Error ? e.message : String(e);
+      log.warn('agent task threw', { taskId, agent: agent.name, error: msg });
+      opts.registry.updateTask(taskId, { status: 'error', error: msg, finishedAt: Date.now() });
+      emit(taskId, { type: 'done', ok: false });
+      return { ok: false, text: '', error: msg, conversationId: 0 };
+    }
+    const conversationId = turn.conversationId;
+    const text = turn.finalText ?? turn.buffer;
+    if (opts.registry.getTask(taskId)?.status === 'cancelled') {
+      return { ok: false, text, error: AGENT_TASK_CANCELLED_MESSAGE, conversationId };
+    }
+    const errored = orch.lastError(virtualChatId);
+    if (errored) {
+      opts.registry.updateTask(taskId, {
+        status: 'error',
+        error: errored,
+        finishedAt: Date.now(),
+        ...(conversationId ? { conversationId } : {}),
+      });
+      emit(taskId, { type: 'done', ok: false });
+      return { ok: false, text, error: errored, conversationId };
+    }
+    opts.registry.updateTask(taskId, {
+      status: 'done',
+      result: text,
+      finishedAt: Date.now(),
+      ...(conversationId ? { conversationId } : {}),
+    });
+    emit(taskId, { type: 'done', ok: true });
+    return { ok: true, text, conversationId };
+  }
+
+  // -- autonomous plan->act->reflect loop -----------------------------------
+  function continuationPrompt(task: AgentTask, steer: string[]): string {
+    const lines = ['Continue working the task.', '', 'Plan so far:', renderPlan(task.plan)];
+    if (steer.length > 0) {
+      lines.push('', 'New guidance from the user — apply it:');
+      for (const s of steer) lines.push(`- ${s}`);
+    }
+    lines.push(
+      '',
+      'Do the next unfinished step now and mark it complete. If the whole task is done, call finish.',
+    );
+    return lines.join('\n');
+  }
+  const FINALIZE_PROMPT =
+    'You are out of steps or budget. Call finish now with your best final answer for the user, ' +
+    'based on everything you have done so far. Do not start new work.';
+
+  async function runAutonomous(ctx: RunCtx): Promise<RunResult> {
+    const { taskId, agent, virtualChatId, orch, onDelta } = ctx;
+    const maxRounds = agent.maxTotalRounds ?? DEFAULT_MAX_TOTAL_ROUNDS;
+    const maxWallMs = agent.maxWallClockMs ?? DEFAULT_MAX_WALL_CLOCK_MS;
+    const startWall = opts.registry.getTask(taskId)?.startedAt ?? Date.now();
+    const doneCount = (t: AgentTask | undefined): number =>
+      t?.plan ? t.plan.steps.filter((s) => s.status === 'done').length : 0;
+
+    let lastText = '';
+    let conversationId = opts.registry.getTask(taskId)?.conversationId ?? 0;
+    let roundsUsed = opts.registry.getTask(taskId)?.roundsUsed ?? 0;
+    let prevDone = -1;
+    let stall = 0;
+    let prevPlanStr = '';
+
+    const finalizeDone = (text: string): RunResult => {
+      opts.registry.updateTask(taskId, {
+        status: 'done',
+        result: text,
+        finishedAt: Date.now(),
+        ...(conversationId ? { conversationId } : {}),
+      });
+      emit(taskId, { type: 'done', ok: true });
+      return { ok: true, text, conversationId };
+    };
+
+    for (;;) {
+      const fresh = opts.registry.getTask(taskId);
+      if (!fresh || fresh.status === 'cancelled') {
+        return { ok: false, text: lastText, error: AGENT_TASK_CANCELLED_MESSAGE, conversationId };
+      }
+      // Cooperative pause: stop the loop but leave all state checkpointed so a
+      // later resume continues from here rather than from the prompt.
+      if (fresh.status === 'paused') {
+        log.info('autonomous run paused between steps', { taskId, roundsUsed });
+        return { ok: false, text: lastText, error: 'paused', conversationId };
+      }
+      if (fresh.result !== null) return finalizeDone(fresh.result); // explicit finish
+      if (allStepsDone(fresh.plan)) break; // plan complete -> finalize
+      if (roundsUsed >= maxRounds) break; // round budget
+      if (Date.now() - startWall >= maxWallMs) break; // wall-clock budget
+      if (stall >= AUTONOMOUS_STALL_LIMIT) break; // model stalled
+
+      const steer = fresh.steerQueue;
+      if (steer.length > 0) opts.registry.updateTask(taskId, { steerQueue: [] });
+
+      emit(taskId, { type: 'phase', phase: roundsUsed === 0 ? 'planning' : 'working' });
+      // Turn 0 starts from the goal; later turns continue the plan. Either way,
+      // any pending steer must be folded in (a steer queued before the run
+      // started would otherwise be drained and lost on turn 0).
+      let text: string;
+      if (roundsUsed === 0) {
+        text = fresh.prompt;
+        if (steer.length > 0) {
+          text += `\n\nAdditional guidance from the user:\n${steer.map((s) => `- ${s}`).join('\n')}`;
+        }
+      } else {
+        text = continuationPrompt(fresh, steer);
+      }
+
+      let turn: TurnResult;
+      try {
+        turn = await driveTurn(orch, virtualChatId, text, fresh.thinkMode, taskId, onDelta);
+      } catch (e) {
+        if (opts.registry.getTask(taskId)?.status === 'cancelled') {
+          return {
+            ok: false,
+            text: lastText,
+            error: AGENT_TASK_CANCELLED_MESSAGE,
+            conversationId,
+          };
+        }
+        const msg = e instanceof Error ? e.message : String(e);
+        log.warn('autonomous turn threw', { taskId, agent: agent.name, error: msg });
+        opts.registry.updateTask(taskId, { status: 'error', error: msg, finishedAt: Date.now() });
+        emit(taskId, { type: 'done', ok: false });
+        return { ok: false, text: lastText, error: msg, conversationId };
+      }
+
+      roundsUsed += 1;
+      if (turn.finalText) lastText = turn.finalText;
+      else if (turn.buffer) lastText = turn.buffer;
+      if (turn.conversationId) conversationId = turn.conversationId;
+
+      const after = opts.registry.getTask(taskId);
+      const dc = doneCount(after);
+      const finished = after?.result != null;
+      const planStr = JSON.stringify(after?.plan);
+      stall = !finished && planStr === prevPlanStr && dc === prevDone ? stall + 1 : 0;
+      prevDone = dc;
+      prevPlanStr = planStr;
+
+      // Checkpoint: everything needed to resume from here after a restart.
+      opts.registry.updateTask(taskId, {
+        roundsUsed,
+        stepCursor: dc,
+        checkpointAt: Date.now(),
+        ...(conversationId ? { conversationId } : {}),
+      });
+      if (after?.plan) emit(taskId, { type: 'plan', plan: after.plan });
+      emit(taskId, {
+        type: 'budget',
+        roundsUsed,
+        maxRounds,
+        wallMs: Date.now() - startWall,
+        maxWallMs,
+      });
+
+      const errored = orch.lastError(virtualChatId);
+      if (errored) {
+        opts.registry.updateTask(taskId, {
+          status: 'error',
+          error: errored,
+          finishedAt: Date.now(),
+          ...(conversationId ? { conversationId } : {}),
+        });
+        emit(taskId, { type: 'done', ok: false });
+        return { ok: false, text: lastText, error: errored, conversationId };
+      }
+      if (finished) return finalizeDone(after!.result!);
+    }
+
+    // Stopped without an explicit finish (plan done / budget / stall). One last
+    // turn to produce a clean summary; the model usually calls finish here.
+    if (opts.registry.getTask(taskId)?.status === 'cancelled') {
+      return { ok: false, text: lastText, error: AGENT_TASK_CANCELLED_MESSAGE, conversationId };
+    }
+    emit(taskId, { type: 'phase', phase: 'finalizing' });
+    try {
+      const thinkMode = opts.registry.getTask(taskId)?.thinkMode ?? null;
+      const turn = await driveTurn(orch, virtualChatId, FINALIZE_PROMPT, thinkMode, taskId, onDelta);
+      if (turn.conversationId) conversationId = turn.conversationId;
+      const after = opts.registry.getTask(taskId);
+      const summary =
+        after?.result != null && after.result !== ''
+          ? after.result
+          : (turn.finalText ?? turn.buffer ?? lastText);
+      return finalizeDone(summary || lastText || 'Task ended without a final summary.');
+    } catch {
+      return finalizeDone(lastText || 'Task ended without a final summary.');
+    }
+  }
+
   async function runTask(
     taskId: number,
     runOpts: { onDelta?: (delta: string) => void } = {},
@@ -790,94 +1352,27 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     const virtualChatId = AGENT_CHAT_ID_BASE + task.id;
     opts.registry.updateTask(task.id, {
       status: 'running',
-      startedAt: Date.now(),
+      // Preserve the original start on resume so the wall-clock budget is honest.
+      startedAt: task.startedAt ?? Date.now(),
       virtualChatId,
     });
 
-    // A grant ceiling means a one-off orchestrator (different tool view than
-    // the cached per-agent one); tear it down after the run.
+    // A grant ceiling means a one-off orchestrator (different tool view than the
+    // cached per-agent one); tear it down after the run.
     const ephemeral = task.toolAllowlistOverride !== null;
     const orch = ephemeral
       ? buildOrchestrator(agent, task.toolAllowlistOverride)
       : orchestratorFor(agent);
     active.set(task.id, { orch, virtualChatId });
-    let buffer = '';
-    let finalText: string | undefined;
-    let conversationId = 0;
-
+    const ctx: RunCtx = {
+      taskId,
+      agent,
+      virtualChatId,
+      orch,
+      ...(runOpts.onDelta ? { onDelta: runOpts.onDelta } : {}),
+    };
     try {
-      try {
-        await orch.handleUserMessage({
-          chatId: virtualChatId,
-          userId: opts.ownerUserId,
-          text: task.prompt,
-          // Per-run override wins over the agent's baked-in defaultThinkMode;
-          // null/undefined leaves the agent default in force.
-          ...(task.thinkMode ? { thinkMode: task.thinkMode } : {}),
-          send: (chunk: ReplyChunk) => {
-            if (chunk.delta) {
-              buffer += chunk.delta;
-              runOpts.onDelta?.(chunk.delta);
-            }
-            if (chunk.done) {
-              // meta.afterTurn.assistantText is the canonical post-guard reply
-              // (after hallucination scrubbing / `replace`); prefer it over the
-              // raw streamed buffer.
-              if (chunk.meta?.afterTurn) {
-                finalText = chunk.meta.afterTurn.assistantText;
-                conversationId = chunk.meta.afterTurn.conversationId;
-              } else if (typeof chunk.replace === 'string') {
-                finalText = chunk.replace;
-              }
-            }
-          },
-        });
-      } catch (e) {
-        if (opts.registry.getTask(task.id)?.status === 'cancelled') {
-          return {
-            ok: false,
-            text: '',
-            error: AGENT_TASK_CANCELLED_MESSAGE,
-            conversationId,
-          };
-        }
-        const msg = e instanceof Error ? e.message : String(e);
-        log.warn('agent task threw', { taskId, agent: agent.name, error: msg });
-        opts.registry.updateTask(task.id, {
-          status: 'error',
-          error: msg,
-          finishedAt: Date.now(),
-        });
-        return { ok: false, text: '', error: msg, conversationId };
-      }
-
-      if (opts.registry.getTask(task.id)?.status === 'cancelled') {
-        return {
-          ok: false,
-          text: finalText ?? buffer,
-          error: AGENT_TASK_CANCELLED_MESSAGE,
-          conversationId,
-        };
-      }
-
-      const errored = orch.lastError(virtualChatId);
-      const text = finalText ?? buffer;
-      if (errored) {
-        opts.registry.updateTask(task.id, {
-          status: 'error',
-          error: errored,
-          finishedAt: Date.now(),
-          ...(conversationId ? { conversationId } : {}),
-        });
-        return { ok: false, text, error: errored, conversationId };
-      }
-      opts.registry.updateTask(task.id, {
-        status: 'done',
-        result: text,
-        finishedAt: Date.now(),
-        ...(conversationId ? { conversationId } : {}),
-      });
-      return { ok: true, text, conversationId };
+      return agent.mode === 'autonomous' ? await runAutonomous(ctx) : await runSingle(ctx);
     } finally {
       active.delete(task.id);
       if (ephemeral) await orch.shutdown();
@@ -910,5 +1405,5 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     active.clear();
   }
 
-  return { runTask, cancelTask, shutdown };
+  return { runTask, cancelTask, subscribe, shutdown };
 }

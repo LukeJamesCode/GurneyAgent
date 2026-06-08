@@ -29,6 +29,9 @@ const EMPTY_AGENT = {
   maxConcurrency: 1,
   canDelegate: false,
   delegatableAgents: [],
+  mode: 'single', // single = one bounded turn; autonomous = plan->act->reflect loop
+  maxTotalRounds: null, // autonomous budget; null = engine default
+  maxWallClockMs: null, // autonomous budget; null = engine default
 };
 
 function listToText(list) {
@@ -762,6 +765,7 @@ function AgentsFleet({ agents, onNew, onEdit, onDelete, onDispatch, onSchedule }
                   )}
                 </div>
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {agent.mode === 'autonomous' && <window.Badge tone="ok">autonomous</window.Badge>}
                   {agent.thinkMode && agent.thinkMode !== 'auto' && (
                     <window.Badge tone="neutral">
                       {agent.thinkMode === 'on' ? 'think' : 'no-think'}
@@ -1552,6 +1556,48 @@ function AgentEditor({ initial, agents, onClose, onSave, error }) {
             ]}
           />
         </Field>
+        <Field
+          label="Run mode"
+          hint="Autonomous = plans and works a multi-step goal over many turns until done."
+        >
+          <window.Segmented
+            size="sm"
+            value={d.mode || 'single'}
+            onChange={(v) => set('mode', v)}
+            options={[
+              { value: 'single', label: 'Single turn' },
+              { value: 'autonomous', label: 'Autonomous' },
+            ]}
+          />
+        </Field>
+        {d.mode === 'autonomous' && (
+          <Row>
+            <Field label="Max rounds" hint="Loop turns before it must finish. Blank = default (30).">
+              <window.Input
+                type="number"
+                min={1}
+                max={200}
+                value={d.maxTotalRounds ?? ''}
+                placeholder="30"
+                onChange={(e) =>
+                  set('maxTotalRounds', e.target.value === '' ? null : Number(e.target.value))
+                }
+              />
+            </Field>
+            <Field label="Max minutes" hint="Wall-clock cap. Blank = default (30 min).">
+              <window.Input
+                type="number"
+                min={1}
+                max={360}
+                value={d.maxWallClockMs ? Math.round(d.maxWallClockMs / 60000) : ''}
+                placeholder="30"
+                onChange={(e) =>
+                  set('maxWallClockMs', e.target.value === '' ? null : Number(e.target.value) * 60000)
+                }
+              />
+            </Field>
+          </Row>
+        )}
         <Field label="Role" hint="One line; shown on the card.">
           <window.Input
             value={d.role}
@@ -1646,19 +1692,187 @@ function AgentEditor({ initial, agents, onClose, onSave, error }) {
   );
 }
 
+// A live checklist of the autonomous plan. Steps flip done as the loop ticks.
+function PlanChecklist({ plan }) {
+  if (!plan || !plan.steps || plan.steps.length === 0) return null;
+  const icon = { done: 'check-circle', active: 'loader', pending: 'circle' };
+  const tone = { done: 'green', active: 'blue', pending: 'gray' };
+  return (
+    <div>
+      <window.Label>Plan</window.Label>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+        {plan.steps.map((s) => (
+          <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+            <window.Icon
+              name={icon[s.status] || 'circle'}
+              size={14}
+              className={`${tone[s.status] || 'gray'}-text${s.status === 'active' ? ' spin' : ''}`}
+            />
+            <span
+              style={{
+                color: s.status === 'done' ? 'var(--text-3)' : 'var(--text-2)',
+                textDecoration: s.status === 'done' ? 'line-through' : 'none',
+              }}
+            >
+              {s.title}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Budget burn-down: rounds used vs cap, and elapsed wall-clock vs cap.
+function BudgetGauge({ task, agent }) {
+  if (!agent || agent.mode !== 'autonomous') return null;
+  const rounds = task.roundsUsed || 0;
+  const maxRounds = agent.maxTotalRounds || 30;
+  const elapsed = task.startedAt ? Date.now() - task.startedAt : 0;
+  const maxWall = agent.maxWallClockMs || 30 * 60_000;
+  const pct = (n, d) => Math.min(100, Math.round((n / Math.max(1, d)) * 100));
+  const mins = (ms) => `${Math.floor(ms / 60000)}m`;
+  const bar = (label, used, max, text, tone) => (
+    <div style={{ flex: 1, minWidth: 120 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: 'var(--text-3)' }}>
+        <span>{label}</span>
+        <span>{text}</span>
+      </div>
+      <div className="mini-bar">
+        <div className={`fill ${tone}`} style={{ width: `${pct(used, max)}%` }} />
+      </div>
+    </div>
+  );
+  return (
+    <div>
+      <window.Label>Budget</window.Label>
+      <div style={{ display: 'flex', gap: 12 }}>
+        {bar('Rounds', rounds, maxRounds, `${rounds} / ${maxRounds}`, 'blue')}
+        {bar('Time', elapsed, maxWall, `${mins(elapsed)} / ${mins(maxWall)}`, 'green')}
+      </div>
+    </div>
+  );
+}
+
+function ArtifactList({ artifacts }) {
+  const [open, setOpen] = useState(null);
+  if (!artifacts || artifacts.length === 0) return null;
+  return (
+    <div>
+      <window.Label>Artifacts ({artifacts.length})</window.Label>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {artifacts.map((a) => (
+          <div key={a.id}>
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setOpen(open === a.id ? null : a.id)}
+              onKeyDown={(e) => e.key === 'Enter' && setOpen(open === a.id ? null : a.id)}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}
+            >
+              <window.Icon name="file-text" size={14} className="green-text" />
+              <span style={{ color: 'var(--text)', fontWeight: 600 }}>{a.name}</span>
+              <span style={{ color: 'var(--text-3)', fontSize: 11.5 }}>
+                {(a.content || '').length} chars
+              </span>
+            </div>
+            {open === a.id && (
+              <pre
+                style={{
+                  margin: '6px 0 0',
+                  padding: 10,
+                  maxHeight: 220,
+                  overflow: 'auto',
+                  background: 'var(--surface-2)',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid var(--border)',
+                  fontSize: 12.5,
+                  whiteSpace: 'pre-wrap',
+                }}
+              >
+                {a.content}
+              </pre>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Inject mid-run guidance without cancelling — appended to the steer queue and
+// drained by the loop between steps.
+function SteerBox({ taskId }) {
+  const [text, setText] = useState('');
+  const [sent, setSent] = useState(false);
+  const send = async () => {
+    const t = text.trim();
+    if (!t) return;
+    const r = await window.api.post(`/api/agents/tasks/${taskId}/steer`, { text: t });
+    if (r.ok) {
+      setText('');
+      setSent(true);
+      setTimeout(() => setSent(false), 1500);
+    }
+  };
+  return (
+    <div>
+      <window.Label hint="Sent to the agent and applied before its next step.">Steer</window.Label>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && send()}
+          placeholder="Nudge the agent — e.g. focus on X, skip Y…"
+          style={{
+            flex: 1,
+            padding: '8px 10px',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--border)',
+            background: 'var(--surface-2)',
+            color: 'var(--text)',
+            font: 'inherit',
+            fontSize: 13,
+          }}
+        />
+        <window.Button variant="primary" icon={sent ? 'check' : 'send'} onClick={send}>
+          {sent ? 'Sent' : 'Steer'}
+        </window.Button>
+      </div>
+    </div>
+  );
+}
+
 function TaskDetail({ taskId, onClose, onCancelled }) {
-  const [detail, setDetail] = useState(null);
+  // Static-ish metadata (agent, budgets, sub-agents) from a one-shot GET; live
+  // task/transcript/artifacts arrive over SSE so the view ticks without polling.
+  const [meta, setMeta] = useState(null);
+  const [live, setLive] = useState(null);
   const load = useCallback(async () => {
     const r = await window.api.get(`/api/agents/tasks/${taskId}`);
-    if (r.ok) setDetail(r.data);
+    if (r.ok) setMeta(r.data);
   }, [taskId]);
   useEffect(() => {
     load();
-    const id = setInterval(load, 2500);
-    return () => clearInterval(id);
-  }, [load]);
+    const es = window.api.streamSSE(`/api/agents/tasks/${taskId}/stream`, {
+      onMessage: (_evt, raw) => {
+        try {
+          const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          if (data && data.type === 'snapshot') setLive(data);
+        } catch {
+          /* ignore malformed frame */
+        }
+      },
+    });
+    return () => es && es.close && es.close();
+  }, [taskId, load]);
 
-  const task = detail && detail.task;
+  const detail = meta;
+  const task = (live && live.task) || (detail && detail.task);
+  const transcript = (live && live.transcript) || (detail && detail.transcript) || [];
+  const artifacts = (live && live.artifacts) || (detail && detail.artifacts) || [];
+  const children = (live && live.children) || (detail && detail.children) || [];
+  const agent = detail && detail.agent;
   const running = task && (task.status === 'queued' || task.status === 'running');
   const cancel = async () => {
     await window.api.post(`/api/agents/tasks/${taskId}/cancel`);
@@ -1701,17 +1915,21 @@ function TaskDetail({ taskId, onClose, onCancelled }) {
               {task.prompt}
             </div>
           </div>
-          {task.error && (
+          {task.error && task.error !== 'paused' && (
             <div>
               <window.Label>Error</window.Label>
               <div style={{ fontSize: 13, color: 'var(--err)' }}>{task.error}</div>
             </div>
           )}
-          {detail.children && detail.children.length > 0 && (
+          <BudgetGauge task={task} agent={agent} />
+          <PlanChecklist plan={task.plan} />
+          {running && agent && agent.mode === 'autonomous' && <SteerBox taskId={taskId} />}
+          <ArtifactList artifacts={artifacts} />
+          {children.length > 0 && (
             <div>
               <window.Label>Sub-agents</window.Label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {detail.children.map((c) => (
+                {children.map((c) => (
                   <div
                     key={c.id}
                     style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}
@@ -1746,10 +1964,10 @@ function TaskDetail({ taskId, onClose, onCancelled }) {
                 padding: 4,
               }}
             >
-              {detail.transcript.length === 0 && (
+              {transcript.length === 0 && (
                 <div style={{ color: 'var(--text-3)', fontSize: 13 }}>No transcript yet.</div>
               )}
-              {detail.transcript.map((m, i) => (
+              {transcript.map((m, i) => (
                 <div
                   key={i}
                   style={{

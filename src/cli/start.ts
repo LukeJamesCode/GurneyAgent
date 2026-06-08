@@ -42,6 +42,7 @@ import {
 import { createAgentQueue } from '../core/agent-queue.js';
 import { setupAgentApprovals } from '../core/agent-approvals.js';
 import { setupAgentDelegation } from '../core/agent-delegation.js';
+import { setupAgentPlanning } from '../core/agent-planning.js';
 import { setupAgentSchedules } from '../core/agent-schedules.js';
 import { createWorkflowRegistry } from '../core/workflows.js';
 import { createWorkflowRunner } from '../core/workflow-runner.js';
@@ -376,10 +377,21 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   // orchestrators (sharing this db/llm/tool registry); the queue governs WHEN
   // they run so two heavy reasoners never thrash the one resident model slot.
   const agentRegistry = createAgentRegistry(db);
-  // Crash recovery: any task left 'running' by a previous process can never
-  // resume mid-turn, so re-queue it for a clean re-run.
+  // Crash recovery for tasks left 'running' by a previous process. A single-mode
+  // task can't resume mid-turn, so it re-runs from scratch (started_at cleared).
+  // An autonomous task checkpoints after every step, so we re-queue it but keep
+  // its started_at, plan, and rounds_used — the loop resumes from the checkpoint
+  // (durable resume) instead of replaying the whole goal.
   const requeued = db
-    .prepare(`UPDATE agent_tasks SET status = 'queued', started_at = NULL WHERE status = 'running'`)
+    .prepare(
+      `UPDATE agent_tasks
+         SET status = 'queued',
+             started_at = CASE
+               WHEN agent_id IN (SELECT id FROM agents WHERE mode = 'autonomous') THEN started_at
+               ELSE NULL
+             END
+       WHERE status = 'running'`,
+    )
     .run().changes;
   if (requeued > 0) log.info('re-queued interrupted agent tasks', { count: requeued });
   // Seed a starter fleet on a fresh install (no-op once any agent exists).
@@ -422,6 +434,9 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     log,
     maxParallel: tinyAgentConcurrencyForTier(cfg.tier),
   });
+  // The autonomous-loop tools (update_plan / complete_step / record_finding /
+  // save_artifact / finish), visible only to agents whose mode is 'autonomous'.
+  setupAgentPlanning({ tools, registry: agentRegistry, log });
   setupAgentSchedules({
     db,
     scheduler,

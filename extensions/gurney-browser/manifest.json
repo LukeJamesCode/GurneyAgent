@@ -1,0 +1,9 @@
+{
+  "name": "gurney-browser",
+  "version": "1.0.0",
+  "description": "Lets agents drive a real headless browser (navigate, read, click, type, screenshot) with SSRF guards. Heavy: needs Playwright + Chromium; intended for Standard/Heavy tiers, never a Raspberry Pi.",
+  "gurney": ">=0.1.0",
+  "deps": [],
+  "capabilities": ["network"],
+  "entrypoints": { "tools": "./tools.ts" }
+}

@@ -202,16 +202,22 @@ test('seedStarterAgents: seeds a fleet once and is idempotent', () => {
       .list()
       .map((a) => a.name)
       .sort();
-    assert.deepEqual(names, ['critic', 'orchestrator', 'researcher', 'writer']);
+    assert.deepEqual(names, ['critic', 'operator', 'orchestrator', 'researcher', 'writer']);
     // The orchestrator is the heavy delegator and can choose any fleet agent.
     const orchestrator = reg.getByName('orchestrator')!;
     assert.equal(orchestrator.profile, 'reason');
     assert.equal(orchestrator.canDelegate, true);
     assert.deepEqual(orchestrator.delegatableAgents, []);
 
+    // The operator is the flagship autonomous agent (plan->act->reflect loop).
+    const operator = reg.getByName('operator')!;
+    assert.equal(operator.mode, 'autonomous');
+    assert.equal(operator.canDelegate, true);
+    assert.ok((operator.maxTotalRounds ?? 0) > 0);
+
     // Running again is a no-op (so deleting a starter agent sticks).
     seedStarterAgents(reg);
-    assert.equal(reg.list().length, 4);
+    assert.equal(reg.list().length, 5);
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

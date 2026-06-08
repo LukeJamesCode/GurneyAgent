@@ -203,6 +203,9 @@ function normalizeAgentInput(body: Record<string, unknown>): CreateAgentInput {
     ? body['delegatableAgents'].map((s) => String(s).trim()).filter(Boolean)
     : [];
   const rawBudget = body['budgetTokens'];
+  const mode = body['mode'] === 'autonomous' ? 'autonomous' : 'single';
+  const rawWall = body['maxWallClockMs'];
+  const rawRounds = body['maxTotalRounds'];
   return {
     name: String(body['name'] ?? '').trim(),
     role: String(body['role'] ?? '').trim(),
@@ -219,6 +222,16 @@ function normalizeAgentInput(body: Record<string, unknown>): CreateAgentInput {
     maxConcurrency: clampInt(body['maxConcurrency'], 1, 8, 1),
     canDelegate: !!body['canDelegate'],
     delegatableAgents,
+    mode,
+    // Autonomous-run budgets; null leaves the engine default in force.
+    maxWallClockMs:
+      rawWall === null || rawWall === undefined || rawWall === ''
+        ? null
+        : clampInt(rawWall, 60_000, 6 * 60 * 60_000, 30 * 60_000),
+    maxTotalRounds:
+      rawRounds === null || rawRounds === undefined || rawRounds === ''
+        ? null
+        : clampInt(rawRounds, 1, 200, 30),
   };
 }
 
@@ -2197,7 +2210,22 @@ async function handleApi(
         const children = reg
           .listTasks({ parentId: task.id })
           .map((c) => ({ id: c.id, agentId: c.agentId, status: c.status, prompt: c.prompt }));
-        return { task, agentName: agent?.name ?? null, transcript, children };
+        const artifacts = reg.listArtifacts(task.id);
+        return {
+          task,
+          agentName: agent?.name ?? null,
+          // Surface the agent's run policy so the run view can draw the budget gauge.
+          agent: agent
+            ? {
+                mode: agent.mode,
+                maxTotalRounds: agent.maxTotalRounds,
+                maxWallClockMs: agent.maxWallClockMs,
+              }
+            : null,
+          transcript,
+          children,
+          artifacts,
+        };
       });
       return sendJson(res, detail ? 200 : 404, detail ?? { error: 'not found' });
     }
@@ -2309,6 +2337,99 @@ async function handleApi(
         return n;
       }) ?? 0;
       return sendJson(res, 200, { ok: true, count });
+    }
+
+    // Steer a running autonomous task: append a guidance message the loop drains
+    // between steps (no cancel needed). Cross-process via the steer_queue column.
+    const steerMatch = /^\/api\/agents\/tasks\/(\d+)\/steer$/.exec(path);
+    if (steerMatch && method === 'POST') {
+      const id = Number(steerMatch[1]);
+      const body = await readJson<{ text?: string }>(req);
+      const text = String(body.text ?? '').trim();
+      if (!text) return sendJson(res, 400, { error: 'text is required' });
+      const ok =
+        withDb((db) => {
+          const reg = createAgentRegistry(db);
+          const t = reg.getTask(id);
+          if (!t || !['queued', 'running', 'paused'].includes(t.status)) return false;
+          return reg.pushSteer(id, text);
+        }) ?? false;
+      return sendJson(res, ok ? 200 : 409, ok ? { ok: true } : { error: 'task is not steerable' });
+    }
+
+    // Artifacts an autonomous run saved (deliverables, findings).
+    const artifactsMatch = /^\/api\/agents\/tasks\/(\d+)\/artifacts$/.exec(path);
+    if (artifactsMatch && method === 'GET') {
+      const id = Number(artifactsMatch[1]);
+      const artifacts = withDb((db) => createAgentRegistry(db).listArtifacts(id)) ?? [];
+      return sendJson(res, 200, { artifacts });
+    }
+
+    // Live run stream (SSE). The panel runs in its own process and can't observe
+    // the daemon's in-memory run events, so it polls the DB — the checkpointed
+    // task row (status/plan/rounds), the persisted transcript, and artifacts —
+    // and pushes a fresh snapshot whenever any of them changes. Closes when the
+    // task reaches a terminal state or the client disconnects.
+    const streamMatch = /^\/api\/agents\/tasks\/(\d+)\/stream$/.exec(path);
+    if (streamMatch && method === 'GET') {
+      const id = Number(streamMatch[1]);
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-store',
+        connection: 'keep-alive',
+      });
+      let timer: ReturnType<typeof setInterval> | null = null;
+      let lastSig = '';
+      const finish = (): void => {
+        if (timer) clearInterval(timer);
+        timer = null;
+        try {
+          res.end();
+        } catch {
+          /* already closed */
+        }
+      };
+      const tick = (): void => {
+        const snap = withDb((db) => {
+          const reg = createAgentRegistry(db);
+          const task = reg.getTask(id);
+          if (!task) return null;
+          const transcript = task.conversationId
+            ? (db
+                .prepare(`SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id`)
+                .all(task.conversationId) as Array<{ role: string; content: string }>)
+            : [];
+          const children = reg
+            .listTasks({ parentId: task.id })
+            .map((c) => ({ id: c.id, agentId: c.agentId, status: c.status, prompt: c.prompt }));
+          return { task, transcript, artifacts: reg.listArtifacts(id), children };
+        });
+        if (!snap) {
+          res.write(`data: ${JSON.stringify({ type: 'gone' })}\n\n`);
+          return finish();
+        }
+        // Only push when something the UI cares about actually moved.
+        const sig = JSON.stringify({
+          s: snap.task.status,
+          r: snap.task.roundsUsed,
+          c: snap.task.stepCursor,
+          p: snap.task.plan,
+          res: snap.task.result,
+          m: snap.transcript.length,
+          a: snap.artifacts.length,
+          ch: snap.children.map((c) => `${c.id}:${c.status}`).join(','),
+        });
+        if (sig !== lastSig) {
+          lastSig = sig;
+          res.write(`data: ${JSON.stringify({ type: 'snapshot', ...snap })}\n\n`);
+        }
+        if (['done', 'error', 'cancelled'].includes(snap.task.status)) finish();
+      };
+      timer = setInterval(tick, 1000);
+      timer.unref?.();
+      req.on('close', finish);
+      tick();
+      return;
     }
 
     // Human-in-the-loop approvals. The daemon parks a risky agent tool call and

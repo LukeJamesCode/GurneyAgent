@@ -20,6 +20,8 @@ it inherits every guard (per-turn tool gate, hallucination scrubbing, tool timeo
 | `maxToolRounds`, `budgetTokens`    | Per-agent caps.                                                                                                                                                         |
 | `executionMode`                    | `sequential` (one of its own tasks at a time) or `parallel` (up to `maxConcurrency`).                                                                                   |
 | `canDelegate`, `delegatableAgents` | Whether it may spawn sub-agents, and which ones (`[]` = any).                                                                                                           |
+| `mode`                             | `single` (one bounded turn — the default) or `autonomous` (the plan→act→reflect loop below).                                                                            |
+| `maxTotalRounds`, `maxWallClockMs` | Autonomous-run budget ceilings (loop turns / wall-clock). `null` = engine defaults (30 rounds / 30 min).                                                                |
 
 Definitions and task rows live in SQLite (`agents`, `agent_tasks`; migration `0009`). Each run
 writes its transcript to a `conversations` row under a reserved **virtual chat id**
@@ -69,14 +71,54 @@ Safety is enforced in code, not by the prompt:
 - A `confirm`- or `owner`-tier tool inside an unattended background run **fails closed** (there's
   no one to approve it), rather than auto-running or hanging.
 
+## Autonomous agents (long-horizon)
+
+A `single`-mode agent answers in one bounded turn (today's behaviour). An `autonomous`
+agent instead runs a **plan→act→reflect loop**: it keeps working a goal across many turns
+until it's done or a budget trips. This is how Gurney does "run for an hour" tasks without a
+giant context — each turn is a normal, fully-guarded orchestrator turn against the task's
+virtual chat, so history accumulates and every guard still applies.
+
+The loop is deterministic code (`createAgentRuntime` → `runAutonomous`); the model only makes
+judgment calls through five built-in tools, visible **only** to autonomous agents
+(`agent-planning.ts`):
+
+- `update_plan({ steps })` — author/revise an ordered todo. Re-authoring keeps finished steps done.
+- `complete_step({ id? })` — tick the current (or a named) step off.
+- `record_finding({ note })` — keep a fact for the final answer (saved as an artifact).
+- `save_artifact({ name, content })` — persist a deliverable.
+- `finish({ summary })` — declare the goal met; the summary becomes the result. Called once.
+
+**Stopping** is enforced in code, never left to the model: the loop ends on `finish`, when the
+plan is all done, when the round/wall-clock budget trips, or when the model stalls (no progress
+for two turns) — then one finalise turn produces a clean summary.
+
+**Durable resume.** After every step the loop checkpoints the plan, step cursor, rounds used, and
+timestamp to the task row. If the daemon restarts mid-run, an autonomous task is re-queued **with
+its checkpoint intact** (its `started_at` is preserved so the wall-clock budget stays honest) and
+resumes from the next step — it does **not** replay the goal. Single-mode tasks still re-run from
+scratch (a half-finished turn can't be resumed).
+
+**Cooperative pause / steer.** Pausing an autonomous task stops it **between steps** with state
+intact; resuming continues from the checkpoint. You can also **steer** a running task — a message
+appended to its steer queue and applied before the next step — without cancelling it.
+
+Budgets are deliberately modest by default so a stray run can't grind forever on a small box;
+raise them per-agent in the editor. The seeded **operator** agent is the flagship autonomous
+persona (heavy `reason` model, can delegate, 24-round / 30-min budget).
+
 ## The command center (web panel)
 
 `gurney-frontend` → **Agents** tab:
 
 - **Fleet** — every persona with its profile, mode, and grant; buttons to dispatch, edit, delete.
+  Autonomous agents carry an `autonomous` badge; the editor exposes the run mode + budgets.
 - **Editor** — name, role, system prompt, model profile, tool allowlist, execution mode +
-  concurrency, and the delegation grant.
-- **Tasks** — recent runs with live status; open one to see its transcript and sub-agent tree.
+  concurrency, the delegation grant, and (for autonomous agents) the round/time budgets.
+- **Run view** — opens a task and streams it live over SSE: a budget gauge (rounds + time burn-down),
+  the plan ticking off, saved artifacts, the transcript, and a **Steer** box to nudge a running
+  agent mid-flight. The panel runs in its own process, so it reads the checkpointed state from the
+  DB rather than the daemon's in-memory events.
 
 ## Starter fleet
 
@@ -102,9 +144,10 @@ A fresh install seeds four agents to demonstrate the pattern (delete them and th
 
 | Concern                                               | File                                                                                |
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Definitions, registry, headless runner, starter fleet | `src/core/agents.ts`                                                                |
+| Definitions, registry, headless runner, autonomous loop, starter fleet | `src/core/agents.ts`                                               |
 | Resource-aware queue                                  | `src/core/agent-queue.ts`                                                           |
 | `spawn_agent` delegation tool                         | `src/core/agent-delegation.ts`                                                      |
-| Schema                                                | `src/storage/migrations/0009_agents.sql`                                            |
-| Boot wiring (engine + confirm fail-closed)            | `src/cli/start.ts`                                                                  |
-| Command center API + UI                               | `extensions/gurney-frontend/server.ts`, `extensions/gurney-frontend/web/agents.jsx` |
+| Autonomous-loop tools (plan/step/finding/artifact/finish) | `src/core/agent-planning.ts`                                                   |
+| Schema (agents + autonomy columns/artifacts)          | `src/storage/migrations/0009_agents.sql`, `0017_agent_autonomy.sql`                |
+| Boot wiring (engine + confirm fail-closed + resume)   | `src/cli/start.ts`                                                                  |
+| Command center API + UI (incl. live run view)         | `extensions/gurney-frontend/server.ts`, `extensions/gurney-frontend/web/agents.jsx` |
