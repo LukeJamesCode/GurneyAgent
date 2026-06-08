@@ -76,6 +76,70 @@ test('chat() streams ndjson chunks and records prompt/completion tokens', async 
   llm.stopIdleEviction();
 });
 
+test('chat() forwards message images to Ollama for a multimodal turn', async () => {
+  const calls: Array<{ url: string; body: { messages?: Array<{ images?: string[] }> } }> = [];
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+    return streamingResponse([
+      JSON.stringify({ model: 'm', message: { content: 'ok' }, done: true }),
+    ]);
+  };
+  const llm = createOllama({
+    baseUrl: 'http://x',
+    log: silentLogger(),
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    profiles: { chat: { model: 'm', contextTokens: 1024, heavy: false } },
+  });
+  await collect(
+    llm.chat({
+      profile: 'chat',
+      messages: [{ role: 'user', content: 'what is this?', images: ['BASE64DATA'] }],
+    }),
+  );
+  const chat = calls.find((c) => c.url.endsWith('/api/chat'))!;
+  // Images ride the user message verbatim; a text-only message has no images key.
+  assert.deepEqual(chat.body.messages?.[0]?.images, ['BASE64DATA']);
+  llm.stopIdleEviction();
+});
+
+test('supportsVision reads the /api/show vision capability', async () => {
+  const fetchImpl = async (url: string | URL | Request) => {
+    if (String(url).endsWith('/api/show')) {
+      return new Response(JSON.stringify({ capabilities: ['completion', 'vision'] }), {
+        status: 200,
+      });
+    }
+    return new Response('{}', { status: 200 });
+  };
+  const llm = createOllama({
+    baseUrl: 'http://x',
+    log: silentLogger(),
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    profiles: { chat: { model: 'gemma4:12b', contextTokens: 1024, heavy: false } },
+  });
+  assert.equal(await llm.supportsVision!('gemma4:12b'), true);
+  llm.stopIdleEviction();
+});
+
+test('supportsVision is false when the probe reports no vision capability', async () => {
+  const fetchImpl = async (url: string | URL | Request) => {
+    if (String(url).endsWith('/api/show')) {
+      return new Response(JSON.stringify({ capabilities: ['completion'] }), { status: 200 });
+    }
+    return new Response('{}', { status: 200 });
+  };
+  const llm = createOllama({
+    baseUrl: 'http://x',
+    log: silentLogger(),
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    profiles: { chat: { model: 'qwen3.5:0.8b', contextTokens: 1024, heavy: false } },
+  });
+  // Probe is authoritative: even a qwen3 tag (family fallback 'yes') is 'no'
+  // when Ollama says the actual pulled model has no vision capability.
+  assert.equal(await llm.supportsVision!('qwen3.5:0.8b'), false);
+  llm.stopIdleEviction();
+});
+
 test('chat() forwards tool_calls in the final chunk', async () => {
   const fetchImpl = async () =>
     streamingResponse([

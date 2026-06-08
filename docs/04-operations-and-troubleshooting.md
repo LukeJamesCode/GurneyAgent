@@ -19,6 +19,7 @@ Gurney reads configuration from two sources, in priority order:
 | `GURNEY_TOOLS_MODEL`   | `models.tools`        | —                        | Model tag for the tool-use profile. Optional.                              |
 | `GURNEY_LOG_LEVEL`     | `logLevel`            | `info`                   | Log verbosity: `debug`, `info`, `warn`, or `error`.                        |
 | `GURNEY_HOME`          | —                     | `~/.gurney`              | Root directory for config, DB, logs, and extension state.                  |
+| `GURNEY_FS_ROOT`       | —                     | — (off)                  | Absolute path to a directory to expose read-only via the `read_file` / `list_dir` tools (e.g. a local checkout for a code-review agent). Unset = tools not registered. Access is pinned to this root (no `..`/symlink escape); also visible to the main chat when set. |
 
 ## Telegram Command Reference
 

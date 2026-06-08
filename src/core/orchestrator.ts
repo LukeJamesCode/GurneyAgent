@@ -160,6 +160,10 @@ export interface UserMessage {
   // Per-turn override of the model's thinking mode (the panel's think toggle).
   // Overrides the orchestrator's defaultThinkMode and the profile default.
   thinkMode?: ThinkMode;
+  // Base64 images to attach to THIS user turn for a multimodal model (agent task
+  // image attachments). Ride the initial model call only; not persisted to
+  // history. Callers must have gated on LLM.supportsVision already.
+  images?: string[];
 }
 
 export interface OrchestratorOptions {
@@ -369,9 +373,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
   // Falls back to defaultProfile on hosts with no reason model (Small tier),
   // making escalation a no-op there. Resolved once — profiles are static for
   // the process.
-  const escalationProfile: ProfileName = opts.llm.listProfiles().reason
-    ? 'reason'
-    : defaultProfile;
+  const escalationProfile: ProfileName = opts.llm.listProfiles().reason ? 'reason' : defaultProfile;
   const budgetTokens = opts.budgetTokens ?? 4096;
   const toolResultMaxChars = opts.toolResultMaxChars ?? TOOL_RESULT_MAX_CHARS;
   const maxToolRounds = opts.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
@@ -594,6 +596,18 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
 
     const built = buildPromptForTurn();
     if (built.truncated) cl.debug('history truncated to fit budget');
+
+    // Attach this turn's images to the last user message for the initial model
+    // call. Tool-loop follow-ups rebuild from text-only history, so images ride
+    // the first round only — which is what a vision model needs to ground on.
+    if (msg.images && msg.images.length > 0) {
+      for (let i = built.messages.length - 1; i >= 0; i--) {
+        if (built.messages[i]!.role === 'user') {
+          built.messages[i] = { ...built.messages[i]!, images: msg.images };
+          break;
+        }
+      }
+    }
 
     const abort = new AbortController();
     slot.abort = abort;

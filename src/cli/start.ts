@@ -43,6 +43,8 @@ import { createAgentQueue } from '../core/agent-queue.js';
 import { setupAgentApprovals } from '../core/agent-approvals.js';
 import { setupAgentDelegation } from '../core/agent-delegation.js';
 import { setupAgentPlanning } from '../core/agent-planning.js';
+import { setupFilesystemTools } from '../core/fs-tools.js';
+import { pinnedFilesRoot } from '../core/agent-attachments.js';
 import { setupAgentSchedules } from '../core/agent-schedules.js';
 import { createWorkflowRegistry } from '../core/workflows.js';
 import { createWorkflowRunner } from '../core/workflow-runner.js';
@@ -400,6 +402,8 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   // cap is far more generous than the chat default (120s). 20 min covers a 12B
   // research round on CPU; override with GURNEY_AGENT_INFERENCE_TIMEOUT_MS.
   const agentInferenceTimeoutMs = envInt('GURNEY_AGENT_INFERENCE_TIMEOUT_MS') ?? 20 * 60_000;
+  // Per-task input attachments (dropped files/folders/images/PDFs) live here.
+  const attachmentsDir = join(home, 'agent-attachments');
   const agentRuntime = createAgentRuntime({
     db,
     llm,
@@ -410,6 +414,7 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     budgetTokens,
     toolResultMaxChars,
     inferenceTimeoutMs: agentInferenceTimeoutMs,
+    attachmentsDir,
   });
   const agentQueue = createAgentQueue({
     registry: agentRegistry,
@@ -437,6 +442,28 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   // The autonomous-loop tools (update_plan / complete_step / record_finding /
   // save_artifact / finish), visible only to agents whose mode is 'autonomous'.
   setupAgentPlanning({ tools, registry: agentRegistry, log });
+  // Read-only filesystem tools (read_file / list_dir). The pinned root is
+  // resolved per call: a task's dropped-in files/folders take precedence, else a
+  // global GURNEY_FS_ROOT the operator set, else none (the tool says so). The
+  // env-root is validated once; an invalid one is logged and treated as unset.
+  const envFsRoot = process.env['GURNEY_FS_ROOT']?.trim();
+  let globalRoot: string | null = null;
+  if (envFsRoot) {
+    const root = resolve(envFsRoot);
+    if (existsSync(root)) globalRoot = root;
+    else log.error('GURNEY_FS_ROOT does not exist; ignoring', { root });
+  }
+  setupFilesystemTools({
+    tools,
+    log,
+    resolveRoot: (ctx: ToolContext) => {
+      if (ctx.chatId !== undefined && isAgentChatId(ctx.chatId)) {
+        const pinned = pinnedFilesRoot(attachmentsDir, ctx.chatId - AGENT_CHAT_ID_BASE);
+        if (pinned) return pinned;
+      }
+      return globalRoot;
+    },
+  });
   setupAgentSchedules({
     db,
     scheduler,

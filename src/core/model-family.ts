@@ -21,6 +21,11 @@ export type ThinkingSupport = 'yes' | 'no' | 'unknown';
 export interface ModelCapabilities {
   family: ModelFamily;
   thinking: ThinkingSupport;
+  // Whether the family accepts image inputs (Ollama `messages[].images`). Same
+  // tri-state as `thinking`. FALLBACK ONLY — llm.ts prefers Ollama's
+  // authoritative /api/show `capabilities: ['vision', …]` probe and drops here
+  // only when the probe can't answer.
+  vision: ThinkingSupport;
 }
 
 export function modelFamily(tag: string): ModelCapabilities {
@@ -28,8 +33,11 @@ export function modelFamily(tag: string): ModelCapabilities {
     const match = /(?:^|\/)gemma(?:[-_]?(\d+))?/i.exec(tag);
     const ver = Number(match?.[1] ?? 0);
     // Gemma 4+ are reasoners with a configurable thinking mode; 2/3 are not.
-    return { family: 'gemma', thinking: ver >= 4 ? 'yes' : 'no' };
+    // Vision is a fallback guess only — the /api/show probe is authoritative
+    // (and catches multimodal gemma3 variants); the tag heuristic stays
+    // conservative at 4+ to match the qwen3.5/gemma4 default the user runs.
+    return { family: 'gemma', thinking: ver >= 4 ? 'yes' : 'no', vision: ver >= 4 ? 'yes' : 'no' };
   }
-  if (/qwen3/i.test(tag)) return { family: 'qwen3', thinking: 'yes' };
-  return { family: 'other', thinking: 'unknown' };
+  if (/qwen3/i.test(tag)) return { family: 'qwen3', thinking: 'yes', vision: 'yes' };
+  return { family: 'other', thinking: 'unknown', vision: 'unknown' };
 }

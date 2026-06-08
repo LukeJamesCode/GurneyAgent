@@ -32,6 +32,10 @@ export interface ChatMessage {
   tool_call_id?: string;
   tool_name?: string;
   tool_calls?: ToolCall[];
+  // Base64-encoded images (no `data:` prefix) for a multimodal model. Forwarded
+  // verbatim as Ollama's `messages[].images`. Ignored by text-only models, so
+  // callers must gate on LLM.supportsVision before attaching them.
+  images?: string[];
 }
 
 export interface ToolSchema {
@@ -169,6 +173,10 @@ export interface LLM {
   }>;
   listProfiles(): Record<ProfileName, ProfileConfig | null>;
   resolveModel(profile: ProfileName | { model: string }): string;
+  // Whether a model accepts image inputs (Ollama vision capability). Optional so
+  // existing fakes/providers need no change; callers must default a missing
+  // implementation to false (fail closed — never attach images blindly).
+  supportsVision?(model: string): Promise<boolean>;
   // Diagnostic surface for `gurney status` / health JSON. Returns a snapshot
   // of the breaker so the CLI can render the current resilience state.
   breakerSnapshot(): BreakerSnapshot;
@@ -295,6 +303,8 @@ export function createOllama(opts: OllamaOptions): LLM {
   // so a later turn retries once Ollama is reachable). Capabilities don't change
   // within a process, so a hit avoids re-probing on every turn.
   const thinkingCache = new Map<string, 'yes' | 'no'>();
+  // Same caching contract as thinkingCache, for the vision capability.
+  const visionCache = new Map<string, 'yes' | 'no'>();
   let idleTimer: ReturnType<typeof setInterval> | null = null;
   // Serializes eviction. Two concurrent chat() calls onto different heavy
   // profiles would otherwise both see `residentHeavy === X` and race the
@@ -504,6 +514,47 @@ export function createOllama(opts: OllamaOptions): LLM {
     return modelFamily(model).thinking;
   }
 
+  // Ask Ollama whether a model accepts image inputs. Mirrors probeThinking:
+  // authoritative /api/show `capabilities`, never throws, never touches the
+  // breaker. 'vision' is Ollama's capability flag for multimodal models.
+  async function probeVision(model: string): Promise<'yes' | 'no' | null> {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 5_000);
+    try {
+      const res = await fetchImpl(`${opts.baseUrl}/api/show`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model }),
+        signal: ctl.signal,
+      });
+      if (!res.ok) return null;
+      const j = (await res.json()) as { capabilities?: unknown };
+      if (!Array.isArray(j.capabilities)) return null;
+      return j.capabilities.includes('vision') ? 'yes' : 'no';
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function resolveVision(model: string): Promise<'yes' | 'no' | 'unknown'> {
+    const cached = visionCache.get(model);
+    if (cached) return cached;
+    const probed = await probeVision(model);
+    if (probed) {
+      visionCache.set(model, probed);
+      return probed;
+    }
+    return modelFamily(model).vision;
+  }
+
+  // Public gate for attaching images to a turn. Only a definite 'yes' allows it;
+  // 'unknown'/'no' fail closed (sending images to a text model errors the turn).
+  async function supportsVision(model: string): Promise<boolean> {
+    return (await resolveVision(model)) === 'yes';
+  }
+
   async function* chat(o: ChatOptions): AsyncIterable<ChatChunk> {
     checkBreaker();
     ensureIdleSweep();
@@ -556,6 +607,7 @@ export function createOllama(opts: OllamaOptions): LLM {
         ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
         ...(m.tool_name ? { name: m.tool_name } : {}),
         ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+        ...(m.images && m.images.length > 0 ? { images: m.images } : {}),
       })),
       stream: true,
       keep_alive: target.cfg?.keepAlive ?? '5m',
@@ -705,7 +757,15 @@ export function createOllama(opts: OllamaOptions): LLM {
     return resolveProfile(p).model;
   }
 
-  return { chat, health, listProfiles, resolveModel, breakerSnapshot, stopIdleEviction };
+  return {
+    chat,
+    health,
+    listProfiles,
+    resolveModel,
+    supportsVision,
+    breakerSnapshot,
+    stopIdleEviction,
+  };
 }
 
 // Parse a single newline-delimited chunk. Returns null + logs on failure so
