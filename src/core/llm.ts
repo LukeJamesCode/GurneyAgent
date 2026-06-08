@@ -207,6 +207,19 @@ export class LLMEmptyResponseError extends Error {
   }
 }
 
+// Thrown when our own inference cap fires (not a caller /stop). A slow model on
+// CPU — e.g. a 12B doing a research round — can legitimately exceed the cap;
+// surfacing this distinctly lets the orchestrator fail loud with a real error
+// instead of mistaking the abort for a user cancellation and saving an empty
+// reply. Kept out of the circuit breaker: a timeout is a latency problem, not a
+// dead backend, and tripping the breaker would lock the bot out of its LLM.
+export class LLMTimeoutError extends Error {
+  constructor(public timeoutMs: number) {
+    super(`inference timed out after ${timeoutMs}ms`);
+    this.name = 'LLMTimeoutError';
+  }
+}
+
 interface BreakerState {
   failures: number;
   // Successes counted while the breaker is half-open. Required to be
@@ -575,8 +588,16 @@ export function createOllama(opts: OllamaOptions): LLM {
 
     // Compose the caller's signal with our own timeout. Without a hard cap a
     // hung Ollama wedges the whole user queue.
+    const effectiveTimeoutMs = o.timeoutMs ?? inferenceTimeoutMs;
     const timeoutCtl = new AbortController();
-    const timeoutId = setTimeout(() => timeoutCtl.abort(), o.timeoutMs ?? inferenceTimeoutMs);
+    // Set only when OUR timer fires, so the catch blocks can tell an inference
+    // timeout (fail loud) from a caller /stop (clean cancel). o.signal.aborted
+    // stays the source of truth for a real cancellation.
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      timeoutCtl.abort();
+    }, effectiveTimeoutMs);
     const composed = o.signal ? composeAbort(o.signal, timeoutCtl.signal) : timeoutCtl.signal;
 
     let res: Response;
@@ -589,6 +610,8 @@ export function createOllama(opts: OllamaOptions): LLM {
       });
     } catch (e) {
       clearTimeout(timeoutId);
+      // Our inference cap fired (not a caller /stop): surface it distinctly.
+      if (timedOut && !o.signal?.aborted) throw new LLMTimeoutError(effectiveTimeoutMs);
       // A user-initiated /stop or process shutdown aborts the caller's signal,
       // which surfaces here as an AbortError. That isn't a backend failure, so
       // counting it would let three consecutive /stops trip the circuit breaker
@@ -643,6 +666,8 @@ export function createOllama(opts: OllamaOptions): LLM {
       // Fallback for a stream that ended without an explicit done chunk.
       settleTerminal();
     } catch (e) {
+      // Our inference cap fired mid-stream (not a caller /stop): fail loud.
+      if (timedOut && !o.signal?.aborted) throw new LLMTimeoutError(effectiveTimeoutMs);
       // AbortError isn't a backend failure — don't trip the breaker for it.
       // LLMEmptyResponseError is the model's fault, not the transport's.
       if (

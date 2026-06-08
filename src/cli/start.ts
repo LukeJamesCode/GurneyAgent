@@ -384,6 +384,10 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   if (requeued > 0) log.info('re-queued interrupted agent tasks', { count: requeued });
   // Seed a starter fleet on a fresh install (no-op once any agent exists).
   seedStarterAgents(agentRegistry);
+  // Agents run unattended and may use big, slow models, so their per-inference
+  // cap is far more generous than the chat default (120s). 20 min covers a 12B
+  // research round on CPU; override with GURNEY_AGENT_INFERENCE_TIMEOUT_MS.
+  const agentInferenceTimeoutMs = envInt('GURNEY_AGENT_INFERENCE_TIMEOUT_MS') ?? 20 * 60_000;
   const agentRuntime = createAgentRuntime({
     db,
     llm,
@@ -393,6 +397,7 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     ownerUserId: ownerId,
     budgetTokens,
     toolResultMaxChars,
+    inferenceTimeoutMs: agentInferenceTimeoutMs,
   });
   const agentQueue = createAgentQueue({
     registry: agentRegistry,

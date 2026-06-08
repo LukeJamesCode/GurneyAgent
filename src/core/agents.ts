@@ -641,6 +641,11 @@ export interface AgentRuntimeOptions {
   budgetTokens?: number;
   // Maximum number of characters of a tool's output to inject into context.
   toolResultMaxChars?: number;
+  // Per-inference timeout (ms) for every model call an agent makes. Set well
+  // above the chat default (120s) so a slow model on CPU — e.g. a 12B research
+  // round — runs to completion instead of being aborted and mistaken for a
+  // cancellation. Unset leaves the LLM default in force.
+  inferenceTimeoutMs?: number;
 }
 
 export interface RunResult {
@@ -717,6 +722,7 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
           ? { budgetTokens: opts.budgetTokens }
           : {}),
       ...(opts.toolResultMaxChars ? { toolResultMaxChars: opts.toolResultMaxChars } : {}),
+      ...(opts.inferenceTimeoutMs ? { inferenceTimeoutMs: opts.inferenceTimeoutMs } : {}),
     });
   }
 

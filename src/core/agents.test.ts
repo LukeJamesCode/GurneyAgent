@@ -7,6 +7,7 @@ import { open } from '../storage/db.js';
 import { createLogger } from '../util/log.js';
 import { createToolRegistry } from './tools.js';
 import type { LLM, ChatChunk, ChatOptions } from './llm.js';
+import { LLMTimeoutError } from './llm.js';
 import {
   createAgentRegistry,
   createAgentRuntime,
@@ -88,6 +89,16 @@ async function* abortableStream(signal?: AbortSignal): AsyncIterable<ChatChunk> 
     void resolve;
   });
   yield { delta: 'late', done: true, model: 'fake', promptTokens: 1, completionTokens: 1 };
+}
+
+// A round that hits the per-inference cap before emitting anything — the
+// faithful shape of a timeout: the error surfaces while the stream is drained,
+// not before. The trailing yield is unreachable but keeps this a valid
+// generator (satisfies require-yield without static-unreachable warnings).
+async function* timeoutStream(): AsyncIterable<ChatChunk> {
+  const fail = true;
+  if (fail) throw new LLMTimeoutError(1000);
+  yield { delta: '', done: true };
 }
 
 // A streamed round that asks for a single tool call, then a terminal chunk.
@@ -317,6 +328,50 @@ test('AgentRuntime: runs a task headlessly, honors the persona prompt + profile,
       ['user', 'assistant'],
     );
     assert.equal(msgs[0]!.content, 'Plan my week');
+
+    await runtime.shutdown();
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AgentRuntime: an inference timeout fails the task loudly, not a silent empty done', async () => {
+  // Why this matters: a slow model that blows the per-inference cap aborts
+  // through the same low-level path as a user /stop. Before, the orchestrator
+  // mistook it for a cancellation, streamed nothing, and the task was saved as
+  // `done` with an empty result — the bug behind a 12B research agent "stopping"
+  // with no output. A timeout must instead surface as an error so it's visible.
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const reg = createAgentRegistry(db);
+    // The model call dies with a timeout instead of streaming a reply.
+    const llm = fakeLlm([timeoutStream()]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    const runtime = createAgentRuntime({
+      db,
+      llm,
+      tools,
+      log: silentLogger(),
+      registry: reg,
+      ownerUserId: 7,
+    });
+    const agent = reg.create({
+      name: 'slowpoke',
+      systemPrompt: 'You are slow.',
+      profile: 'reason',
+      toolAllowlist: [],
+    });
+    const task = reg.enqueue({ agentId: agent.id, prompt: 'research the world' });
+
+    const result = await runtime.runTask(task.id);
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? '', /timed out/);
+
+    const persisted = reg.getTask(task.id)!;
+    assert.equal(persisted.status, 'error');
+    assert.match(persisted.error ?? '', /timed out/);
 
     await runtime.shutdown();
     db.close();

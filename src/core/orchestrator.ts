@@ -178,6 +178,11 @@ export interface OrchestratorOptions {
   // the main bot, which relies on the profile/auto default.
   defaultThinkMode?: ThinkMode;
   budgetTokens?: number;
+  // Per-inference timeout (ms) applied to every llm.chat call this orchestrator
+  // makes, overriding the LLM instance default. Unset keeps the LLM default
+  // (120s). Agents set this high so a slow model (e.g. a 12B research round on
+  // CPU) isn't killed mid-inference and mistaken for a cancellation.
+  inferenceTimeoutMs?: number;
   // Cap on how many chars of a tool's output are re-fed to the model on the
   // next round. Defaults to TOOL_RESULT_MAX_CHARS. Scaled up on larger tiers
   // where the context window can hold richer tool output without crowding out
@@ -683,7 +688,12 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     // to fall back to the profile/auto default. Spread into every llm.chat call
     // below so a forced think/no-think holds across tool-loop followups too.
     const turnThinkMode: ThinkMode | undefined = msg.thinkMode ?? opts.defaultThinkMode;
-    const thinkOpt = turnThinkMode ? { thinkMode: turnThinkMode } : {};
+    // Per-inference timeout knob (agents set this high so a slow model isn't
+    // killed mid-round). Folded into the option bundles below so it rides every
+    // llm.chat call this turn makes — initial, tool-loop followup, and both
+    // recovery retries.
+    const timeoutOpt = opts.inferenceTimeoutMs ? { timeoutMs: opts.inferenceTimeoutMs } : {};
+    const thinkOpt = { ...(turnThinkMode ? { thinkMode: turnThinkMode } : {}), ...timeoutOpt };
     // Recovery retries (the empty-text safety net and the empty-response catch
     // below) force thinking OFF. A reasoning model that produced only hidden
     // `thinking` and no visible answer — typically because it exhausted
@@ -691,7 +701,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     // thinking still on, leaving the turn silent. Forcing plain language
     // guarantees a usable answer. For a model that can't think this is a no-op
     // (llm.ts never sends `think` to such a model).
-    const recoveryThinkOpt = { thinkMode: 'off' as const };
+    const recoveryThinkOpt = { thinkMode: 'off' as const, ...timeoutOpt };
     try {
       const profileForTurn: ProfileName = toolSchemas.length > 0 ? toolProfile : defaultProfile;
       if (forcedCall) {
