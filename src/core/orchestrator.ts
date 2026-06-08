@@ -684,6 +684,14 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     // below so a forced think/no-think holds across tool-loop followups too.
     const turnThinkMode: ThinkMode | undefined = msg.thinkMode ?? opts.defaultThinkMode;
     const thinkOpt = turnThinkMode ? { thinkMode: turnThinkMode } : {};
+    // Recovery retries (the empty-text safety net and the empty-response catch
+    // below) force thinking OFF. A reasoning model that produced only hidden
+    // `thinking` and no visible answer — typically because it exhausted
+    // num_predict mid-thought — would repeat that exact miss if retried with
+    // thinking still on, leaving the turn silent. Forcing plain language
+    // guarantees a usable answer. For a model that can't think this is a no-op
+    // (llm.ts never sends `think` to such a model).
+    const recoveryThinkOpt = { thinkMode: 'off' as const };
     try {
       const profileForTurn: ProfileName = toolSchemas.length > 0 ? toolProfile : defaultProfile;
       if (forcedCall) {
@@ -899,7 +907,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         const noToolsFollowup = opts.llm.chat({
           profile: escalationProfile,
           messages: buildPromptForTurn(true).messages,
-          ...thinkOpt,
+          ...recoveryThinkOpt,
           signal: abort.signal,
           context: { chatId: msg.chatId, conversationId },
         });
@@ -932,7 +940,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           const noToolsFollowup = opts.llm.chat({
             profile: escalationProfile,
             messages: buildPromptForTurn(true).messages,
-            ...thinkOpt,
+            ...recoveryThinkOpt,
             signal: abort.signal,
             context: { chatId: msg.chatId, conversationId },
           });

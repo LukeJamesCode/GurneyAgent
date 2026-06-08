@@ -601,9 +601,9 @@ function MissionControl({
                 }}
                 style={{ appearance: 'none', paddingRight: 24, cursor: 'pointer' }}
               >
-                <option value="All">All</option>
-                <option value="Active">Active</option>
-                <option value="Inactive">Inactive</option>
+                <option value="All" style={{ background: 'var(--surface-2)', color: 'var(--text)' }}>All</option>
+                <option value="Active" style={{ background: 'var(--surface-2)', color: 'var(--text)' }}>Active</option>
+                <option value="Inactive" style={{ background: 'var(--surface-2)', color: 'var(--text)' }}>Inactive</option>
               </select>
               <window.Icon
                 name="chevron-down"
@@ -799,10 +799,13 @@ function LaunchComposer({ agents, workflows, onDispatchAgent, onRunWorkflow }) {
   const [agentId, setAgentId] = useState('');
   const [workflowId, setWorkflowId] = useState('');
   const [text, setText] = useState('');
+  // 'inherit' = use the agent's saved think mode; otherwise override this run.
+  const [think, setThink] = useState('inherit');
   const canLaunch = mode === 'agent' ? !!agentId && !!text.trim() : !!workflowId;
   const launch = () => {
     if (!canLaunch) return;
-    if (mode === 'agent') onDispatchAgent(Number(agentId), text.trim());
+    if (mode === 'agent')
+      onDispatchAgent(Number(agentId), text.trim(), think === 'inherit' ? undefined : think);
     else onRunWorkflow(Number(workflowId), text.trim() || null);
     setText('');
   };
@@ -849,6 +852,16 @@ function LaunchComposer({ agents, workflows, onDispatchAgent, onRunWorkflow }) {
             </window.Select>
           )}
         </div>
+        {mode === 'agent' && (
+          <div style={{ minWidth: 130 }} title="Reasoning for this run (overrides the agent default)">
+            <window.Select value={think} onChange={(e) => setThink(e.target.value)}>
+              <option value="inherit">Think: default</option>
+              <option value="auto">Think: auto</option>
+              <option value="on">Think: on</option>
+              <option value="off">Think: off</option>
+            </window.Select>
+          </div>
+        )}
       </div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
         <textarea
@@ -951,9 +964,9 @@ function AgentsTab({ state }) {
     load();
   };
 
-  const dispatch = async (agent, prompt) => {
+  const dispatch = async (agent, prompt, thinkMode) => {
     setError('');
-    const r = await window.api.post(`/api/agents/${agent.id}/dispatch`, { prompt });
+    const r = await window.api.post(`/api/agents/${agent.id}/dispatch`, { prompt, thinkMode });
     if (!r.ok) {
       setError(r.error || 'Dispatch failed');
       return;
@@ -963,9 +976,9 @@ function AgentsTab({ state }) {
   };
 
   // Launch composer: dispatch by id / run a saved workflow by id.
-  const dispatchById = async (agentId, prompt) => {
+  const dispatchById = async (agentId, prompt, thinkMode) => {
     setError('');
-    const r = await window.api.post(`/api/agents/${agentId}/dispatch`, { prompt });
+    const r = await window.api.post(`/api/agents/${agentId}/dispatch`, { prompt, thinkMode });
     if (!r.ok) setError(r.error || 'Dispatch failed');
     load();
   };
@@ -1137,7 +1150,7 @@ function AgentsTab({ state }) {
         <DispatchModal
           agent={dispatchFor}
           onClose={() => setDispatchFor(null)}
-          onDispatch={(p) => dispatch(dispatchFor, p)}
+          onDispatch={(p, tm) => dispatch(dispatchFor, p, tm)}
         />
       )}
       {scheduleFor && (
@@ -1176,6 +1189,8 @@ function AgentsTab({ state }) {
 
 function DispatchModal({ agent, onClose, onDispatch }) {
   const [prompt, setPrompt] = useState('');
+  // 'inherit' keeps the agent's saved think mode; the rest override this run.
+  const [think, setThink] = useState('inherit');
   return (
     <window.Modal
       open
@@ -1190,7 +1205,7 @@ function DispatchModal({ agent, onClose, onDispatch }) {
             variant="primary"
             icon="send"
             disabled={!prompt.trim()}
-            onClick={() => onDispatch(prompt.trim())}
+            onClick={() => onDispatch(prompt.trim(), think === 'inherit' ? undefined : think)}
           >
             Dispatch
           </window.Button>
@@ -1217,6 +1232,17 @@ function DispatchModal({ agent, onClose, onDispatch }) {
           font: 'inherit',
         }}
       />
+      <div style={{ marginTop: 12 }}>
+        <window.Label hint={`Reasoning for this run. Default = ${agent.thinkMode || 'auto'} (the agent's saved setting).`}>
+          Reasoning
+        </window.Label>
+        <window.Select value={think} onChange={(e) => setThink(e.target.value)}>
+          <option value="inherit">Inherit agent default</option>
+          <option value="auto">Auto (model default)</option>
+          <option value="on">Think</option>
+          <option value="off">No-think</option>
+        </window.Select>
+      </div>
     </window.Modal>
   );
 }

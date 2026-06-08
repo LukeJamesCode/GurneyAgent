@@ -552,7 +552,18 @@ export function createOllama(opts: OllamaOptions): LLM {
     // Per-call num_predict precedence: explicit maxTokens beats the profile
     // default. The profile default kicks in when the orchestrator doesn't ask
     // for anything specific, which is the common case.
-    const predictCap = o.maxTokens ?? target.cfg?.numPredict;
+    let predictCap = o.maxTokens ?? target.cfg?.numPredict;
+    // Reasoning headroom. Thinking tokens count toward num_predict, so a small
+    // tool/chat cap (e.g. 1024) gets entirely consumed by hidden reasoning and
+    // the turn finishes with no visible answer — the failure behind big
+    // reasoning models "finishing" empty. When the model will actually think
+    // and the caller didn't pin an explicit maxTokens, raise an existing cap to
+    // leave room for an answer after the reasoning. A caller-set cap (e.g. the
+    // 256-token paraphrase followup) and an uncapped profile are left untouched.
+    const REASONING_NUM_PREDICT_FLOOR = 4096;
+    if (enableThink && o.maxTokens === undefined && predictCap !== undefined) {
+      predictCap = Math.max(predictCap, REASONING_NUM_PREDICT_FLOOR);
+    }
     const numBatch = target.cfg?.numBatch;
     if (target.cfg?.contextTokens || predictCap !== undefined || numBatch !== undefined) {
       body['options'] = {

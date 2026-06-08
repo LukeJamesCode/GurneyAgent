@@ -179,7 +179,13 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
         const agent = deps.agents.get(agentId);
         if (!agent) throw new NodeError(`agent node '${node.id}' references unknown agent #${agentId}`);
         const prompt = resolveTemplate(String(node.config['promptTemplate'] ?? '{{trigger.input}}'), scope);
-        const task = deps.agents.enqueue({ agentId, prompt });
+        // Per-node thinking override: a workflow can make one agent reason and
+        // another not, regardless of each agent's saved default. Anything other
+        // than auto|on|off (incl. unset/"inherit") leaves the agent default.
+        const nodeThink = node.config['thinkMode'];
+        const thinkMode =
+          nodeThink === 'auto' || nodeThink === 'on' || nodeThink === 'off' ? nodeThink : undefined;
+        const task = deps.agents.enqueue({ agentId, prompt, ...(thinkMode ? { thinkMode } : {}) });
         // The agent_tasks id is returned in ctx; executeRun writes it onto the
         // step row so mission-control can surface the transcript.
         const result = await deps.runtime.runTask(task.id);

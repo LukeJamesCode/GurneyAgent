@@ -117,6 +117,19 @@ function Inspector({ node, onChange, onDelete, agents, tools }) {
               />
               <div className="wf-hint">Use {'{{steps.node_id.output}}'} or {'{{trigger.input}}'}</div>
             </div>
+            <div className="wf-form-group">
+              <Label>Reasoning</Label>
+              <Select
+                value={node.config.thinkMode || 'inherit'}
+                onChange={(e) => setConfig('thinkMode', e.target.value === 'inherit' ? undefined : e.target.value)}
+              >
+                <option value="inherit">Inherit agent default</option>
+                <option value="auto">Auto (model default)</option>
+                <option value="on">Think</option>
+                <option value="off">No-think</option>
+              </Select>
+              <div className="wf-hint">Overrides this agent's saved think mode for this node only.</div>
+            </div>
           </>
         )}
 

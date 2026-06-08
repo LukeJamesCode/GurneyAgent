@@ -108,6 +108,9 @@ export interface AgentTask {
   virtualChatId: number | null;
   // Grant ceiling inherited from the spawning task (null = none).
   toolAllowlistOverride: string[] | null;
+  // Per-run thinking override. null = inherit the agent's thinkMode; otherwise
+  // wins over it for this run only.
+  thinkMode: ThinkMode | null;
   result: string | null;
   error: string | null;
   createdAt: number;
@@ -141,6 +144,8 @@ export interface EnqueueTaskInput {
   priority?: number;
   depth?: number;
   toolAllowlistOverride?: string[] | null;
+  // Per-run thinking override (auto|on|off). Omit/null to inherit the agent's.
+  thinkMode?: ThinkMode | null;
 }
 
 export interface AgentTaskFilter {
@@ -214,6 +219,7 @@ interface TaskRow {
   conversation_id: number | null;
   virtual_chat_id: number | null;
   tool_allowlist_override: string | null;
+  think_mode: string | null;
   result: string | null;
   error: string | null;
   created_at: number;
@@ -236,6 +242,7 @@ function rowToTask(r: TaskRow): AgentTask {
     virtualChatId: r.virtual_chat_id,
     toolAllowlistOverride:
       r.tool_allowlist_override === null ? null : parseStringArray(r.tool_allowlist_override),
+    thinkMode: r.think_mode === null ? null : (r.think_mode as ThinkMode),
     result: r.result,
     error: r.error,
     createdAt: r.created_at,
@@ -292,9 +299,9 @@ export function createAgentRegistry(db: DB): AgentRegistry {
   const insertTask = db.prepare(
     `INSERT INTO agent_tasks
        (agent_id, parent_id, prompt, status, execution_mode, priority, depth,
-        tool_allowlist_override, created_at)
+        tool_allowlist_override, think_mode, created_at)
      VALUES (@agent_id, @parent_id, @prompt, 'queued', @execution_mode, @priority, @depth,
-             @tool_allowlist_override, @created_at)`,
+             @tool_allowlist_override, @think_mode, @created_at)`,
   );
   const selectTaskById = db.prepare(`SELECT * FROM agent_tasks WHERE id = ?`);
 
@@ -406,6 +413,7 @@ export function createAgentRegistry(db: DB): AgentRegistry {
       depth: input.depth ?? 0,
       tool_allowlist_override:
         override === undefined || override === null ? null : JSON.stringify(override),
+      think_mode: input.thinkMode ?? null,
       created_at: Date.now(),
     });
     return getTask(Number(info.lastInsertRowid))!;
@@ -797,6 +805,9 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
           chatId: virtualChatId,
           userId: opts.ownerUserId,
           text: task.prompt,
+          // Per-run override wins over the agent's baked-in defaultThinkMode;
+          // null/undefined leaves the agent default in force.
+          ...(task.thinkMode ? { thinkMode: task.thinkMode } : {}),
           send: (chunk: ReplyChunk) => {
             if (chunk.delta) {
               buffer += chunk.delta;

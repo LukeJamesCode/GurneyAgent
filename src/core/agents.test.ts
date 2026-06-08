@@ -325,6 +325,55 @@ test('AgentRuntime: runs a task headlessly, honors the persona prompt + profile,
   }
 });
 
+test('AgentRuntime: per-run thinkMode overrides the agent default; null inherits it', async () => {
+  // Why this matters: a dispatch (or workflow node) can flip reasoning on/off
+  // for a single run without editing the agent. The override has to win over
+  // the persona's saved think mode AND actually reach the model call — that's
+  // the whole point of the toggle. A stored null must leave the agent default
+  // in force.
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const reg = createAgentRegistry(db);
+    // Two streams: one per run below, in dispatch order.
+    const llm = fakeLlm([textStream(['a']), textStream(['b'])]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    const runtime = createAgentRuntime({
+      db,
+      llm,
+      tools,
+      log: silentLogger(),
+      registry: reg,
+      ownerUserId: 7,
+    });
+
+    // Agent saved as no-think; a per-run 'on' must override it.
+    const agent = reg.create({
+      name: 'thinker',
+      systemPrompt: 'You think on demand.',
+      profile: 'reason',
+      toolAllowlist: [],
+      thinkMode: 'off',
+    });
+
+    const overridden = reg.enqueue({ agentId: agent.id, prompt: 'q1', thinkMode: 'on' });
+    assert.equal(reg.getTask(overridden.id)!.thinkMode, 'on');
+    await runtime.runTask(overridden.id);
+    assert.equal(llm.calls[0]!.thinkMode, 'on');
+
+    // No override (null) → the agent's saved 'off' reaches the model.
+    const inherited = reg.enqueue({ agentId: agent.id, prompt: 'q2' });
+    assert.equal(reg.getTask(inherited.id)!.thinkMode, null);
+    await runtime.runTask(inherited.id);
+    assert.equal(llm.calls[1]!.thinkMode, 'off');
+
+    await runtime.shutdown();
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('AgentRuntime: delegating agents see the allowed live roster in their prompt', async () => {
   const dir = tmp();
   try {

@@ -2154,13 +2154,18 @@ async function handleApi(
     const dispatchMatch = /^\/api\/agents\/(\d+)\/dispatch$/.exec(path);
     if (dispatchMatch && method === 'POST') {
       const id = Number(dispatchMatch[1]);
-      const body = await readJson<{ prompt?: string }>(req);
+      const body = await readJson<{ prompt?: string; thinkMode?: string }>(req);
       const prompt = String(body.prompt ?? '').trim();
       if (!prompt) return sendJson(res, 400, { error: 'prompt is required' });
+      // Only a valid auto|on|off is a per-run override; anything else (absent,
+      // "inherit") leaves the task at null so the agent's own thinkMode applies.
+      const thinkOverride = THINK_MODES.includes(body.thinkMode as ThinkMode)
+        ? (body.thinkMode as ThinkMode)
+        : undefined;
       const task = withDb((db) => {
         const reg = createAgentRegistry(db);
         if (!reg.get(id)) return null;
-        return reg.enqueue({ agentId: id, prompt });
+        return reg.enqueue({ agentId: id, prompt, ...(thinkOverride ? { thinkMode: thinkOverride } : {}) });
       });
       return sendJson(res, task ? 200 : 404, task ? { task } : { error: 'agent not found' });
     }
