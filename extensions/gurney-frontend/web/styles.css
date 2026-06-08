@@ -1,7 +1,9 @@
 /* ===========================================================================
    Gurney Frontend — design tokens
-   Calm, warm-neutral "self-hosted home control panel".
-   Light + dark themes. Accent drives Running / primary / focus.
+   "Neon Ghost" — high-contrast glassmorphism command center for AI
+   orchestration. Deep technical charcoal backdrop, neon-green light emission,
+   translucent glass panels with knife-edge borders. Dark is the hero theme;
+   a calm warm-neutral light theme remains for the toggle.
    =========================================================================== */
 
 @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
@@ -12,9 +14,10 @@
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
   --gap: 0.88;
-  --radius: 10px;
+  /* Squircle-adjacent: generous radii against sharp technical type. */
+  --radius: 12px;
   --radius-sm: 8px;
-  --radius-lg: 14px;
+  --radius-lg: 16px;
 
   --accent: oklch(0.6 0.1 156);
   --accent-strong: oklch(0.52 0.11 156);
@@ -26,6 +29,17 @@
   --warn: oklch(0.74 0.13 75);
   --err: oklch(0.6 0.17 25);
   --info: oklch(0.62 0.1 240);
+
+  /* Glass & elevation — overridden per theme. Light defaults stay near-opaque
+     so the blur is a no-op where there's nothing luminous behind it. */
+  --glass-bg: var(--surface);
+  --glass-bg-strong: var(--surface);
+  --glass-border: var(--border);
+  --glass-blur: 16px;
+  --bloom: none;
+  --bloom-strong: none;
+  --aurora-1: transparent;
+  --aurora-2: transparent;
 }
 
 /* ---- LIGHT theme (warm neutrals) — default ---- */
@@ -48,44 +62,60 @@
   color-scheme: light;
 }
 
-/* ---- DARK theme (warm-tinted) ---- */
+/* ---- DARK theme — "Neon Ghost" (hero) ---- */
 :root[data-theme='dark'] {
-  --bg: #0a0d10;
-  --bg-2: #111418;
-  --surface: #1a1d21;
-  --surface-2: #22262b;
-  --raised: #282c31;
-  --border: #2c3136;
-  --border-2: #3e454c;
-  --text: #f1f4f8;
-  --text-2: #a1a9b3;
-  --text-3: #757d8a;
-  --shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 16px 32px rgba(0, 0, 0, 0.3);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
-  --shadow-pop: 0 20px 60px rgba(0, 0, 0, 0.6);
-  --code-bg: #0a0d10;
+  /* Deep technical charcoal. Surfaces step up through translucent tiers. */
+  --bg: #0e141a;
+  --bg-2: #0b1117;
+  --surface: #1b2027;
+  --surface-2: #252a32;
+  --raised: #30353d;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-2: rgba(255, 255, 255, 0.16);
+  --text: #dee3ec;
+  --text-2: #b9c2cb;
+  --text-3: #7c8a91;
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.5), 0 20px 48px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.55);
+  --shadow-pop: 0 24px 70px rgba(0, 0, 0, 0.7);
+  --code-bg: #090f15;
 
-  --accent: #00e676;
-  --accent-strong: #00c853;
-  --on-accent: #000000;
-  --ok: #00e676;
+  /* Neon green emission. --accent is the solid fill (black text on top);
+     --accent-strong is the brighter glow used for icons/active text. */
+  --accent: #00e55b;
+  --accent-strong: #6bff83;
+  --accent-soft: rgba(0, 229, 91, 0.14);
+  --accent-ring: rgba(0, 229, 91, 0.4);
+  --on-accent: #002107;
+  --ok: #00e55b;
   --warn: #ffd54f;
-  --err: #ff5252;
-  --info: #448aff;
+  --err: #ff6b66;
+  --info: #5aa9ff;
+
+  /* Glass: translucent surface-container + knife-edge white border, lifted by
+     backdrop blur and an inner aurora rather than drop shadows. */
+  --glass-bg: rgba(27, 32, 39, 0.72);
+  --glass-bg-strong: rgba(27, 32, 39, 0.94);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-blur: 20px;
+  --bloom: 0 0 20px rgba(0, 229, 91, 0.28);
+  --bloom-strong: 0 0 28px rgba(0, 229, 91, 0.4);
+  --aurora-1: rgba(0, 229, 91, 0.06);
+  --aurora-2: rgba(74, 75, 79, 0.12);
   color-scheme: dark;
 }
 
 :root[data-density='roomy'] {
   --gap: 1.05;
-  --radius: 12px;
+  --radius: 16px;
 }
 :root[data-density='balanced'] {
   --gap: 0.88;
-  --radius: 10px;
+  --radius: 12px;
 }
 :root[data-density='compact'] {
   --gap: 0.72;
-  --radius: 8px;
+  --radius: 10px;
 }
 
 * {
@@ -285,7 +315,7 @@ a {
 .boot-mark {
   width: 46px;
   height: 46px;
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--accent);
   color: var(--on-accent);
   display: grid;
@@ -293,6 +323,7 @@ a {
   font-family: var(--font-display);
   font-weight: 700;
   font-size: 24px;
+  box-shadow: var(--bloom-strong);
   animation: pulse-dot 1.6s ease-in-out infinite;
 }
 .boot-text {
@@ -312,6 +343,36 @@ a {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  position: relative;
+  background:
+    radial-gradient(60% 50% at 22% 0%, var(--aurora-1), transparent 70%),
+    radial-gradient(70% 60% at 92% 100%, var(--aurora-2), transparent 70%);
+}
+
+/* ---------------------------------------------------------------------------
+   Glass + neon utilities (Neon Ghost). On light theme the glass tokens fall
+   back to solid surfaces so backdrop-blur is a harmless no-op.
+   --------------------------------------------------------------------------- */
+.glass-panel {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+}
+.neon-bloom {
+  box-shadow: var(--bloom);
+}
+.neon-text {
+  color: var(--accent-strong);
+}
+@keyframes aurora-drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(3%, 4%, 0);
+  }
 }
 
 .content-shell {
@@ -358,14 +419,22 @@ a {
 
 .overview-tile {
   min-height: 74px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
   box-shadow: var(--shadow-sm);
   padding: calc(12px * var(--gap));
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.overview-tile:hover {
+  border-color: var(--accent-ring);
 }
 
 .prompt-grid {
@@ -525,10 +594,16 @@ a {
   align-items: center;
   gap: 10px;
   padding: 8px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   border-radius: 10px;
   box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s ease;
+}
+.health-pill:hover {
+  border-color: var(--accent-ring);
 }
 .health-pill .hp-ic {
   display: grid;
@@ -575,6 +650,10 @@ a {
   color: var(--ok);
   border-color: color-mix(in oklab, var(--ok) 30%, transparent);
 }
+.dash-btn.green:hover {
+  background: color-mix(in oklab, var(--ok) 24%, transparent);
+  box-shadow: var(--bloom);
+}
 .dash-btn.red {
   background: color-mix(in oklab, var(--err) 15%, transparent);
   color: var(--err);
@@ -607,13 +686,21 @@ a {
   margin-bottom: 16px;
 }
 .dash-card {
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.dash-card:hover {
+  border-color: color-mix(in oklab, var(--accent) 30%, var(--glass-border));
 }
 .dash-card.yellow-border {
   border-color: color-mix(in oklab, var(--warn) 40%, transparent);
@@ -793,9 +880,11 @@ a {
 }
 
 .dash-section {
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
   padding: 16px;
   margin-bottom: 16px;
 }
@@ -949,9 +1038,11 @@ a {
 }
 
 .dash-panel {
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
   padding: 16px;
 }
 .panel-header {
@@ -1139,25 +1230,71 @@ a {
 }
 
 .topbar {
-  height: 56px;
-  border-bottom: 1px solid var(--border);
+  height: 64px;
+  flex: none;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  border-bottom: 1px solid var(--glass-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 24px;
-  background: var(--bg);
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
 }
 .search-bar {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 7px 12px;
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 360px;
+  width: 320px;
   color: var(--text-2);
   font-size: 13px;
+  cursor: text;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.search-bar:hover {
+  border-color: var(--border-2);
+}
+.search-bar:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+/* "Connected" status pill in the top bar (Stitch). */
+.conn-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-ring);
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.conn-pill.off {
+  background: color-mix(in oklab, var(--err) 14%, transparent);
+  border-color: color-mix(in oklab, var(--err) 40%, transparent);
+  color: var(--err);
+}
+.conn-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-3);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
 }
 .search-kbd {
   background: var(--surface-2);
@@ -1213,25 +1350,83 @@ a {
   }
 }
 
-
 /* ===========================================================================
    Markdown Viewer Styles
    =========================================================================== */
 
-.markdown-body h1 { font-size: 2em; margin-bottom: 0.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
-.markdown-body h2 { font-size: 1.5em; margin-top: 1.5em; margin-bottom: 0.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
-.markdown-body h3 { font-size: 1.25em; margin-top: 1.5em; margin-bottom: 0.5em; }
-.markdown-body p { margin-top: 0; margin-bottom: 1em; line-height: 1.6; }
-.markdown-body a { color: var(--accent); text-decoration: none; }
-.markdown-body a:hover { text-decoration: underline; }
-.markdown-body code { background: var(--surface-2); padding: 0.2em 0.4em; border-radius: 3px; font-family: var(--font-mono); font-size: 0.85em; }
-.markdown-body pre { background: var(--surface-2); padding: 16px; overflow: auto; border-radius: 6px; }
-.markdown-body pre code { background: transparent; padding: 0; }
-.markdown-body blockquote { margin: 0; padding: 0 1em; color: var(--text-2); border-left: 0.25em solid var(--border); }
-.markdown-body ul, .markdown-body ol { margin-top: 0; margin-bottom: 1em; padding-left: 2em; }
-.markdown-body table { border-spacing: 0; border-collapse: collapse; margin-top: 0; margin-bottom: 16px; }
-.markdown-body table th, .markdown-body table td { padding: 6px 13px; border: 1px solid var(--border); }
-.markdown-body table tr:nth-child(2n) { background-color: var(--surface-2); }
+.markdown-body h1 {
+  font-size: 2em;
+  margin-bottom: 0.5em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3em;
+}
+.markdown-body h2 {
+  font-size: 1.5em;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3em;
+}
+.markdown-body h3 {
+  font-size: 1.25em;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+.markdown-body p {
+  margin-top: 0;
+  margin-bottom: 1em;
+  line-height: 1.6;
+}
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+.markdown-body code {
+  background: var(--surface-2);
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+.markdown-body pre {
+  background: var(--surface-2);
+  padding: 16px;
+  overflow: auto;
+  border-radius: 6px;
+}
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+}
+.markdown-body blockquote {
+  margin: 0;
+  padding: 0 1em;
+  color: var(--text-2);
+  border-left: 0.25em solid var(--border);
+}
+.markdown-body ul,
+.markdown-body ol {
+  margin-top: 0;
+  margin-bottom: 1em;
+  padding-left: 2em;
+}
+.markdown-body table {
+  border-spacing: 0;
+  border-collapse: collapse;
+  margin-top: 0;
+  margin-bottom: 16px;
+}
+.markdown-body table th,
+.markdown-body table td {
+  padding: 6px 13px;
+  border: 1px solid var(--border);
+}
+.markdown-body table tr:nth-child(2n) {
+  background-color: var(--surface-2);
+}
 
 /* ===========================================================================
    Workflow Builder
@@ -1254,7 +1449,8 @@ a {
   border-radius: var(--radius);
 }
 
-.wf-topbar-left, .wf-topbar-right {
+.wf-topbar-left,
+.wf-topbar-right {
   display: flex;
   gap: 12px;
   align-items: center;
@@ -1307,7 +1503,9 @@ a {
   border-radius: 8px;
   cursor: grab;
   user-select: none;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .wf-palette-item:hover {
@@ -1370,7 +1568,9 @@ a {
 }
 
 @keyframes march {
-  to { stroke-dashoffset: -12; }
+  to {
+    stroke-dashoffset: -12;
+  }
 }
 
 .wf-nodes-layer {
@@ -1390,12 +1590,16 @@ a {
   box-shadow: var(--shadow-sm);
   user-select: none;
   cursor: grab;
-  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+  transition:
+    box-shadow 0.2s ease,
+    border-color 0.2s ease;
 }
 
 .wf-node.selected {
   border-color: var(--accent-ring);
-  box-shadow: 0 0 0 4px var(--accent-soft), var(--shadow);
+  box-shadow:
+    0 0 0 4px var(--accent-soft),
+    var(--shadow);
 }
 
 .wf-node.running {
@@ -1403,8 +1607,15 @@ a {
 }
 
 @keyframes border-pulse {
-  0%, 100% { border-color: var(--info); box-shadow: 0 0 8px var(--info); }
-  50% { border-color: var(--border); box-shadow: var(--shadow-sm); }
+  0%,
+  100% {
+    border-color: var(--info);
+    box-shadow: 0 0 8px var(--info);
+  }
+  50% {
+    border-color: var(--border);
+    box-shadow: var(--shadow-sm);
+  }
 }
 
 .wf-node-header {
@@ -1455,7 +1666,9 @@ a {
   top: 50%;
   transform: translateY(-50%);
   cursor: crosshair;
-  transition: transform 0.15s ease, background 0.15s ease;
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
 }
 
 .wf-port:hover {
@@ -1564,8 +1777,12 @@ a {
   z-index: 10;
 }
 
-.node-status-icon.green { background: var(--ok); }
-.node-status-icon.red { background: var(--err); }
+.node-status-icon.green {
+  background: var(--ok);
+}
+.node-status-icon.red {
+  background: var(--err);
+}
 
 .wf-run-result {
   position: absolute;

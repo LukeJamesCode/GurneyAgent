@@ -250,7 +250,7 @@ function App() {
       />
 
       <main className="main-panel">
-        <Topbar state={state} setRoute={setRoute} />
+        <Topbar state={state} setRoute={setRoute} offline={offline} agentStatus={agentStatus} />
         {offline && <OfflineBar onRetry={refresh} />}
         {state.cfgError && <ConfigErrorBar message={state.cfgError} />}
         <div className="content-shell">
@@ -294,11 +294,26 @@ function App() {
   );
 }
 
-function Topbar({ state, setRoute }) {
+function nowLabel() {
+  try {
+    return new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  } catch (e) {
+    return '';
+  }
+}
+
+function Topbar({ state, setRoute, offline, agentStatus }) {
   const [open, setOpen] = useState(false);
   const [tasks, setTasks] = useState([]);
   const [courses, setCourses] = useState([]);
+  const [clock, setClock] = useState(() => nowLabel());
   const dropdownRef = useRef(null);
+
+  // Localized wall-clock in the top bar (Stitch). Tick once a minute.
+  useEffect(() => {
+    const id = setInterval(() => setClock(nowLabel()), 30000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     // We only need to load them to check if there are notifications.
@@ -306,7 +321,7 @@ function Topbar({ state, setRoute }) {
       try {
         const [t, c] = await Promise.all([
           window.api.get('/api/agents/tasks'),
-          window.api.get('/api/tudor/courses')
+          window.api.get('/api/tudor/courses'),
         ]);
         if (t.ok && t.data && t.data.tasks) setTasks(t.data.tasks);
         if (c.ok && c.data && c.data.courses) setCourses(c.data.courses);
@@ -327,43 +342,47 @@ function Topbar({ state, setRoute }) {
       }
     }
     if (open) {
-      document.addEventListener("mousedown", handleClickOutside);
+      document.addEventListener('mousedown', handleClickOutside);
     } else {
-      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener('mousedown', handleClickOutside);
     }
     return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [open]);
 
   const needsSetup = (state && state.extensions && state.extensions.needsSetup) || [];
-  const activeTasks = tasks.filter(t => t.status === 'running' || t.status === 'error').slice(0, 5);
-  const doneCourses = courses.filter(c => c.lessonCount > 0 && c.doneCount >= c.lessonCount).slice(0, 5);
+  const activeTasks = tasks
+    .filter((t) => t.status === 'running' || t.status === 'error')
+    .slice(0, 5);
+  const doneCourses = courses
+    .filter((c) => c.lessonCount > 0 && c.doneCount >= c.lessonCount)
+    .slice(0, 5);
 
   const notifications = [
-    ...needsSetup.map(ext => ({
+    ...needsSetup.map((ext) => ({
       id: `setup-${ext.name}`,
       icon: 'plug',
       title: 'Extension Needs Setup',
       desc: `${ext.name.replace(/^gurney-/, '')} requires configuration.`,
-      action: () => setRoute('extensions')
+      action: () => setRoute('extensions'),
     })),
-    ...activeTasks.map(t => ({
+    ...activeTasks.map((t) => ({
       id: `task-${t.id}`,
       icon: t.status === 'error' ? 'alert-triangle' : 'loader',
       tone: t.status === 'error' ? 'err' : 'accent',
       title: t.status === 'error' ? 'Task Error' : 'Active Run',
       desc: t.agentName || `Task #${t.id}`,
-      action: () => setRoute('agents')
+      action: () => setRoute('agents'),
     })),
-    ...doneCourses.map(c => ({
+    ...doneCourses.map((c) => ({
       id: `course-${c.id}`,
       icon: 'check-circle',
       tone: 'ok',
       title: 'Lesson Completed',
       desc: c.topic,
-      action: () => setRoute('learn')
-    }))
+      action: () => setRoute('learn'),
+    })),
   ];
 
   const toggleOpen = () => setOpen(!open);
@@ -376,11 +395,21 @@ function Topbar({ state, setRoute }) {
         <span className="search-kbd">⌘K</span>
       </div>
       <div className="topbar-actions">
+        <span className="conn-clock" title="Local time">
+          <window.Icon name="clock" size={14} /> {clock}
+        </span>
+        <span className={`conn-pill${offline ? ' off' : ''}`} title="Panel connection">
+          <window.StatusDot state={offline ? 'error' : 'running'} size={7} pulse={!offline} />
+          {offline ? 'Offline' : 'Connected'}
+        </span>
         <button className="dash-btn green" onClick={() => setRoute('agents')}>
           <window.Icon name="play" size={14} /> New Run
         </button>
         <div className="icon-action" style={{ position: 'relative' }} ref={dropdownRef}>
-          <div onClick={toggleOpen} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+          <div
+            onClick={toggleOpen}
+            style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+          >
             <window.Icon name="bell" size={18} />
             {notifications.length > 0 && <div className="badge">{notifications.length}</div>}
           </div>
@@ -391,29 +420,50 @@ function Topbar({ state, setRoute }) {
                 top: 36,
                 right: -10,
                 width: 320,
-                background: 'var(--surface)',
-                border: '1px solid var(--border)',
+                background: 'var(--glass-bg-strong)',
+                backdropFilter: 'blur(40px)',
+                WebkitBackdropFilter: 'blur(40px)',
+                border: '1px solid var(--glass-border)',
+                borderTop: '1px solid var(--border-2)',
                 borderRadius: 'var(--radius)',
-                boxShadow: 'var(--shadow-lg)',
+                boxShadow: 'var(--shadow-pop)',
                 zIndex: 100,
                 display: 'flex',
                 flexDirection: 'column',
-                overflow: 'hidden'
+                overflow: 'hidden',
               }}
             >
-              <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>
+              <div
+                style={{
+                  padding: '10px 14px',
+                  borderBottom: '1px solid var(--border)',
+                  fontWeight: 600,
+                  fontSize: 13,
+                  color: 'var(--text)',
+                }}
+              >
                 Notifications
               </div>
               <div style={{ maxHeight: 360, overflowY: 'auto' }}>
                 {notifications.length === 0 ? (
-                  <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>
+                  <div
+                    style={{
+                      padding: '20px',
+                      textAlign: 'center',
+                      color: 'var(--text-3)',
+                      fontSize: 13,
+                    }}
+                  >
                     No new notifications.
                   </div>
                 ) : (
-                  notifications.map(n => (
+                  notifications.map((n) => (
                     <div
                       key={n.id}
-                      onClick={() => { setOpen(false); n.action(); }}
+                      onClick={() => {
+                        setOpen(false);
+                        n.action();
+                      }}
                       style={{
                         padding: '12px 14px',
                         borderBottom: '1px solid var(--border)',
@@ -421,16 +471,31 @@ function Topbar({ state, setRoute }) {
                         display: 'flex',
                         gap: 12,
                         alignItems: 'flex-start',
-                        transition: 'background 0.1s'
+                        transition: 'background 0.1s',
                       }}
-                      onMouseEnter={e => e.currentTarget.style.background = 'var(--surface-2)'}
-                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-2)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                     >
-                      <div style={{ color: `var(--${n.tone || 'text-2'})`, flex: 'none', marginTop: 2 }}>
+                      <div
+                        style={{
+                          color: `var(--${n.tone || 'text-2'})`,
+                          flex: 'none',
+                          marginTop: 2,
+                        }}
+                      >
                         <window.Icon name={n.icon} size={16} />
                       </div>
                       <div>
-                        <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)', marginBottom: 2 }}>{n.title}</div>
+                        <div
+                          style={{
+                            fontWeight: 600,
+                            fontSize: 13,
+                            color: 'var(--text)',
+                            marginBottom: 2,
+                          }}
+                        >
+                          {n.title}
+                        </div>
                         <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{n.desc}</div>
                       </div>
                     </div>
@@ -443,7 +508,11 @@ function Topbar({ state, setRoute }) {
         <div className="icon-action" onClick={() => setRoute('docs')} style={{ cursor: 'pointer' }}>
           <window.Icon name="help-circle" size={18} />
         </div>
-        <div className="icon-action" onClick={() => setRoute('settings')} style={{ cursor: 'pointer' }}>
+        <div
+          className="icon-action"
+          onClick={() => setRoute('settings')}
+          style={{ cursor: 'pointer' }}
+        >
           <window.Icon name="settings" size={18} />
         </div>
       </div>
@@ -561,7 +630,7 @@ function Wordmark() {
         viewBox="0 0 100 100"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        style={{ flex: 'none' }}
+        style={{ flex: 'none', filter: 'drop-shadow(0 0 8px rgba(0, 229, 91, 0.45))' }}
       >
         <path d="M 6.7 25 L 6.7 75 L 50 100 L 50 75 L 28.3 62.5 L 28.3 37.5 Z" fill="#22c55e" />
         <path d="M 28.3 37.5 L 28.3 62.5 L 50 75 L 50 50 Z" fill="#14532d" />
@@ -636,11 +705,14 @@ function Sidebar({
       style={{
         width: 236,
         flex: 'none',
-        background: 'var(--bg-2)',
-        borderRight: '1px solid var(--border)',
+        background: 'var(--glass-bg-strong)',
+        backdropFilter: 'blur(var(--glass-blur))',
+        WebkitBackdropFilter: 'blur(var(--glass-blur))',
+        borderRight: '1px solid var(--glass-border)',
         display: 'flex',
         flexDirection: 'column',
         padding: '14px 12px',
+        zIndex: 40,
       }}
       className="sidebar"
     >
@@ -672,15 +744,16 @@ function Sidebar({
                 gap: 10,
                 padding: '9px 10px',
                 borderRadius: 'var(--radius-sm)',
-                border: 'none',
+                border: '1px solid',
+                borderColor: on ? 'var(--accent-ring)' : 'transparent',
                 cursor: 'pointer',
                 textAlign: 'left',
-                background: on ? 'var(--surface)' : 'transparent',
-                color: on ? 'var(--text)' : 'var(--text-2)',
-                boxShadow: on ? 'var(--shadow-sm)' : 'none',
+                background: on ? 'var(--accent-soft)' : 'transparent',
+                color: on ? 'var(--accent-strong)' : 'var(--text-2)',
+                boxShadow: on ? 'var(--bloom)' : 'none',
                 fontWeight: on ? 600 : 500,
                 fontSize: 14,
-                transition: 'background .12s, color .12s',
+                transition: 'background .12s, color .12s, border-color .12s',
               }}
               onMouseEnter={(e) => {
                 if (!on) e.currentTarget.style.background = 'var(--surface-2)';

@@ -778,7 +778,7 @@ function AgentsFleet({ agents, onNew, onEdit, onDelete, onDispatch, onSchedule }
                 <window.Button variant="primary" icon="send" onClick={() => onDispatch(agent)}>
                   Dispatch
                 </window.Button>
-                <window.Button variant="subtle" icon="send" onClick={() => onSchedule(agent)}>
+                <window.Button variant="subtle" icon="clock" onClick={() => onSchedule(agent)}>
                   Schedule
                 </window.Button>
                 <window.Button variant="subtle" icon="gear" onClick={() => onEdit(agent)}>

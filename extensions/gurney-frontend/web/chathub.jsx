@@ -1138,13 +1138,22 @@ function Bubble({ m, streaming, devmode }) {
             fontSize: 14.5,
             lineHeight: 1.55,
             whiteSpace: 'pre-wrap',
+            // Neon Ghost bubbles: user = translucent glass with a knife-edge
+            // white border; agent = dark surface with a subtle green rim.
             background: isUser
-              ? 'var(--accent)'
+              ? 'var(--glass-bg)'
               : m.error
-                ? 'color-mix(in oklab, var(--err) 10%, var(--surface-2))'
+                ? 'color-mix(in oklab, var(--err) 12%, var(--surface-2))'
                 : 'var(--surface-2)',
-            color: isUser ? 'var(--on-accent)' : 'var(--text)',
-            border: isUser ? 'none' : '1px solid var(--border)',
+            backdropFilter: isUser ? 'blur(var(--glass-blur))' : 'none',
+            WebkitBackdropFilter: isUser ? 'blur(var(--glass-blur))' : 'none',
+            color: 'var(--text)',
+            border: isUser
+              ? '1px solid var(--border-2)'
+              : m.error
+                ? '1px solid color-mix(in oklab, var(--err) 35%, transparent)'
+                : '1px solid color-mix(in oklab, var(--accent) 26%, var(--border))',
+            boxShadow: isUser ? 'none' : 'var(--shadow-sm)',
             borderBottomRightRadius: isUser ? 4 : 14,
             borderBottomLeftRadius: isUser ? 14 : 4,
           }}

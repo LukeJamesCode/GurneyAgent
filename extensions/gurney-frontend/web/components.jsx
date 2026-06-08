@@ -135,15 +135,17 @@ function Button({ variant = 'default', size = 'md', icon, children, style, dange
     lg: { padding: '13px 20px', fontSize: 15.5 },
   };
   const variants = {
+    // Primary = solid neon fill, always paired with a subtle outer bloom to
+    // simulate light emission (per the Neon Ghost spec).
     primary: {
       background: 'var(--accent)',
       color: 'var(--on-accent)',
-      boxShadow: 'var(--shadow-sm)',
+      boxShadow: 'var(--bloom)',
     },
     ok: {
       background: 'var(--ok)',
-      color: '#fff',
-      boxShadow: 'var(--shadow-sm)',
+      color: 'var(--on-accent)',
+      boxShadow: 'var(--bloom)',
     },
     warn: {
       background: 'var(--warn)',
@@ -219,14 +221,19 @@ function IconButton({ name, size = 18, label, active, style, ...rest }) {
   );
 }
 
-/* ---------------------------------------------------------------- Card */
+/* ---------------------------------------------------------------- Card
+   Glass panel: translucent surface lifted by a backdrop blur and a knife-edge
+   border (Neon Ghost). On light theme the glass tokens resolve to solid
+   surfaces, so the blur is a harmless no-op. */
 function Card({ children, pad = 18, style, hover, ...rest }) {
   return (
     <div
       {...rest}
       style={{
-        background: 'var(--surface)',
-        border: '1px solid var(--border)',
+        background: 'var(--glass-bg)',
+        backdropFilter: 'blur(var(--glass-blur))',
+        WebkitBackdropFilter: 'blur(var(--glass-blur))',
+        border: '1px solid var(--glass-border)',
         borderRadius: 'var(--radius)',
         padding: pad,
         boxShadow: 'var(--shadow-sm)',
@@ -346,7 +353,7 @@ function Badge({ tone = 'neutral', children, soft = true, style }) {
       bg: 'color-mix(in oklab, var(--err) 13%, transparent)',
       bd: 'color-mix(in oklab, var(--err) 30%, transparent)',
     },
-    accent: { c: 'var(--accent-strong)', bg: 'var(--accent-soft)', bd: 'transparent' },
+    accent: { c: 'var(--accent-strong)', bg: 'var(--accent-soft)', bd: 'var(--accent-ring)' },
   };
   const t = tones[tone] || tones.neutral;
   return (
@@ -589,8 +596,11 @@ function Modal({ open, onClose, title, children, footer, width = 460, tone }) {
           maxWidth: '100%',
           maxHeight: '90vh',
           overflow: 'auto',
-          background: 'var(--surface)',
-          border: '1px solid var(--border-2)',
+          background: 'var(--glass-bg-strong)',
+          backdropFilter: 'blur(40px)',
+          WebkitBackdropFilter: 'blur(40px)',
+          border: '1px solid var(--glass-border)',
+          borderTop: '1px solid var(--border-2)',
           borderRadius: 'var(--radius-lg)',
           boxShadow: 'var(--shadow-pop)',
           animation: 'rise .22s cubic-bezier(.2,.7,.3,1)',
