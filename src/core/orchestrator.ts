@@ -32,9 +32,8 @@ export function looksLikeFakeToolCall(text: string, allowedTools: ReadonlySet<st
   const t = text.trim();
   if (!t) return false;
   // Shape 1: markdown JSON block with a `"type": "<tool_name>"` or `"name": "<tool_name>"` field.
-  const jsonBlock = /^```(?:json)?\s*\n?\s*\{[\s\S]{0,400}?"(?:type|name)"\s*:\s*"([a-z_][a-z0-9_]*)"/i.exec(
-    t,
-  );
+  const jsonBlock =
+    /^```(?:json)?\s*\n?\s*\{[\s\S]{0,400}?"(?:type|name)"\s*:\s*"([a-z_][a-z0-9_]*)"/i.exec(t);
   if (jsonBlock && allowedTools.has(jsonBlock[1]!)) return true;
   // Shape 2/3: a recognised tool name in brackets, backticks, or as a
   // function call at (or very near) the start of the reply.
@@ -130,6 +129,11 @@ export const AFTER_TURN_TOOL_RESULT_SUMMARY_MAX_CHARS = 500;
 
 export interface ReplyChunk {
   delta: string;
+  // Delta of the model's reasoning, when a thinking-capable model is run with
+  // reasoning enabled. A separate channel from `delta` so the adapter can show
+  // it as collapsible "thinking" without it ever contaminating the answer or
+  // the persisted assistant text.
+  thinking?: string;
   done: boolean;
   // When set, the adapter should discard the streamed buffer for this turn
   // and render this string in its place. Used by the hallucination guard to
@@ -198,6 +202,13 @@ export interface OrchestratorOptions {
   // "no tools" — used for trivial chatter like "hi", "thanks".
   // Without this provider, the orchestrator always exposes every tool.
   toolIntentFilter?: (message: string) => string[] | null;
+  // Whether deterministic tool auto-routing (a tool's `autoRoute` hook claiming
+  // the turn before the model runs) is honoured. Defaults to true for the main
+  // chat, where it compensates for a tiny model that won't reliably escalate.
+  // Agent runs set this false: an agent is an explicitly configured persona
+  // with its own model and tool grant, so a global autoRoute (e.g. codex
+  // escalating on the word "research") must not hijack its turn.
+  autoRouteEnabled?: boolean;
 }
 
 export interface Orchestrator {
@@ -345,9 +356,21 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     const profiles = opts.llm.listProfiles();
     return profiles[requested] ? requested : defaultProfile;
   })();
+  // Profile to escalate to when the tiny model fails to produce a usable reply
+  // (empty stream, garbled/fake tool-call text, or a malformed tool call Ollama
+  // rejects). Prefer the heavy `reason` model when one is configured: this is
+  // the only place the main chat path reaches the 9B, and it's exactly the
+  // moment quality has already failed, so spending one cold load is justified.
+  // Falls back to defaultProfile on hosts with no reason model (Small tier),
+  // making escalation a no-op there. Resolved once — profiles are static for
+  // the process.
+  const escalationProfile: ProfileName = opts.llm.listProfiles().reason
+    ? 'reason'
+    : defaultProfile;
   const budgetTokens = opts.budgetTokens ?? 4096;
   const toolResultMaxChars = opts.toolResultMaxChars ?? TOOL_RESULT_MAX_CHARS;
   const maxToolRounds = opts.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
+  const autoRouteEnabled = opts.autoRouteEnabled ?? true;
 
   const slots = new Map<number, ChatSlot>();
   const lastErrors = new Map<number, string>();
@@ -459,7 +482,12 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     conversationId: number,
     role: HistoryMessage['role'],
     content: string,
-    extra: { tool_call_id?: string; tool_name?: string; tokens?: number; tool_calls?: ToolCall[] } = {},
+    extra: {
+      tool_call_id?: string;
+      tool_name?: string;
+      tokens?: number;
+      tool_calls?: ToolCall[];
+    } = {},
   ): void {
     getStmts().insertMessage.run(
       conversationId,
@@ -507,7 +535,12 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     type PendingWrite = {
       role: HistoryMessage['role'];
       content: string;
-      extra: { tool_call_id?: string; tool_name?: string; tokens?: number; tool_calls?: ToolCall[] };
+      extra: {
+        tool_call_id?: string;
+        tool_name?: string;
+        tokens?: number;
+        tool_calls?: ToolCall[];
+      };
     };
     let pendingRound: PendingWrite[] = [];
     const flushRound = (): void => {
@@ -521,7 +554,12 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     const trackingAppend = (
       role: HistoryMessage['role'],
       content: string,
-      extra: { tool_call_id?: string; tool_name?: string; tokens?: number; tool_calls?: ToolCall[] } = {},
+      extra: {
+        tool_call_id?: string;
+        tool_name?: string;
+        tokens?: number;
+        tool_calls?: ToolCall[];
+      } = {},
     ): void => {
       pendingRound.push({ role, content, extra });
       const entry: HistoryMessage = { role, content };
@@ -581,7 +619,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     // selfReplying tool ships its answer directly. First match wins; only one
     // tool is expected to claim a given message.
     let forcedCall: ToolCall | null = null;
-    for (const h of opts.tools.list()) {
+    for (const h of autoRouteEnabled ? opts.tools.list() : []) {
       if (!h.autoRoute) continue;
       let args: Record<string, unknown> | null = null;
       try {
@@ -626,6 +664,11 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         if (chunk.delta) {
           assistantText += chunk.delta;
           await msg.send({ delta: chunk.delta, done: false });
+        }
+        // Reasoning rides its own channel — forwarded to the adapter but never
+        // accumulated into assistantText (which becomes the persisted answer).
+        if (chunk.thinking) {
+          await msg.send({ delta: '', thinking: chunk.thinking, done: false });
         }
         if (chunk.done) break;
       }
@@ -851,9 +894,10 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         cl.debug('empty assistant text after tool loop — retrying with tools off', {
           round,
           hadToolCalls: !!lastChunk?.toolCalls?.length,
+          escalateTo: escalationProfile,
         });
         const noToolsFollowup = opts.llm.chat({
-          profile: defaultProfile,
+          profile: escalationProfile,
           messages: buildPromptForTurn(true).messages,
           ...thinkOpt,
           signal: abort.signal,
@@ -886,7 +930,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         );
         try {
           const noToolsFollowup = opts.llm.chat({
-            profile: defaultProfile,
+            profile: escalationProfile,
             messages: buildPromptForTurn(true).messages,
             ...thinkOpt,
             signal: abort.signal,

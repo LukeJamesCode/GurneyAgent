@@ -36,6 +36,13 @@ export function isAgentChatId(chatId: number): boolean {
 // it out entirely. Registered by setupAgentDelegation (agent-delegation.ts).
 export const SPAWN_AGENT_TOOL_NAME = 'spawn_agent';
 
+// Name of the built-in parallel fan-out/join tool. Like spawn_agent it's
+// visible only to agents whose definition has canDelegate, and filtered out of
+// the main (Telegram/panel) orchestrator. Dispatches several lightweight
+// workers at once and waits for all of them. Registered by
+// setupAgentDelegation (agent-delegation.ts).
+export const SPAWN_AGENTS_TOOL_NAME = 'spawn_agents';
+
 // Name of the built-in approval tool. A 'confirm'-tier tool any agent may call
 // to pause and ask the human to sign off on a risky step it identified itself.
 // Always visible to agents (independent of their tool allowlist); filtered out
@@ -259,7 +266,10 @@ export interface AgentRegistry {
   updateTask(
     id: number,
     patch: Partial<
-      Pick<AgentTask, 'status' | 'result' | 'error' | 'conversationId' | 'virtualChatId' | 'pausedUntil'>
+      Pick<
+        AgentTask,
+        'status' | 'result' | 'error' | 'conversationId' | 'virtualChatId' | 'pausedUntil'
+      >
     > & { startedAt?: number; finishedAt?: number },
   ): void;
 }
@@ -437,7 +447,10 @@ export function createAgentRegistry(db: DB): AgentRegistry {
   function updateTask(
     id: number,
     patch: Partial<
-      Pick<AgentTask, 'status' | 'result' | 'error' | 'conversationId' | 'virtualChatId' | 'pausedUntil'>
+      Pick<
+        AgentTask,
+        'status' | 'result' | 'error' | 'conversationId' | 'virtualChatId' | 'pausedUntil'
+      >
     > & { startedAt?: number; finishedAt?: number },
   ): void {
     const sets: string[] = [];
@@ -657,7 +670,8 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     const own = agentToolPredicate(agent.toolAllowlist);
     const ceiling = agentToolPredicate(override);
     return (h) => {
-      if (h.name === SPAWN_AGENT_TOOL_NAME) return agent.canDelegate;
+      if (h.name === SPAWN_AGENT_TOOL_NAME || h.name === SPAWN_AGENTS_TOOL_NAME)
+        return agent.canDelegate;
       // Every agent may ask for human approval, regardless of its tool grant.
       if (h.name === REQUEST_APPROVAL_TOOL_NAME) return true;
       return own(h) && ceiling(h);
@@ -679,6 +693,13 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
       // The persona runs on a single model; use it for tool turns too rather
       // than falling back to the global chat model.
       toolProfile: agent.profile,
+      // Agents are explicitly configured personas with their own tool grant.
+      // Deterministic auto-route (e.g. gurney-codex claiming any turn whose
+      // prompt contains "research") is a main-chat affordance for the tiny chat
+      // model and would otherwise hijack a research agent's turn before it can
+      // reach its own tools (websearch). The agent can still call such a tool
+      // explicitly if it's in its allowlist.
+      autoRouteEnabled: false,
       // 'auto' keeps the profile/model default; only force when explicitly set.
       ...(agent.thinkMode !== 'auto' ? { defaultThinkMode: agent.thinkMode } : {}),
       maxToolRounds: agent.maxToolRounds,
@@ -713,6 +734,8 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
       'Available delegate agents for spawn_agent:',
       ...lines,
       'Pick the smallest suitable agent for each subtask. Use exact agent names.',
+      'For several independent subtasks, call spawn_agents once with a list to run ' +
+        'lightweight workers in parallel; use spawn_agent for a single subtask or a heavy agent.',
     ].join('\n');
   }
 

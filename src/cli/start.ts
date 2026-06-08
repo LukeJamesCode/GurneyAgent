@@ -36,6 +36,7 @@ import {
   seedStarterAgents,
   AGENT_CHAT_ID_BASE,
   SPAWN_AGENT_TOOL_NAME,
+  SPAWN_AGENTS_TOOL_NAME,
   REQUEST_APPROVAL_TOOL_NAME,
 } from '../core/agents.js';
 import { createAgentQueue } from '../core/agent-queue.js';
@@ -349,7 +350,10 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   // Agents get them via their own filtered view.
   const chatTools = filterToolRegistry(
     tools,
-    (h) => h.name !== SPAWN_AGENT_TOOL_NAME && h.name !== REQUEST_APPROVAL_TOOL_NAME,
+    (h) =>
+      h.name !== SPAWN_AGENT_TOOL_NAME &&
+      h.name !== SPAWN_AGENTS_TOOL_NAME &&
+      h.name !== REQUEST_APPROVAL_TOOL_NAME,
   );
   const orchestrator = createOrchestrator({
     db,
@@ -400,13 +404,18 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     // the single executor — picks them up.
     pollMs: 2500,
   });
-  // The spawn_agent delegation tool (visible only to agents that may delegate).
+  // The spawn_agent / spawn_agents delegation tools (visible only to agents
+  // that may delegate). maxParallel bounds spawn_agents' inline fan-out to the
+  // tier's tiny-worker budget so a Pi never loads more small models at once
+  // than its RAM allows.
   setupAgentDelegation({
     tools,
+    llm,
     registry: agentRegistry,
     runtime: agentRuntime,
     queue: agentQueue,
     log,
+    maxParallel: tinyAgentConcurrencyForTier(cfg.tier),
   });
   setupAgentSchedules({
     db,
@@ -433,7 +442,9 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
   const workflowRegistry = createWorkflowRegistry(db);
   // Re-queue any workflow runs left 'running' by a crash (same pattern as agent tasks).
   const requeued_wf = db
-    .prepare(`UPDATE workflow_runs SET status = 'queued', started_at = NULL WHERE status = 'running'`)
+    .prepare(
+      `UPDATE workflow_runs SET status = 'queued', started_at = NULL WHERE status = 'running'`,
+    )
     .run().changes;
   if (requeued_wf > 0) log.info('re-queued interrupted workflow runs', { count: requeued_wf });
   const workflowRunner = createWorkflowRunner({

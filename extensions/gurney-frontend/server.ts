@@ -1125,6 +1125,11 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
           full += chunk.delta;
           sse('delta', { delta: chunk.delta });
         }
+        // Reasoning stream — kept separate from `full` (the answer) so it never
+        // lands in chat history; the client shows it as collapsible "thinking".
+        if (chunk.thinking) {
+          sse('thinking', { thinking: chunk.thinking });
+        }
         if (chunk.done && chunk.replace !== undefined) {
           full = chunk.replace;
           sse('replace', { text: full });

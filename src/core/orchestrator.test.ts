@@ -19,6 +19,7 @@ function tmp() {
 
 function fakeLlm(
   scripts: Array<AsyncIterable<ChatChunk> | (() => AsyncIterable<ChatChunk>)>,
+  profiles?: ReturnType<LLM['listProfiles']>,
 ): LLM & { calls: ChatOptions[] } {
   const calls: ChatOptions[] = [];
   let i = 0;
@@ -33,11 +34,13 @@ function fakeLlm(
       return { ok: true, models: ['fake'] };
     },
     listProfiles() {
-      return {
-        chat: { model: 'fake', contextTokens: 4096, heavy: false },
-        reason: null,
-        tools: null,
-      };
+      return (
+        profiles ?? {
+          chat: { model: 'fake', contextTokens: 4096, heavy: false },
+          reason: null,
+          tools: null,
+        }
+      );
     },
     resolveModel() {
       return 'fake';
@@ -469,6 +472,57 @@ test('self-replying tool short-circuit persists the assistant turn exactly once'
     const assistantRows = rows.filter((r) => r.role === 'assistant');
     assert.equal(assistantRows.length, 1, 'self-replying short-circuit must persist once');
     assert.equal(assistantRows[0]!.content, 'Added: lunch');
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an empty tiny-model reply escalates the recovery retry to the reason model', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    // WHY this matters: the tiny chat model occasionally returns nothing
+    // usable. The recovery retry is the ONLY place the main chat path can reach
+    // the heavy 9B, and it fires exactly when quality has already failed — so
+    // on a host that has a reason model configured (Standard/Heavy tier) the
+    // retry must go to `reason`, not re-ask the same tiny model that just
+    // whiffed. If this assertion can't fail, escalation has silently regressed
+    // back to defaultProfile and the heavy model is dead weight again.
+    const llm = fakeLlm([stream(['']), stream(['recovered'])], {
+      chat: { model: 'tiny', contextTokens: 4096, heavy: false },
+      reason: { model: 'heavy-9b', contextTokens: 8192, heavy: true },
+      tools: null,
+    });
+    const tools = createToolRegistry({ log: silentLogger() });
+    const orch = createOrchestrator({ db, llm, tools, log: silentLogger() });
+    await orch.handleUserMessage({ chatId: 7, userId: 1, text: 'a hard question', send: () => {} });
+    await orch.shutdown();
+
+    assert.equal(llm.calls.length, 2, 'expected an initial round plus one recovery retry');
+    assert.equal(llm.calls[0]!.profile, 'chat', 'initial round uses the tiny chat profile');
+    assert.equal(llm.calls[1]!.profile, 'reason', 'recovery retry escalates to the heavy model');
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('escalation is a no-op when no reason model is configured (Small tier)', async () => {
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    // The default profiles have reason:null (a Pi with no heavy model). The
+    // recovery retry must fall back to the chat profile, never name a profile
+    // the host can't serve — escalation is strictly opt-in via configuration.
+    const llm = fakeLlm([stream(['']), stream(['recovered'])]);
+    const tools = createToolRegistry({ log: silentLogger() });
+    const orch = createOrchestrator({ db, llm, tools, log: silentLogger() });
+    await orch.handleUserMessage({ chatId: 8, userId: 1, text: 'a hard question', send: () => {} });
+    await orch.shutdown();
+
+    assert.equal(llm.calls.length, 2);
+    assert.equal(llm.calls[1]!.profile, 'chat', 'no reason model → retry stays on chat');
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

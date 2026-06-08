@@ -467,7 +467,8 @@ test('when the probe is unavailable, the tag heuristic decides (gemma4 → suppr
 test('a per-call thinkMode overrides the profile (force think on a suppressing profile)', async () => {
   // The panel's per-turn toggle sets ChatOptions.thinkMode, which must beat the
   // profile default. Profile says 'off' (suppress), the call says 'on' — the
-  // model should be allowed to think: no think:false, no /no_think.
+  // model is forced to think: think:true is sent explicitly (deterministic
+  // rather than relying on the model default) and no /no_think is injected.
   const body = await captureChatBody({
     model: 'qwen3.5:0.8b',
     thinkMode: 'off',
@@ -475,7 +476,7 @@ test('a per-call thinkMode overrides the profile (force think on a suppressing p
     capabilities: ['completion', 'tools', 'thinking'],
     messages: SYS_USER,
   });
-  assert.equal('think' in body, false);
+  assert.equal(body.think, true);
   assert.equal(body.messages[0]!.content, 'You are Gurney.');
 });
 
@@ -490,4 +491,73 @@ test('when the probe is unavailable, an unknown model still honours explicit off
   });
   assert.equal(body.think, false);
   assert.match(body.messages[0]!.content, /^\/no_think/);
+});
+
+test("thinkMode 'on' is a no-op on a model that can't think (no think:true sent)", async () => {
+  // gemma3 rejects Ollama's `think` param. Forcing reasoning on via the panel
+  // toggle must not send think:true to it — only to models that advertise it.
+  const body = await captureChatBody({
+    model: 'gemma3:4b',
+    callThinkMode: 'on',
+    capabilities: ['completion', 'tools'],
+    messages: SYS_USER,
+  });
+  assert.equal('think' in body, false);
+});
+
+test('chat() captures message.thinking as a separate channel from content', async () => {
+  const fetchImpl = async (url: string | URL | Request) => {
+    if (String(url).endsWith('/api/show')) {
+      return new Response(JSON.stringify({ capabilities: ['completion', 'thinking'] }), {
+        status: 200,
+      });
+    }
+    return streamingResponse([
+      JSON.stringify({ model: 'qwen3.5:9b', message: { thinking: 'let me think… ' }, done: false }),
+      JSON.stringify({ model: 'qwen3.5:9b', message: { content: 'The answer.' }, done: true }),
+    ]);
+  };
+  const llm = createOllama({
+    baseUrl: 'http://x',
+    log: silentLogger(),
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    profiles: { chat: { model: 'qwen3.5:9b', contextTokens: 4096, heavy: false } },
+  });
+  const chunks = await collect(
+    llm.chat({ profile: 'chat', messages: [{ role: 'user', content: 'hi' }], thinkMode: 'on' }),
+  );
+  llm.stopIdleEviction();
+  assert.equal(chunks[0]!.thinking, 'let me think… ');
+  assert.equal(chunks[0]!.delta, '');
+  assert.equal(chunks[1]!.delta, 'The answer.');
+  assert.equal(chunks[1]!.thinking, undefined);
+});
+
+test('a thinking-only stream is not treated as an empty response', async () => {
+  // The gemma-reasoner regression: all tokens land in message.thinking and
+  // none in content. The model DID respond, so the empty-response guard must
+  // not throw — the orchestrator's own safety net handles the missing answer.
+  const fetchImpl = async (url: string | URL | Request) => {
+    if (String(url).endsWith('/api/show')) {
+      return new Response(JSON.stringify({ capabilities: ['completion', 'thinking'] }), {
+        status: 200,
+      });
+    }
+    return streamingResponse([
+      JSON.stringify({ model: 'qwen3.5:9b', message: { thinking: 'reasoning…' }, done: false }),
+      JSON.stringify({ model: 'qwen3.5:9b', message: { content: '' }, done: true }),
+    ]);
+  };
+  const llm = createOllama({
+    baseUrl: 'http://x',
+    log: silentLogger(),
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    profiles: { chat: { model: 'qwen3.5:9b', contextTokens: 4096, heavy: false } },
+  });
+  // Should not throw LLMEmptyResponseError.
+  const chunks = await drainBreakingOnDone(
+    llm.chat({ profile: 'chat', messages: [{ role: 'user', content: 'hi' }], thinkMode: 'on' }),
+  );
+  llm.stopIdleEviction();
+  assert.equal(chunks.at(-1)!.done, true);
 });

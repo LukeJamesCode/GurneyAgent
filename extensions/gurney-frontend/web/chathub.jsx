@@ -89,6 +89,7 @@ function ChatHub({
   const [draft, setDraft] = useStateCH('');
   const [phase, setPhase] = useStateCH('idle'); // idle | streaming | command
   const [streamText, setStreamText] = useStateCH('');
+  const [streamThink, setStreamThink] = useStateCH('');
   const [commands, setCommands] = useStateCH({ core: [], extensions: [] });
   const [confirmReq, setConfirmReq] = useStateCH(null); // { id, prompt, tool }
   const [thinkMode, setThinkMode] = useStateCH(loadThinkMode); // 'auto' | 'on' | 'off'
@@ -107,7 +108,7 @@ function ChatHub({
   useEffectCH(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, streamText, phase, confirmReq]);
+  }, [messages, streamText, streamThink, phase, confirmReq]);
 
   useEffectCH(() => {
     saveStoredMessages(messages);
@@ -156,9 +157,11 @@ function ChatHub({
     setMessages((m) => [...m, { id: Date.now(), role: 'user', text, time: now() }]);
     setPhase('streaming');
     setStreamText('');
+    setStreamThink('');
 
     const startedAt = Date.now();
     let acc = '';
+    let thinkAcc = '';
     let metaAcc = null;
     streamRef.current = window.api.postStream(
       '/api/chat',
@@ -168,6 +171,9 @@ function ChatHub({
           if (ev === 'delta' && data && data.delta) {
             acc += data.delta;
             setStreamText(acc);
+          } else if (ev === 'thinking' && data && data.thinking) {
+            thinkAcc += data.thinking;
+            setStreamThink(thinkAcc);
           } else if (ev === 'replace' && data && typeof data.text === 'string') {
             acc = data.text;
             setStreamText(acc);
@@ -192,7 +198,7 @@ function ChatHub({
             attachVoice(data.id);
           } else if (ev === 'done') {
             const finalText = (data && data.text) || acc;
-            if (finalText) {
+            if (finalText || thinkAcc) {
               setMessages((m) => [
                 ...m,
                 {
@@ -201,11 +207,13 @@ function ChatHub({
                   text: finalText,
                   time: now(),
                   meta: metaAcc,
+                  ...(thinkAcc ? { thinking: thinkAcc } : {}),
                   elapsedMs: Date.now() - startedAt,
                 },
               ]);
             }
             setStreamText('');
+            setStreamThink('');
             setConfirmReq(null);
             setPhase('idle');
             // Don't null the handle — the stream stays open briefly for a
@@ -222,6 +230,7 @@ function ChatHub({
               },
             ]);
             setStreamText('');
+            setStreamThink('');
             setConfirmReq(null);
             setPhase('idle');
             streamRef.current = null;
@@ -237,6 +246,7 @@ function ChatHub({
         // that never emitted a `done`/`error` event. `setPhase`'s updater form
         // avoids clobbering a phase a later turn may have set.
         setStreamText('');
+        setStreamThink('');
         setPhase((p) => (p === 'streaming' ? 'idle' : p));
         streamRef.current = null;
       });
@@ -324,9 +334,16 @@ function ChatHub({
     if (streamText)
       setMessages((m) => [
         ...m,
-        { id: Date.now(), role: 'assistant', text: streamText, time: now() },
+        {
+          id: Date.now(),
+          role: 'assistant',
+          text: streamText,
+          time: now(),
+          ...(streamThink ? { thinking: streamThink } : {}),
+        },
       ]);
     setStreamText('');
+    setStreamThink('');
     setConfirmReq(null);
     setPhase('idle');
   };
@@ -336,6 +353,7 @@ function ChatHub({
       streamRef.current = null;
     }
     setStreamText('');
+    setStreamThink('');
     setConfirmReq(null);
     setPhase('idle');
     setMessages([]);
@@ -431,10 +449,13 @@ function ChatHub({
               {messages.map((m) => (
                 <Bubble key={m.id} m={m} devmode={devmode} />
               ))}
-              {phase === 'streaming' && !streamText && !confirmReq && (
+              {phase === 'streaming' && !streamText && !streamThink && !confirmReq && (
                 <Thinking label="Thinking…" />
               )}
               {phase === 'command' && <Thinking label="Running command…" />}
+              {phase === 'streaming' && streamThink && (
+                <ThinkingBlock text={streamThink} live={!streamText} />
+              )}
               {phase === 'streaming' && streamText && (
                 <Bubble m={{ role: 'assistant', text: streamText, time: now() }} streaming />
               )}
@@ -1040,6 +1061,43 @@ function AgentControlBar({
   );
 }
 
+/* ---- reasoning (thinking) block ---- */
+// Collapsible reasoning shown for thinking-capable models run with reasoning on.
+// Open while the answer is still streaming (`live`) so the user sees progress;
+// collapsed once the answer arrives so it doesn't crowd the transcript.
+function ThinkingBlock({ text, live }) {
+  return (
+    <details
+      open={!!live}
+      className="rise"
+      style={{
+        alignSelf: 'flex-start',
+        maxWidth: '76%',
+        fontSize: 12.5,
+        color: 'var(--text-3)',
+        background: 'var(--surface-1)',
+        border: '1px dashed var(--border)',
+        borderRadius: 12,
+        padding: '6px 12px',
+      }}
+    >
+      <summary
+        style={{
+          cursor: 'pointer',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          fontFamily: 'var(--font-mono)',
+          userSelect: 'none',
+        }}
+      >
+        <window.Icon name="spark" size={12} /> {live ? 'Thinking…' : 'Reasoning'}
+      </summary>
+      <div style={{ whiteSpace: 'pre-wrap', marginTop: 6, lineHeight: 1.5 }}>{text}</div>
+    </details>
+  );
+}
+
 /* ---- chat bubble ---- */
 function Bubble({ m, streaming, devmode }) {
   const isUser = m.role === 'user';
@@ -1072,6 +1130,7 @@ function Bubble({ m, streaming, devmode }) {
             <window.Icon name="plug" size={12} /> {m.tool}
           </span>
         )}
+        {m.thinking && !isUser && <ThinkingBlock text={m.thinking} />}
         <div
           style={{
             padding: '10px 14px',

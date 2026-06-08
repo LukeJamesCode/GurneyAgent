@@ -52,6 +52,15 @@ An agent with `canDelegate` sees a built-in `spawn_agent(agent, task, mode)` too
   supervisor is paused in tool execution (not generating), so there's no model contention.
 - `mode: 'async'` enqueues the worker on the queue and returns its task id.
 
+For **independent** subtasks, a delegating agent also sees `spawn_agents({ tasks: [{agent, task}, …] })`,
+which dispatches the whole batch at once and returns all results joined and labelled by agent. This is
+how you actually get the "fan out, then synthesise" pattern: the workers run inline with a
+**tier-bounded concurrency cap** (Small 1 / Standard 2 / Heavy 3 — the same tiny-worker budget the queue
+uses), so a Pi never loads more small models than its RAM allows. Targets must be **lightweight**
+(non-`reason`) agents — a heavy target is refused, because the supervisor already holds the single heavy
+slot while paused in tool execution, so a parallel heavy fan-out could never get a slot to run. Use
+`spawn_agent` for a single subtask or a heavy agent; `spawn_agents` for parallel lightweight work.
+
 Safety is enforced in code, not by the prompt:
 
 - A worker's effective tool grant is the **intersection** of the supervisor's grant and the

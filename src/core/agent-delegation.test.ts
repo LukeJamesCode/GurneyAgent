@@ -13,6 +13,7 @@ import {
   AGENT_CHAT_ID_BASE,
   MAX_DELEGATION_DEPTH,
   SPAWN_AGENT_TOOL_NAME,
+  SPAWN_AGENTS_TOOL_NAME,
 } from './agents.js';
 import { createAgentQueue } from './agent-queue.js';
 import { setupAgentDelegation } from './agent-delegation.js';
@@ -24,9 +25,7 @@ function tmp() {
   return mkdtempSync(join(tmpdir(), 'gurney-deleg-'));
 }
 
-function fakeLlm(
-  scripts: Array<AsyncIterable<ChatChunk>>,
-): LLM & { calls: ChatOptions[] } {
+function fakeLlm(scripts: Array<AsyncIterable<ChatChunk>>): LLM & { calls: ChatOptions[] } {
   const calls: ChatOptions[] = [];
   let i = 0;
   const llm: LLM = {
@@ -71,7 +70,7 @@ async function* spawnCall(args: Record<string, unknown>): AsyncIterable<ChatChun
   yield { delta: '', done: true, model: 'fake', promptTokens: 5, completionTokens: 1 };
 }
 
-function harness(scripts: Array<AsyncIterable<ChatChunk>>) {
+function harness(scripts: Array<AsyncIterable<ChatChunk>>, opts: { maxParallel?: number } = {}) {
   const dir = tmp();
   const db = open({ path: join(dir, 'g.db') });
   const reg = createAgentRegistry(db);
@@ -86,7 +85,15 @@ function harness(scripts: Array<AsyncIterable<ChatChunk>>) {
     ownerUserId: 1,
   });
   const queue = createAgentQueue({ registry: reg, runtime, llm, log: silentLogger() });
-  setupAgentDelegation({ tools, registry: reg, runtime, queue, log: silentLogger() });
+  setupAgentDelegation({
+    tools,
+    llm,
+    registry: reg,
+    runtime,
+    queue,
+    log: silentLogger(),
+    maxParallel: opts.maxParallel ?? 2,
+  });
   const cleanup = async () => {
     await runtime.shutdown();
     db.close();
@@ -165,7 +172,12 @@ test('spawn_agent: a worker can never exceed the supervisor grant', async () => 
       delegatableAgents: [],
     });
     // Worker is unrestricted on its own — the ceiling must come from the parent.
-    h.reg.create({ name: 'worker', systemPrompt: 'You work.', profile: 'chat', toolAllowlist: null });
+    h.reg.create({
+      name: 'worker',
+      systemPrompt: 'You work.',
+      profile: 'chat',
+      toolAllowlist: null,
+    });
 
     const task = h.reg.enqueue({ agentId: supervisor.id, prompt: 'go' });
     await h.runtime.runTask(task.id);
@@ -236,6 +248,138 @@ test('spawn_agent: guards reject non-delegators, bad targets, depth, and non-age
       await spawn.invoke({ agent: 'only-this', task: 't' }, ctxFor(t3.id)),
       /depth limit/,
     );
+
+    await h.cleanup();
+  } catch (e) {
+    await h.cleanup();
+    throw e;
+  }
+});
+
+test('spawn_agents: fans out to multiple workers and joins their labelled results', async () => {
+  // Two child runs, one script each. This is the headline win — the parallel
+  // pattern the docs promise ("gather X and Y at once") must actually produce
+  // both results, attributed, from one supervisor tool call.
+  const h = harness([textStream('calendar facts'), textStream('weather facts')]);
+  try {
+    const boss = h.reg.create({
+      name: 'boss',
+      systemPrompt: 'x',
+      profile: 'chat',
+      toolAllowlist: [],
+      canDelegate: true,
+      delegatableAgents: [],
+    });
+    h.reg.create({ name: 'cal', systemPrompt: 'x', profile: 'chat', toolAllowlist: [] });
+    h.reg.create({ name: 'wx', systemPrompt: 'x', profile: 'chat', toolAllowlist: [] });
+    const spawn = h.tools.get(SPAWN_AGENTS_TOOL_NAME)!;
+    assert.ok(spawn, 'spawn_agents should be registered');
+
+    const parent = h.reg.enqueue({ agentId: boss.id, prompt: 'plan my day' });
+    const out = await spawn.invoke(
+      {
+        tasks: [
+          { agent: 'cal', task: 'get calendar' },
+          { agent: 'wx', task: 'get weather' },
+        ],
+      },
+      { chatId: AGENT_CHAT_ID_BASE + parent.id, log: silentLogger() },
+    );
+
+    // Both subtasks are present and attributed by agent + position; the actual
+    // text-to-slot mapping is irrelevant (workers may interleave), so assert
+    // that both labels and both outputs landed.
+    assert.match(out, /## cal \(task 1\)/);
+    assert.match(out, /## wx \(task 2\)/);
+    assert.ok(out.includes('calendar facts') && out.includes('weather facts'));
+
+    const children = h.reg.listTasks({ parentId: parent.id });
+    assert.equal(children.length, 2, 'both workers ran as linked children');
+    assert.ok(
+      children.every((c) => c.status === 'done' && c.depth === 1),
+      'children finished at depth 1',
+    );
+
+    await h.cleanup();
+  } catch (e) {
+    await h.cleanup();
+    throw e;
+  }
+});
+
+test('spawn_agents: refuses a heavy (reasoning) worker to avoid a parallel-slot deadlock', async () => {
+  // A heavy target can never get a model slot while the supervisor holds one,
+  // so the batch is rejected up front and nothing is spawned.
+  const h = harness([]);
+  try {
+    const boss = h.reg.create({
+      name: 'boss',
+      systemPrompt: 'x',
+      canDelegate: true,
+      delegatableAgents: [],
+    });
+    h.reg.create({ name: 'thinker', systemPrompt: 'x', profile: 'reason' });
+    const spawn = h.tools.get(SPAWN_AGENTS_TOOL_NAME)!;
+    const parent = h.reg.enqueue({ agentId: boss.id, prompt: 'p' });
+
+    const out = await spawn.invoke(
+      { tasks: [{ agent: 'thinker', task: 'think hard' }] },
+      { chatId: AGENT_CHAT_ID_BASE + parent.id, log: silentLogger() },
+    );
+    assert.match(out, /heavy reasoning model/);
+    assert.equal(
+      h.reg.listTasks({ parentId: parent.id }).length,
+      0,
+      'a rejected batch spawns nothing',
+    );
+
+    await h.cleanup();
+  } catch (e) {
+    await h.cleanup();
+    throw e;
+  }
+});
+
+test('spawn_agents: a worker can never exceed the supervisor grant', async () => {
+  const h = harness([textStream('did it')], { maxParallel: 1 });
+  try {
+    h.tools.register({
+      name: 'echo',
+      description: 'allowed',
+      parameters: {},
+      tier: 'auto',
+      extension: 'extA',
+      invoke: async () => 'echo',
+    });
+    h.tools.register({
+      name: 'secret',
+      description: 'forbidden',
+      parameters: {},
+      tier: 'auto',
+      extension: 'extB',
+      invoke: async () => 'leaked',
+    });
+    const boss = h.reg.create({
+      name: 'boss',
+      systemPrompt: 'x',
+      profile: 'chat',
+      toolAllowlist: ['extA'], // supervisor may only use extA
+      canDelegate: true,
+      delegatableAgents: [],
+    });
+    h.reg.create({ name: 'worker', systemPrompt: 'x', profile: 'chat', toolAllowlist: null });
+    const spawn = h.tools.get(SPAWN_AGENTS_TOOL_NAME)!;
+    const parent = h.reg.enqueue({ agentId: boss.id, prompt: 'go' });
+
+    await spawn.invoke(
+      { tasks: [{ agent: 'worker', task: 'use a tool' }] },
+      { chatId: AGENT_CHAT_ID_BASE + parent.id, log: silentLogger() },
+    );
+
+    // The worker's manifest is the intersection of the parent grant (extA) and
+    // its own (all) → echo only, never the supervisor-forbidden secret.
+    const workerTools = (h.llm.calls[0]!.tools ?? []).map((s) => s.function.name);
+    assert.deepEqual(workerTools, ['echo']);
 
     await h.cleanup();
   } catch (e) {

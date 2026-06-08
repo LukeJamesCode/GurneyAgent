@@ -121,6 +121,12 @@ export interface ChatChunk {
   // Delta of assistant text since the previous chunk, or '' when the chunk
   // contains only tool calls / metadata.
   delta: string;
+  // Delta of the model's reasoning since the previous chunk, for thinking-
+  // capable models run with reasoning enabled. Ollama streams reasoning in a
+  // separate `message.thinking` field, NOT in content — kept separate here so
+  // the orchestrator can surface it as its own channel and never fold it into
+  // the visible answer. Empty/absent on non-thinking turns.
+  thinking?: string;
   // Final chunk with usage / model info. Tool calls and the resolved model
   // name only appear here.
   done: boolean;
@@ -507,6 +513,11 @@ export function createOllama(opts: OllamaOptions): LLM {
     // the historical behaviour: honour an explicit 'off', stay quiet on 'auto'.
     const suppressThink =
       thinking !== 'no' && (thinkMode === 'off' || (thinkMode === 'auto' && thinking === 'yes'));
+    // Explicit 'on' for a model that can think: force think:true rather than
+    // relying on the model's default. Without this, a reasoner left on its
+    // default could vary (and the panel/per-agent "reason on" wouldn't be
+    // deterministic). Never sent to a model we know can't think.
+    const enableThink = thinking === 'yes' && thinkMode === 'on';
     let messages = o.messages;
     if (suppressThink) {
       const sysIdx = messages.findIndex((m) => m.role === 'system');
@@ -535,7 +546,7 @@ export function createOllama(opts: OllamaOptions): LLM {
       })),
       stream: true,
       keep_alive: target.cfg?.keepAlive ?? '5m',
-      ...(suppressThink ? { think: false } : {}),
+      ...(suppressThink ? { think: false } : enableThink ? { think: true } : {}),
     };
     if (o.tools && o.tools.length > 0) body['tools'] = o.tools;
     // Per-call num_predict precedence: explicit maxTokens beats the profile
@@ -583,6 +594,12 @@ export function createOllama(opts: OllamaOptions): LLM {
 
     let sawContent = false;
     let sawToolCall = false;
+    // Reasoning-only output still means the model responded (transport + model
+    // succeeded). Counting it keeps the empty-response guard from misfiring on a
+    // turn that produced only `message.thinking` — the regression behind gemma
+    // reasoners "finishing" with no visible answer. The orchestrator's own
+    // safety net then retries for an actual answer when the content is empty.
+    let sawThinking = false;
     // Whether we've already run the terminal success/empty-response accounting.
     let settled = false;
     // Empty-response guard: a successful stream that produced neither text nor a
@@ -592,7 +609,7 @@ export function createOllama(opts: OllamaOptions): LLM {
     const settleTerminal = (): void => {
       if (settled) return;
       settled = true;
-      if (!sawContent && !sawToolCall) {
+      if (!sawContent && !sawToolCall && !sawThinking) {
         throw new LLMEmptyResponseError();
       }
       recordSuccess();
@@ -600,6 +617,7 @@ export function createOllama(opts: OllamaOptions): LLM {
     try {
       for await (const chunk of parseNdjsonStream(res.body, target.model, log)) {
         if (chunk.delta) sawContent = true;
+        if (chunk.thinking) sawThinking = true;
         if (chunk.toolCalls && chunk.toolCalls.length > 0) sawToolCall = true;
         // Run the success/empty accounting *before* yielding the done chunk.
         // The orchestrator's drain loop breaks as soon as it sees done=true,
@@ -689,6 +707,7 @@ function chunkFromParsed(parsed: OllamaChatChunk, fallbackModel: string, log?: L
     done: !!parsed.done,
     model: parsed.model ?? fallbackModel,
   };
+  if (parsed.message?.thinking) chunk.thinking = parsed.message.thinking;
   const toolCalls = parsed.message?.tool_calls;
   if (toolCalls && toolCalls.length > 0) {
     // Defensively skip any tool_call lacking a well-formed `function` block.
@@ -760,6 +779,7 @@ interface OllamaChatChunk {
   message?: {
     role?: string;
     content?: string;
+    thinking?: string;
     tool_calls?: Array<{
       id?: string;
       function: { name: string; arguments: string | Record<string, unknown> };

@@ -144,6 +144,50 @@ test('autoRoute declines (returns null) → normal model turn', async () => {
   }
 });
 
+test('autoRouteEnabled:false suppresses auto-route → model handles the turn', async () => {
+  // Agent runs disable deterministic auto-route so a global tool (e.g. codex on
+  // the word "research") can't hijack an explicitly configured persona's turn.
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 'g.db') });
+    const llm = fakeLlm([stream(['agent ', 'reply'])]);
+    const tools = createToolRegistry({ log: silentLogger(), confirm: async () => true });
+    tools.register({
+      name: 'forced_tool',
+      description: 'forced',
+      parameters: { type: 'object', properties: { task: { type: 'string' } } },
+      tier: 'confirm',
+      selfReplying: true,
+      autoRoute: (msg) => (msg.includes('ESCALATE') ? { task: msg } : null),
+      invoke: async () => 'should not run (auto-route disabled)',
+    });
+    const orch = createOrchestrator({
+      db,
+      llm,
+      tools,
+      log: silentLogger(),
+      autoRouteEnabled: false,
+    });
+
+    const chunks: ReplyChunk[] = [];
+    await orch.handleUserMessage({
+      chatId: 4,
+      userId: 1,
+      text: 'please ESCALATE this big task',
+      send: async (c) => {
+        chunks.push(c);
+      },
+    });
+
+    assert.equal(chunks.map((c) => c.delta).join(''), 'agent reply');
+    assert.equal(llm.calls.length, 1, 'model must handle the turn when auto-route is disabled');
+    await orch.shutdown();
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('declining the confirm on a forced call falls back to the model', async () => {
   const dir = tmp();
   try {
