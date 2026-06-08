@@ -398,7 +398,7 @@ function ExtCard({ ext, busy, onOpen, onToggle }) {
               <div style={{ fontWeight: 600, fontSize: 15.5, display: 'flex', alignItems: 'center', gap: 8 }}>
                 {prettyName(ext)}
                 {['gurney-minimax', 'gurney-openai-compatible', 'gurney-tudor'].includes(ext.name) && (
-                  <window.Badge tone="warn" style={{ padding: '2px 6px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em' }}>IN DEVELOPMENT</window.Badge>
+                  <window.Badge tone="warn" style={{ padding: '2px 6px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>IN DEVELOPMENT</window.Badge>
                 )}
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
@@ -542,7 +542,7 @@ function ExtDetail({
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <h2 style={{ fontSize: 23 }}>{prettyName(ext)}</h2>
             {['gurney-minimax', 'gurney-openai-compatible', 'gurney-tudor'].includes(ext.name) && (
-              <window.Badge tone="warn" style={{ padding: '2px 6px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em' }}>IN DEVELOPMENT</window.Badge>
+              <window.Badge tone="warn" style={{ padding: '2px 6px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>IN DEVELOPMENT</window.Badge>
             )}
             <span style={{ fontSize: 13, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
               v{ext.version}
