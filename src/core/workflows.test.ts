@@ -151,6 +151,11 @@ test('seedStarterWorkflows: seeds the code-review example once and is idempotent
     assert.ok(reviewer && auditor, 'expected both reviewer agents to be seeded');
     assert.equal(reviewer.mode, 'autonomous');
     assert.equal(auditor.mode, 'autonomous');
+    // Both are granted the read-only filesystem tools so they review real code.
+    for (const a of [reviewer, auditor]) {
+      assert.ok(a.toolAllowlist?.includes('read_file'), `${a.name} should grant read_file`);
+      assert.ok(a.toolAllowlist?.includes('list_dir'), `${a.name} should grant list_dir`);
+    }
 
     // Agent nodes reference the seeded agents by id (loop body + standalone).
     const auditNode = seeded.graph.nodes.find((n) => n.id === 'audit');

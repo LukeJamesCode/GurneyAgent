@@ -304,14 +304,14 @@ test('seeded Code Review Pipeline runs end to end: loop fans over PRs, gate rout
     const tools = createToolRegistry({ log: silentLogger() });
     seedStarterWorkflows(reg, agents);
 
-    // Fake runtime: the auditor (its prompt asks to "audit the affected modules")
+    // Fake runtime: the auditor (its prompt asks to "audit the codebase")
     // returns a finding tagged BLOCKER so the gate takes the 'true' branch.
     const runtime = {
       runTask: async (taskId: number) => {
         const task = agents.getTask(taskId)!;
-        const text = /audit the affected modules/.test(task.prompt)
+        const text = /audit the codebase/.test(task.prompt)
           ? 'Findings:\n- BLOCKER: null deref in foo.ts'
-          : `Reviewed ${task.prompt.split('PR: ')[1] ?? '?'} — LGTM`;
+          : `Reviewed ${task.prompt} — LGTM`;
         agents.updateTask(taskId, { status: 'done', result: text });
         return { ok: true, text, conversationId: 0 };
       },

@@ -613,17 +613,26 @@ function ensureAgent(agents: AgentRegistry, input: CreateAgentInput): AgentDefin
 // example: it touches every interesting node type so a new user can open it in
 // the builder, see a real graph, and edit from there.
 //
+// It is built around the read-only filesystem tools (read_file / list_dir), so
+// the agents review *real code* rather than guessing. Those tools pin to a
+// review root resolved per run:
+//   • files/folders dropped into the run (task attachments), or
+//   • the global GURNEY_FS_ROOT the operator points at the repo.
+// Drop a PR's changed files (or a diff) into the run, or set GURNEY_FS_ROOT to
+// your checkout, and the agents read it directly.
+//
 // What it demonstrates, mapped to the three things people want a code reviewer
 // to do:
-//   - *Check PRs*       — a `loop` node fans the autonomous `pr-reviewer` agent
-//                         over every pull request in the run input (one per
-//                         line), so one run reviews a whole batch.
-//   - *Find bugs and    — the autonomous `code-auditor` agent then sweeps the
-//      dead code*          touched modules for latent bugs and unreachable code.
+//   - *Check changes*   — a `loop` node fans the autonomous `pr-reviewer` agent
+//      / PRs              over each path in the run input (one per line); each
+//                         iteration reads that file/dir with read_file/list_dir.
+//   - *Find bugs and    — the autonomous `code-auditor` then walks the whole
+//      dead code*          review root with list_dir/read_file, hunting latent
+//                         bugs and unreachable/unused code.
 //   - *Run on long       — both agents are `autonomous` (plan→act→reflect across
-//      loops*              many rounds), and the loop node iterates PR-by-PR, so
-//                         a single trigger drives a long-running review pass.
-//                         To run it on a cadence, point an agent schedule (or any
+//      loops*              many rounds), and the loop iterates path-by-path, so a
+//                         single trigger drives a long-running review pass. To
+//                         run it on a cadence, point an agent schedule (or any
 //                         cron) at this workflow's /run endpoint.
 //
 // A `condition` gate routes the result: blockers go to Telegram loudly, a clean
@@ -633,22 +642,24 @@ export function seedStarterWorkflows(workflows: WorkflowRegistry, agents: AgentR
   // on the agent (not the workflow) means deleting the workflow sticks.
   if (agents.getByName(PR_REVIEWER_AGENT)) return;
 
-  // Both agents are scoped to the tool surface a reviewer actually needs: the
-  // browser to read a PR diff or source on the host, web search for unfamiliar
-  // APIs, and codex_handoff to escalate the hard reasoning. Allowlist entries
-  // match by extension name, so each grants every tool that extension ships.
-  const reviewerTools = ['gurney-browser', 'gurney-websearch', 'gurney-codex'];
+  // The tool surface a reviewer actually needs: the read-only filesystem tools
+  // to read the code under review, web search for unfamiliar APIs, and
+  // codex_handoff to escalate the hard reasoning. fs-tool names are listed
+  // directly (they're core tools, not from an extension); the extension names
+  // grant every tool those extensions ship.
+  const reviewerTools = ['read_file', 'list_dir', 'gurney-websearch', 'gurney-codex'];
 
   const prReviewer = ensureAgent(agents, {
     name: PR_REVIEWER_AGENT,
-    role: 'Reviews a single pull request for correctness, security, and style',
+    role: 'Reviews a change set / pull request for correctness, security, and style',
     systemPrompt:
-      'You are PR Reviewer, an autonomous code-review agent. Given one pull request — a URL, a PR ' +
-      'number, or a pasted diff — inspect the changes and produce a focused review. For anything ' +
-      'non-trivial, use your tools instead of guessing: open the PR in the browser to read the diff, ' +
-      'search the web for unfamiliar APIs, and hand deep or multi-file reasoning to codex_handoff. ' +
-      'Report findings grouped by severity using the exact tags BLOCKER, MAJOR, and MINOR, each with ' +
-      'file/line context and a concrete fix. If the change is clean, say LGTM.',
+      'You are PR Reviewer, an autonomous code-review agent. You review a change set: the files ' +
+      'dropped into this run, or the paths you are given, inside the review root. Always read the ' +
+      'code before judging it — use list_dir to see what is there and read_file to read each file; ' +
+      'never invent code you have not read. Search the web for unfamiliar APIs and hand genuinely ' +
+      'hard or multi-file reasoning to codex_handoff. Report findings grouped by severity using the ' +
+      'exact tags BLOCKER, MAJOR, and MINOR, each with file/line context and a concrete fix. If the ' +
+      'change is clean, say LGTM.',
     profile: 'reason',
     thinkMode: 'on',
     toolAllowlist: reviewerTools,
@@ -660,13 +671,13 @@ export function seedStarterWorkflows(workflows: WorkflowRegistry, agents: AgentR
 
   const codeAuditor = ensureAgent(agents, {
     name: CODE_AUDITOR_AGENT,
-    role: 'Scans a codebase for latent bugs and dead or unreachable code',
+    role: 'Audits a codebase for latent bugs and dead or unreachable code',
     systemPrompt:
-      'You are Code Auditor, an autonomous agent that hunts for latent bugs and dead code. Given a ' +
-      'set of changed areas or PR reviews, look for correctness bugs, race conditions, resource ' +
-      'leaks, and unreachable / unused / never-called code. Use codex_handoff for deep multi-file ' +
-      'reasoning and the browser to read source you do not already have. Return one prioritized ' +
-      'findings list; tag anything that can break production with BLOCKER.',
+      'You are Code Auditor, an autonomous agent that audits a codebase for latent bugs and dead ' +
+      'code. Walk the review root with list_dir and read the modules with read_file, then look for ' +
+      'correctness bugs, race conditions, resource leaks, and unreachable / unused / never-called ' +
+      'code. Use codex_handoff for deep multi-file reasoning. Return one prioritized findings list; ' +
+      'tag anything that can break production with BLOCKER.',
     profile: 'reason',
     thinkMode: 'on',
     toolAllowlist: reviewerTools,
@@ -679,7 +690,8 @@ export function seedStarterWorkflows(workflows: WorkflowRegistry, agents: AgentR
   const graph: WorkflowGraph = {
     nodes: [
       { id: 'trigger', type: 'trigger', pos: { x: 40, y: 200 }, config: { mode: 'manual' } },
-      // Loop body is an agent node run once per PR; {{item}} is the current line.
+      // Loop body is an agent node run once per path; {{item}} is the current
+      // line of the run input (a file or directory relative to the review root).
       {
         id: 'reviews',
         type: 'loop',
@@ -691,8 +703,9 @@ export function seedStarterWorkflows(workflows: WorkflowRegistry, agents: AgentR
             config: {
               agentId: prReviewer.id,
               promptTemplate:
-                'Review this pull request. List issues as BLOCKER/MAJOR/MINOR with file context ' +
-                'and a concrete fix.\n\nPR: {{item}}',
+                'Review `{{item}}` in the review root. Read it with read_file (or list_dir if it is ' +
+                'a directory) first, then list issues as BLOCKER/MAJOR/MINOR with line context and a ' +
+                'concrete fix.',
               thinkMode: 'on',
             },
           },
@@ -705,9 +718,9 @@ export function seedStarterWorkflows(workflows: WorkflowRegistry, agents: AgentR
         config: {
           agentId: codeAuditor.id,
           promptTemplate:
-            'Per-PR reviews so far:\n\n{{steps.reviews.output}}\n\nNow audit the affected modules ' +
-            'for additional bugs and dead / unreachable code. Return one prioritized findings list; ' +
-            'tag production-breaking issues BLOCKER.',
+            'Per-path reviews so far:\n\n{{steps.reviews.output}}\n\nNow walk the review root with ' +
+            'list_dir and read_file and audit the codebase for additional bugs and dead / unreachable ' +
+            'code. Return one prioritized findings list; tag production-breaking issues BLOCKER.',
           thinkMode: 'on',
         },
       },
@@ -745,10 +758,11 @@ export function seedStarterWorkflows(workflows: WorkflowRegistry, agents: AgentR
   workflows.create({
     name: CODE_REVIEW_WORKFLOW_NAME,
     description:
-      'Example: paste one pull request per line as the run input. The loop fans pr-reviewer over ' +
-      'each PR, code-auditor then sweeps the touched code for bugs and dead code, and the result is ' +
-      'reported to Telegram — blockers loudly, a clean pass as an all-clear. Edit the agents, ' +
-      'prompts, and branches to taste.',
+      'Example: drop the changed files (or a whole folder) into the run, or set GURNEY_FS_ROOT to ' +
+      'your checkout, then paste one path per line as the run input. The loop fans pr-reviewer over ' +
+      'each path (reading it with read_file/list_dir), code-auditor then sweeps the whole review ' +
+      'root for bugs and dead code, and the result is reported to Telegram — blockers loudly, a ' +
+      'clean pass as an all-clear. Edit the agents, prompts, and branches to taste.',
     graph,
     active: true,
   });
