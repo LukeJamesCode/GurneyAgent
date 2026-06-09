@@ -25,6 +25,7 @@ function gatedLlm() {
   const waiters: Array<() => void> = [];
   let activeHeavy = 0;
   let activeTiny = 0;
+  let releaseHeavyCalls = 0;
   const peak = { heavy: 0, tiny: 0 };
   const llm: LLM = {
     chat(o) {
@@ -57,6 +58,9 @@ function gatedLlm() {
       retryAt: null,
     }),
     stopIdleEviction: () => {},
+    async releaseHeavy() {
+      releaseHeavyCalls++;
+    },
   };
   return {
     llm,
@@ -64,6 +68,7 @@ function gatedLlm() {
       while (waiters.length) waiters.shift()!();
     },
     inFlight: () => waiters.length,
+    releaseHeavyCalls: () => releaseHeavyCalls,
     peak,
   };
 }
@@ -121,6 +126,43 @@ test('queue: two heavy tasks never run concurrently (one resident model)', async
 
     assert.equal(h.gate.peak.heavy, 1);
     assert.equal(h.reg.listTasks({ status: 'done' }).length, 2);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('queue: a finished heavy task drains -> unloads the resident heavy model', async () => {
+  // WHY: a one-shot reasoning agent should not pin the 9b in RAM for the whole
+  // keep_alive window once the queue has no more work. The queue asks the LLM to
+  // release the heavy slot the instant it goes idle after a heavy task.
+  const h = harness(4);
+  try {
+    const a = h.reg.create({ name: 'r1', systemPrompt: 'x', profile: 'reason', toolAllowlist: [] });
+    h.queue.dispatch({ agentId: a.id, prompt: 'go' });
+    await settle();
+    assert.equal(h.gate.releaseHeavyCalls(), 0, 'no release while the task is still running');
+    h.gate.releaseAll();
+    await settle();
+    assert.equal(h.reg.listTasks({ status: 'done' }).length, 1);
+    assert.equal(h.gate.releaseHeavyCalls(), 1, 'heavy model released once the queue drained');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('queue: a finished tiny task never releases the heavy slot', async () => {
+  // A tiny agent shares the interactive chat model — releasing it would force a
+  // cold reload on the next Telegram turn. Only heavy completions trigger a
+  // release.
+  const h = harness(4);
+  try {
+    const a = h.reg.create({ name: 't1', systemPrompt: 'x', profile: 'chat', toolAllowlist: [] });
+    h.queue.dispatch({ agentId: a.id, prompt: 'go' });
+    await settle();
+    h.gate.releaseAll();
+    await settle();
+    assert.equal(h.reg.listTasks({ status: 'done' }).length, 1);
+    assert.equal(h.gate.releaseHeavyCalls(), 0, 'tiny completion must not touch the heavy slot');
   } finally {
     await h.cleanup();
   }

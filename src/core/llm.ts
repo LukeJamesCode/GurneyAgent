@@ -182,6 +182,13 @@ export interface LLM {
   breakerSnapshot(): BreakerSnapshot;
   // Stop the idle-eviction timer. Test/teardown hook.
   stopIdleEviction(): void;
+  // Immediately unload the resident heavy model (Ollama keep_alive=0) if one is
+  // loaded and no heavy inference is in flight. Lets background executors (agent
+  // queue, workflow runner) free the big model the moment their work drains,
+  // instead of waiting out keep_alive or the 10-minute idle sweep — the whole
+  // point on a RAM-constrained Pi. Optional so fakes/providers need no change;
+  // a no-op when nothing heavy is resident.
+  releaseHeavy?(): Promise<void>;
   // Optional extension hook. Routed LLMs expose this so an enabled extension can
   // contribute a model alias without core importing extension code.
   registerProvider?: (provider: LLMProvider) => () => void;
@@ -295,6 +302,12 @@ export function createOllama(opts: OllamaOptions): LLM {
   // every tick to recover it.
   let residentHeavy: string | null = null;
   let residentHeavyProfile: string | null = null;
+  // Count of heavy inferences currently streaming. releaseHeavy() refuses to
+  // unload while this is > 0: that call is deliberately keeping the model hot,
+  // and the caller fires releaseHeavy again once it next goes idle. Guards the
+  // cross-component race where a workflow finishing unloads the model an
+  // agent-queue task (which bypasses the queue's heavy governor) is mid-using.
+  let heavyInFlight = 0;
   // Last-used timestamps per profile name. The idle sweep reads this to
   // decide whether to unload a heavy profile.
   const lastCallAt = new Map<string, number>();
@@ -471,6 +484,25 @@ export function createOllama(opts: OllamaOptions): LLM {
     }
   }
 
+  // Proactively unload the resident heavy model right now rather than on a
+  // timer. Background executors call this the instant their work drains so a
+  // one-shot reasoning agent/workflow doesn't pin 6+ GB of RAM for the whole
+  // keep_alive window on a Pi-class host. Skips the unload when a heavy call is
+  // still streaming (heavyInFlight > 0). Serialized through the same lock as
+  // evictIfNeeded so a release and a concurrent load can't race the
+  // residentHeavy bookkeeping.
+  async function releaseHeavy(): Promise<void> {
+    const run = async (): Promise<void> => {
+      if (!residentHeavy || heavyInFlight > 0) return;
+      const model = residentHeavy;
+      residentHeavy = null;
+      residentHeavyProfile = null;
+      await unloadModel(model, 'background work drained');
+    };
+    evictionLock = evictionLock.then(run, run);
+    await evictionLock;
+  }
+
   // Ask Ollama whether a model advertises a thinking mode. Returns 'yes'/'no'
   // from the authoritative /api/show `capabilities` list, or null when the
   // probe can't answer (pre-capabilities Ollama, model not pulled, network/
@@ -560,6 +592,12 @@ export function createOllama(opts: OllamaOptions): LLM {
     ensureIdleSweep();
     const target = resolveProfile(o.profile);
     await evictIfNeeded(target);
+    // Mark a heavy inference in flight the moment the model becomes resident, so
+    // releaseHeavy() can't unload it during the (possibly multi-second on a Pi)
+    // capability probe below. Balanced by a decrement on every exit path further
+    // down (fetch failure, non-2xx, and the streaming finally).
+    const isHeavy = target.cfg?.heavy === true;
+    if (isHeavy) heavyInFlight++;
     lastCallAt.set(target.profileName, now());
 
     // /no_think for thinking-capable families (qwen3). qwen3 is a thinking
@@ -662,6 +700,7 @@ export function createOllama(opts: OllamaOptions): LLM {
       });
     } catch (e) {
       clearTimeout(timeoutId);
+      if (isHeavy) heavyInFlight--;
       // Our inference cap fired (not a caller /stop): surface it distinctly.
       if (timedOut && !o.signal?.aborted) throw new LLMTimeoutError(effectiveTimeoutMs);
       // A user-initiated /stop or process shutdown aborts the caller's signal,
@@ -673,6 +712,7 @@ export function createOllama(opts: OllamaOptions): LLM {
     }
     if (!res.ok || !res.body) {
       clearTimeout(timeoutId);
+      if (isHeavy) heavyInFlight--;
       recordFailure(new Error(`http ${res.status}`));
       const text = await res.text().catch(() => '');
       throw new LLMHttpError(res.status, `ollama responded ${res.status}: ${text}`);
@@ -731,6 +771,7 @@ export function createOllama(opts: OllamaOptions): LLM {
       throw e;
     } finally {
       clearTimeout(timeoutId);
+      if (isHeavy) heavyInFlight--;
     }
   }
 
@@ -765,6 +806,7 @@ export function createOllama(opts: OllamaOptions): LLM {
     supportsVision,
     breakerSnapshot,
     stopIdleEviction,
+    releaseHeavy,
   };
 }
 

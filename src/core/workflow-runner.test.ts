@@ -30,14 +30,17 @@ interface Harness {
   tools: ToolRegistry;
   runner: WorkflowRunner;
   enqueued: Array<{ id: number; agentId: number; prompt: string }>;
+  releaseHeavyCalls(): number;
   close(): void;
 }
 
 // Wire a runner against a real WorkflowRegistry (temp DB) + real ToolRegistry,
 // with fake agents/runtime so tests stay deterministic and offline.
-function harness(opts: {
-  agentReply?: (prompt: string) => { ok: boolean; text: string; error?: string };
-} = {}): Harness {
+function harness(
+  opts: {
+    agentReply?: (prompt: string) => { ok: boolean; text: string; error?: string };
+  } = {},
+): Harness {
   const dir = tmp();
   const db = open({ path: join(dir, 't.db'), log: silentLogger() });
   const reg = createWorkflowRegistry(db);
@@ -64,12 +67,28 @@ function harness(opts: {
     },
   } as unknown as AgentRuntime;
 
-  const runner = createWorkflowRunner({ registry: reg, agents, runtime, tools, log: silentLogger(), ownerUserId: 1 });
+  let releaseHeavyCalls = 0;
+  const llm = {
+    releaseHeavy: async () => {
+      releaseHeavyCalls++;
+    },
+  } as unknown as import('./llm.js').LLM;
+
+  const runner = createWorkflowRunner({
+    registry: reg,
+    agents,
+    runtime,
+    tools,
+    llm,
+    log: silentLogger(),
+    ownerUserId: 1,
+  });
   return {
     reg,
     tools,
     runner,
     enqueued,
+    releaseHeavyCalls: () => releaseHeavyCalls,
     close: () => {
       db.close();
       rmSync(dir, { recursive: true, force: true });
@@ -83,8 +102,18 @@ test('linear trigger->transform->output flows input through and records every st
     const graph: WorkflowGraph = {
       nodes: [
         { id: 't1', type: 'trigger', pos: { x: 0, y: 0 }, config: {} },
-        { id: 'm1', type: 'transform', pos: { x: 1, y: 0 }, config: { template: 'Hi {{trigger.input}}', as: 'text' } },
-        { id: 'o1', type: 'output', pos: { x: 2, y: 0 }, config: { channel: 'none', template: '{{steps.m1.text}}' } },
+        {
+          id: 'm1',
+          type: 'transform',
+          pos: { x: 1, y: 0 },
+          config: { template: 'Hi {{trigger.input}}', as: 'text' },
+        },
+        {
+          id: 'o1',
+          type: 'output',
+          pos: { x: 2, y: 0 },
+          config: { channel: 'none', template: '{{steps.m1.text}}' },
+        },
       ],
       edges: [
         { from: 't1', to: 'm1' },
@@ -113,8 +142,18 @@ test('agent node enqueues a task, runs it, and links the agent_task_id', async (
     const graph: WorkflowGraph = {
       nodes: [
         { id: 't1', type: 'trigger', pos: { x: 0, y: 0 }, config: {} },
-        { id: 'a1', type: 'agent', pos: { x: 1, y: 0 }, config: { agentId: 1, promptTemplate: 'Research {{trigger.input}}' } },
-        { id: 'o1', type: 'output', pos: { x: 2, y: 0 }, config: { channel: 'none', template: '{{steps.a1.output}}' } },
+        {
+          id: 'a1',
+          type: 'agent',
+          pos: { x: 1, y: 0 },
+          config: { agentId: 1, promptTemplate: 'Research {{trigger.input}}' },
+        },
+        {
+          id: 'o1',
+          type: 'output',
+          pos: { x: 2, y: 0 },
+          config: { channel: 'none', template: '{{steps.a1.output}}' },
+        },
       ],
       edges: [
         { from: 't1', to: 'a1' },
@@ -136,6 +175,53 @@ test('agent node enqueues a task, runs it, and links the agent_task_id', async (
   }
 });
 
+test('a finished run with no more queued work unloads the heavy model', async () => {
+  // WHY: a workflow's agent nodes can load the 9b; once the run finishes and the
+  // queue is empty, the runner frees it ASAP instead of waiting out keep_alive.
+  const h = harness();
+  try {
+    const graph: WorkflowGraph = {
+      nodes: [
+        { id: 't1', type: 'trigger', pos: { x: 0, y: 0 }, config: {} },
+        {
+          id: 'a1',
+          type: 'agent',
+          pos: { x: 1, y: 0 },
+          config: { agentId: 1, promptTemplate: '{{trigger.input}}' },
+        },
+      ],
+      edges: [{ from: 't1', to: 'a1' }],
+    };
+    const wf = h.reg.create({ name: 'rel', graph });
+    h.reg.enqueueRun(wf.id, 'go');
+    await h.runner.runOnce();
+    assert.equal(h.releaseHeavyCalls(), 1, 'heavy model released once the run queue drained');
+  } finally {
+    h.close();
+  }
+});
+
+test('a finished run does not unload while another run is still queued', async () => {
+  // No churn between back-to-back runs: the resident model is freed only after
+  // the LAST queued run, so a burst reuses it instead of cold-reloading each time.
+  const h = harness();
+  try {
+    const graph: WorkflowGraph = {
+      nodes: [{ id: 't1', type: 'trigger', pos: { x: 0, y: 0 }, config: {} }],
+      edges: [],
+    };
+    const wf = h.reg.create({ name: 'rel2', graph });
+    h.reg.enqueueRun(wf.id, 'a');
+    h.reg.enqueueRun(wf.id, 'b');
+    await h.runner.runOnce(); // first run; second still queued
+    assert.equal(h.releaseHeavyCalls(), 0, 'must not release while work remains');
+    await h.runner.runOnce(); // second run; queue now empty
+    assert.equal(h.releaseHeavyCalls(), 1, 'release after the last run drains');
+  } finally {
+    h.close();
+  }
+});
+
 test('tool node executes through the registry with resolved args (types preserved)', async () => {
   const h = harness();
   try {
@@ -150,8 +236,18 @@ test('tool node executes through the registry with resolved args (types preserve
     const graph: WorkflowGraph = {
       nodes: [
         { id: 't1', type: 'trigger', pos: { x: 0, y: 0 }, config: {} },
-        { id: 'x1', type: 'tool', pos: { x: 1, y: 0 }, config: { tool: 'echo', args: { q: '{{trigger.input}}', n: 3 } } },
-        { id: 'o1', type: 'output', pos: { x: 2, y: 0 }, config: { channel: 'none', template: '{{steps.x1.output}}' } },
+        {
+          id: 'x1',
+          type: 'tool',
+          pos: { x: 1, y: 0 },
+          config: { tool: 'echo', args: { q: '{{trigger.input}}', n: 3 } },
+        },
+        {
+          id: 'o1',
+          type: 'output',
+          pos: { x: 2, y: 0 },
+          config: { channel: 'none', template: '{{steps.x1.output}}' },
+        },
       ],
       edges: [
         { from: 't1', to: 'x1' },
@@ -175,10 +271,20 @@ test('condition node runs only the matching branch; the other is pruned (no step
     const graph: WorkflowGraph = {
       nodes: [
         { id: 't1', type: 'trigger', pos: { x: 0, y: 0 }, config: {} },
-        { id: 'c1', type: 'condition', pos: { x: 1, y: 0 }, config: { left: '{{trigger.input}}', op: 'contains', right: 'urgent' } },
+        {
+          id: 'c1',
+          type: 'condition',
+          pos: { x: 1, y: 0 },
+          config: { left: '{{trigger.input}}', op: 'contains', right: 'urgent' },
+        },
         { id: 'mTrue', type: 'transform', pos: { x: 2, y: 0 }, config: { template: 'URGENT' } },
         { id: 'mFalse', type: 'transform', pos: { x: 2, y: 1 }, config: { template: 'normal' } },
-        { id: 'o1', type: 'output', pos: { x: 3, y: 0 }, config: { channel: 'none', template: '{{steps.mTrue.output}}{{steps.mFalse.output}}' } },
+        {
+          id: 'o1',
+          type: 'output',
+          pos: { x: 3, y: 0 },
+          config: { channel: 'none', template: '{{steps.mTrue.output}}{{steps.mFalse.output}}' },
+        },
       ],
       edges: [
         { from: 't1', to: 'c1' },
@@ -207,8 +313,21 @@ test('loop node runs the body once per item and aggregates outputs', async () =>
     const graph: WorkflowGraph = {
       nodes: [
         { id: 't1', type: 'trigger', pos: { x: 0, y: 0 }, config: {} },
-        { id: 'l1', type: 'loop', pos: { x: 1, y: 0 }, config: { items: '{{trigger.input}}', body: { type: 'transform', config: { template: 'item={{item}}' } } } },
-        { id: 'o1', type: 'output', pos: { x: 2, y: 0 }, config: { channel: 'none', template: '{{steps.l1.output}}' } },
+        {
+          id: 'l1',
+          type: 'loop',
+          pos: { x: 1, y: 0 },
+          config: {
+            items: '{{trigger.input}}',
+            body: { type: 'transform', config: { template: 'item={{item}}' } },
+          },
+        },
+        {
+          id: 'o1',
+          type: 'output',
+          pos: { x: 2, y: 0 },
+          config: { channel: 'none', template: '{{steps.l1.output}}' },
+        },
       ],
       edges: [
         { from: 't1', to: 'l1' },
@@ -230,8 +349,18 @@ test('a failing node fails the run and halts downstream execution', async () => 
     const graph: WorkflowGraph = {
       nodes: [
         { id: 't1', type: 'trigger', pos: { x: 0, y: 0 }, config: {} },
-        { id: 'a1', type: 'agent', pos: { x: 1, y: 0 }, config: { agentId: 1, promptTemplate: 'go' } },
-        { id: 'o1', type: 'output', pos: { x: 2, y: 0 }, config: { channel: 'none', template: 'never' } },
+        {
+          id: 'a1',
+          type: 'agent',
+          pos: { x: 1, y: 0 },
+          config: { agentId: 1, promptTemplate: 'go' },
+        },
+        {
+          id: 'o1',
+          type: 'output',
+          pos: { x: 2, y: 0 },
+          config: { channel: 'none', template: 'never' },
+        },
       ],
       edges: [
         { from: 't1', to: 'a1' },
@@ -272,7 +401,12 @@ test('cancellation between nodes stops the walk', async () => {
       nodes: [
         { id: 't1', type: 'trigger', pos: { x: 0, y: 0 }, config: {} },
         { id: 'x1', type: 'tool', pos: { x: 1, y: 0 }, config: { tool: 'cancel_self', args: {} } },
-        { id: 'after', type: 'transform', pos: { x: 2, y: 0 }, config: { template: 'should not run' } },
+        {
+          id: 'after',
+          type: 'transform',
+          pos: { x: 2, y: 0 },
+          config: { template: 'should not run' },
+        },
       ],
       edges: [
         { from: 't1', to: 'x1' },

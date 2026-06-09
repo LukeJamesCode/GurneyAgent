@@ -77,6 +77,12 @@ export function createRoutedLLM(base: LLM): RoutedLLM {
     base.stopIdleEviction();
   }
 
+  // Heavy-model residency is the underlying Ollama instance's concern; routed
+  // providers don't hold a resident heavy model. Defer to the base.
+  async function releaseHeavy(): Promise<void> {
+    await base.releaseHeavy?.();
+  }
+
   // Vision capability is a property of the underlying Ollama model; registered
   // providers are routed by chat() and don't advertise it, so defer to the base.
   async function supportsVision(model: string): Promise<boolean> {
@@ -98,6 +104,7 @@ export function createRoutedLLM(base: LLM): RoutedLLM {
     supportsVision,
     breakerSnapshot,
     stopIdleEviction,
+    releaseHeavy,
     registerProvider,
   };
 }

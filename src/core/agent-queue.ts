@@ -147,6 +147,18 @@ export function createAgentQueue(opts: AgentQueueOptions): AgentQueue {
         running.delete(task.id);
         const finished = opts.registry.getTask(task.id);
         if (finished) opts.onTaskUpdate?.(finished);
+        // A heavy task just finished (done/error/cancelled) and the queue has
+        // drained — unload the resident heavy model now instead of letting it
+        // pin RAM through the keep_alive / idle-sweep window. Gated on `heavy`
+        // so a finishing tiny task never evicts a heavy model that interactive
+        // chat may be holding; gated on idle so back-to-back tasks reuse it.
+        if (
+          heavy &&
+          running.size === 0 &&
+          opts.registry.listTasks({ status: 'queued' }).length === 0
+        ) {
+          void opts.llm.releaseHeavy?.();
+        }
         // A freed slot may unblock other queued work.
         notify();
       });

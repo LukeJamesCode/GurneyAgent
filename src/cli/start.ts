@@ -502,6 +502,7 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     agents: agentRegistry,
     runtime: agentRuntime,
     tools,
+    llm,
     log,
     ownerUserId: ownerId,
     pollMs: 2500,

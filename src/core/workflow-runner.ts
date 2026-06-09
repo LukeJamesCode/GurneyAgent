@@ -13,14 +13,22 @@
 import type { Logger } from '../util/log.js';
 import type { AgentRegistry, AgentRuntime } from './agents.js';
 import type { ToolRegistry } from './tools.js';
-import type { ToolCall } from './llm.js';
-import { topoOrder, type WorkflowNode, type WorkflowRegistry, type WorkflowRun } from './workflows.js';
+import type { LLM, ToolCall } from './llm.js';
+import {
+  topoOrder,
+  type WorkflowNode,
+  type WorkflowRegistry,
+  type WorkflowRun,
+} from './workflows.js';
 
 export interface WorkflowRunnerDeps {
   registry: WorkflowRegistry;
   agents: AgentRegistry;
   runtime: AgentRuntime;
   tools: ToolRegistry;
+  // Used only to unload the resident heavy model once a run drains. Optional so
+  // tests can omit it; production (start.ts) always wires it.
+  llm?: LLM;
   log: Logger;
   // User id stamped on agent-node conversation rows (same as AgentRuntime).
   ownerUserId: number;
@@ -78,7 +86,9 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
   }
 
   function resolveTemplate(tpl: string, scope: RunScope): string {
-    return tpl.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_m, path) => toText(resolvePath(scope, String(path).trim())));
+    return tpl.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_m, path) =>
+      toText(resolvePath(scope, String(path).trim())),
+    );
   }
 
   // If the whole string is a single {{path}} token, return the raw value
@@ -94,7 +104,8 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
     if (Array.isArray(v)) return v.map((x) => resolveValue(x, scope));
     if (v && typeof v === 'object') {
       const out: Record<string, unknown> = {};
-      for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = resolveValue(val, scope);
+      for (const [k, val] of Object.entries(v as Record<string, unknown>))
+        out[k] = resolveValue(val, scope);
       return out;
     }
     return v;
@@ -112,7 +123,12 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
           /* fall through */
         }
       }
-      return t ? t.split('\n').map((l) => l.trim()).filter(Boolean) : [];
+      return t
+        ? t
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(Boolean)
+        : [];
     }
     return v == null ? [] : [v];
   }
@@ -177,8 +193,12 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
       case 'agent': {
         const agentId = Number(node.config['agentId']);
         const agent = deps.agents.get(agentId);
-        if (!agent) throw new NodeError(`agent node '${node.id}' references unknown agent #${agentId}`);
-        const prompt = resolveTemplate(String(node.config['promptTemplate'] ?? '{{trigger.input}}'), scope);
+        if (!agent)
+          throw new NodeError(`agent node '${node.id}' references unknown agent #${agentId}`);
+        const prompt = resolveTemplate(
+          String(node.config['promptTemplate'] ?? '{{trigger.input}}'),
+          scope,
+        );
         // Per-node thinking override: a workflow can make one agent reason and
         // another not, regardless of each agent's saved default. Anything other
         // than auto|on|off (incl. unset/"inherit") leaves the agent default.
@@ -198,7 +218,8 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
       case 'tool': {
         const name = String(node.config['tool'] ?? '').trim();
         if (!name) throw new NodeError(`tool node '${node.id}' has no tool selected`);
-        const args = (resolveValue(node.config['args'] ?? {}, scope) as Record<string, unknown>) ?? {};
+        const args =
+          (resolveValue(node.config['args'] ?? {}, scope) as Record<string, unknown>) ?? {};
         const call: ToolCall = { id: `wf_${runId}_${node.id}`, name, arguments: args };
         const result = await deps.tools.execute(call, { log: log.child({ node: node.id }) });
         if (!result.ok) throw new NodeError(`tool '${name}' failed: ${result.output}`);
@@ -207,7 +228,9 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
 
       case 'loop': {
         const items = asArray(resolveValue(node.config['items'], scope));
-        const body = node.config['body'] as { type?: string; config?: Record<string, unknown> } | undefined;
+        const body = node.config['body'] as
+          | { type?: string; config?: Record<string, unknown> }
+          | undefined;
         if (!body || !body.type) throw new NodeError(`loop node '${node.id}' has no body`);
         const outputs: unknown[] = [];
         for (let i = 0; i < items.length; i++) {
@@ -250,7 +273,11 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
     if (!run) return;
     const wf = deps.registry.get(run.workflowId);
     if (!wf) {
-      deps.registry.updateRun(runId, { status: 'error', error: 'workflow not found', finishedAt: Date.now() });
+      deps.registry.updateRun(runId, {
+        status: 'error',
+        error: 'workflow not found',
+        finishedAt: Date.now(),
+      });
       return;
     }
     const graph = wf.graph;
@@ -277,9 +304,7 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
       if (!node) continue;
       // Loop body nodes (id like "x#0") never appear here — they live only
       // inside the loop handler. Skip orphan/embedded ids defensively.
-      const incoming = graph.edges
-        .map((e, i) => ({ e, i }))
-        .filter(({ e }) => e.to === nodeId);
+      const incoming = graph.edges.map((e, i) => ({ e, i })).filter(({ e }) => e.to === nodeId);
       const isEntry = node.type === 'trigger' || incoming.length === 0;
       const hasLive = incoming.some(({ i }) => liveEdge.has(i));
       if (!isEntry && !hasLive) continue; // pruned branch — no row, per design
@@ -306,7 +331,11 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        deps.registry.updateStepRun(step.id, { status: 'error', error: msg, finishedAt: Date.now() });
+        deps.registry.updateStepRun(step.id, {
+          status: 'error',
+          error: msg,
+          finishedAt: Date.now(),
+        });
         deps.registry.updateRun(runId, { status: 'error', error: msg, finishedAt: Date.now() });
         log.warn('workflow run failed', { runId, node: nodeId, error: msg });
         return;
@@ -323,6 +352,19 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
     const run = deps.registry.claimNextQueuedRun();
     if (!run) return false;
     await executeRun(run.id);
+    // The run finished (done/error/cancelled). If nothing else is queued, the
+    // workflow side has drained — unload the resident heavy model the run's
+    // agent nodes may have loaded, rather than letting it pin RAM through the
+    // keep_alive / idle-sweep window. Checked here (not after every node, and
+    // only when the queue empties) so a burst of queued runs reuses the model
+    // instead of paying a cold reload between each.
+    if (deps.registry.listRuns({ status: 'queued' }).length === 0) {
+      try {
+        await deps.llm?.releaseHeavy?.();
+      } catch {
+        /* best effort — a failed unload must not break the runner */
+      }
+    }
     return true;
   }
 

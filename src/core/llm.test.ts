@@ -425,6 +425,108 @@ test('idle sweep unloads a heavy profile that has not been used recently', async
   llm.stopIdleEviction();
 });
 
+test('releaseHeavy() unloads the resident heavy model immediately', async () => {
+  // The eager-unload path: background executors call releaseHeavy() the moment
+  // their work drains so a one-shot reasoning turn doesn't pin RAM for the whole
+  // keep_alive window. WHY it matters: on a Pi a 9b sitting idle for 5–10 min is
+  // the difference between the box being usable and swapping.
+  const calls: Array<{ url: string; body: { model: string; keep_alive?: number | string } }> = [];
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; keep_alive?: number | string };
+    calls.push({ url: String(url), body });
+    if (String(url).endsWith('/api/generate')) return new Response('{}', { status: 200 });
+    return streamingResponse([
+      JSON.stringify({ model: body.model, message: { content: 'ok' }, done: true }),
+    ]);
+  };
+  const llm = createOllama({
+    baseUrl: 'http://x',
+    log: silentLogger(),
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    profiles: { reason: { model: 'qwen3.5:9b', contextTokens: 8192, heavy: true } },
+  });
+  await collect(llm.chat({ profile: 'reason', messages: [] }));
+  await llm.releaseHeavy!();
+  const unload = calls.find((c) => c.url.endsWith('/api/generate') && c.body.keep_alive === 0);
+  assert.ok(unload, 'releaseHeavy should have issued an unload');
+  assert.equal(unload!.body.model, 'qwen3.5:9b');
+  llm.stopIdleEviction();
+});
+
+test('releaseHeavy() skips the unload while a heavy call is in flight', async () => {
+  // The cross-component safety guard: a workflow finishing must not unload the
+  // model an agent-queue task is mid-using (agent tasks bypass the queue's heavy
+  // governor, so the two can overlap on the single Ollama heavy slot). WHY a
+  // test: without the in-flight guard the unload would yank the model out from
+  // under a live generation and force a mid-task cold reload.
+  let releaseFetch: () => void = () => {};
+  const fetchGate = new Promise<void>((r) => {
+    releaseFetch = r;
+  });
+  const calls: Array<{ url: string; body: { model: string; keep_alive?: number | string } }> = [];
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; keep_alive?: number | string };
+    calls.push({ url: String(url), body });
+    if (String(url).endsWith('/api/generate')) return new Response('{}', { status: 200 });
+    await fetchGate; // hold the chat call in flight until the test releases it
+    return streamingResponse([
+      JSON.stringify({ model: body.model, message: { content: 'ok' }, done: true }),
+    ]);
+  };
+  const llm = createOllama({
+    baseUrl: 'http://x',
+    log: silentLogger(),
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    profiles: { reason: { model: 'qwen3.5:9b', contextTokens: 8192, heavy: true } },
+  });
+  const generateCount = (): number =>
+    calls.filter((c) => c.url.endsWith('/api/generate') && c.body.keep_alive === 0).length;
+
+  // Start a heavy call and let it park inside fetch — residentHeavy is now set
+  // and heavyInFlight > 0.
+  const consumer = collect(llm.chat({ profile: 'reason', messages: [] }));
+  await new Promise((r) => setTimeout(r, 10));
+  await llm.releaseHeavy!();
+  assert.equal(generateCount(), 0, 'must not unload a model that is still generating');
+
+  // Let the call finish, then release again — now the unload goes through.
+  releaseFetch();
+  await consumer;
+  await llm.releaseHeavy!();
+  assert.equal(generateCount(), 1, 'unload should fire once the heavy call is done');
+  assert.equal(calls.find((c) => c.url.endsWith('/api/generate'))!.body.model, 'qwen3.5:9b');
+  llm.stopIdleEviction();
+});
+
+test('releaseHeavy() is a no-op when no heavy model is resident', async () => {
+  // A tiny-only profile never becomes resident-heavy, so releaseHeavy must not
+  // issue an unload — otherwise a finishing agent on a tiny model would force a
+  // cold reload of the shared interactive chat model.
+  const calls: Array<{ url: string }> = [];
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { model: string };
+    calls.push({ url: String(url) });
+    if (String(url).endsWith('/api/generate')) return new Response('{}', { status: 200 });
+    return streamingResponse([
+      JSON.stringify({ model: body.model, message: { content: 'ok' }, done: true }),
+    ]);
+  };
+  const llm = createOllama({
+    baseUrl: 'http://x',
+    log: silentLogger(),
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    profiles: { chat: { model: 'qwen3.5:0.8b', contextTokens: 2048, heavy: false } },
+  });
+  await collect(llm.chat({ profile: 'chat', messages: [] }));
+  await llm.releaseHeavy!();
+  assert.equal(
+    calls.filter((c) => c.url.endsWith('/api/generate')).length,
+    0,
+    'no unload should be issued when nothing heavy is resident',
+  );
+  llm.stopIdleEviction();
+});
+
 // --- thinking suppression, driven by the Ollama capability probe ----------
 // Capture the /api/chat request body of a single chat() call so we can assert
 // on the `think` parameter and the /no_think system prefix. `capabilities`
