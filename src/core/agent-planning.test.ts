@@ -1,6 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergePlan, firstUnfinished, markDone, allStepsDone } from './agent-planning.js';
+import {
+  mergePlan,
+  firstUnfinished,
+  markDone,
+  allStepsDone,
+  markActive,
+} from './agent-planning.js';
 
 describe('agent-planning', () => {
   describe('mergePlan', () => {
@@ -179,6 +185,62 @@ describe('agent-planning', () => {
         ],
       };
       assert.equal(allStepsDone(plan), true);
+    });
+  });
+
+  describe('markActive', () => {
+    it('activates the first not-done step so the run view shows a live cursor', () => {
+      const plan = {
+        steps: [
+          { id: 's1', title: 'A', status: 'done' as const },
+          { id: 's2', title: 'B', status: 'pending' as const },
+          { id: 's3', title: 'C', status: 'pending' as const },
+        ],
+      };
+      const result = markActive(plan)!;
+      assert.equal(result.steps[0]!.status, 'done'); // done step untouched
+      assert.equal(result.steps[1]!.status, 'active');
+      assert.equal(result.steps[2]!.status, 'pending');
+    });
+
+    it('keeps at most one step active (a stale active is reset to pending)', () => {
+      // Two active steps must never coexist — the cursor would be ambiguous.
+      const plan = {
+        steps: [
+          { id: 's1', title: 'A', status: 'active' as const },
+          { id: 's2', title: 'B', status: 'active' as const },
+        ],
+      };
+      const result = markActive(plan)!;
+      assert.equal(result.steps[0]!.status, 'active');
+      assert.equal(result.steps[1]!.status, 'pending');
+    });
+
+    it('returns the SAME reference when nothing changes, so the loop skips a redundant write', () => {
+      const plan = {
+        steps: [
+          { id: 's1', title: 'A', status: 'done' as const },
+          { id: 's2', title: 'B', status: 'active' as const },
+          { id: 's3', title: 'C', status: 'pending' as const },
+        ],
+      };
+      assert.equal(markActive(plan), plan); // identity, not just deep-equal
+    });
+
+    it('empty/null plan passes through unchanged', () => {
+      const empty = { steps: [] };
+      assert.equal(markActive(empty), empty);
+      assert.equal(markActive(null), null);
+    });
+
+    it('does not resurrect a finished plan (all steps done stays done)', () => {
+      const plan = {
+        steps: [
+          { id: 's1', title: 'A', status: 'done' as const },
+          { id: 's2', title: 'B', status: 'done' as const },
+        ],
+      };
+      assert.equal(markActive(plan), plan);
     });
   });
 });

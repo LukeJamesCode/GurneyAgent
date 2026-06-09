@@ -2540,6 +2540,7 @@ async function handleApi(
           res: snap.task.result,
           m: snap.transcript.length,
           a: snap.artifacts.length,
+          lt: snap.task.liveText,
           ch: snap.children.map((c) => `${c.id}:${c.status}`).join(','),
         });
         if (sig !== lastSig) {

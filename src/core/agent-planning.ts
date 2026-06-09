@@ -102,6 +102,27 @@ export function allStepsDone(plan: AgentPlan | null): boolean {
   return !!plan && plan.steps.length > 0 && plan.steps.every((s) => s.status === 'done');
 }
 
+// Mark the step the loop is about to work as 'active' so the run view shows it
+// in progress (spinner) before it ticks to 'done'. The first not-done step
+// becomes active; every other not-done step is forced back to 'pending' so at
+// most one step is ever active. Done steps are untouched. Returns a new plan, or
+// the same reference when nothing changes (empty/all-done) so callers can skip a
+// redundant write. The model can't set 'active' itself (update_plan only takes
+// titles), so without this steps would jump pending->done with no visible cursor.
+export function markActive(plan: AgentPlan | null): AgentPlan | null {
+  if (!plan || plan.steps.length === 0) return plan;
+  let activated = false;
+  let changed = false;
+  const steps: PlanStep[] = plan.steps.map((s) => {
+    if (s.status === 'done') return s;
+    const next: PlanStep['status'] = activated ? 'pending' : 'active';
+    if (!activated) activated = true;
+    if (next !== s.status) changed = true;
+    return next === s.status ? s : { ...s, status: next };
+  });
+  return changed ? { steps } : plan;
+}
+
 // A compact one-line-per-step render for tool replies / prompts.
 export function renderPlan(plan: AgentPlan | null): string {
   if (!plan || plan.steps.length === 0) return '(no plan yet)';

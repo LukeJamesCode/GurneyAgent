@@ -18,7 +18,7 @@ import type { Logger } from '../util/log.js';
 import type { LLM, ProfileName, ThinkMode } from './llm.js';
 import type { ToolHandler, ToolRegistry } from './tools.js';
 import { createOrchestrator, type Orchestrator, type ReplyChunk } from './orchestrator.js';
-import { allStepsDone, renderPlan } from './agent-planning.js';
+import { allStepsDone, markActive, renderPlan } from './agent-planning.js';
 import { loadImageAttachmentsBase64 } from './agent-attachments.js';
 
 // Virtual chat ids for agent runs live in a reserved band well above any real
@@ -90,6 +90,9 @@ export const DEFAULT_MAX_WALL_CLOCK_MS = 30 * 60_000;
 // gives up and finalises — guards against a model that stalls without finishing,
 // including one that keeps re-wording its plan without ever completing a step.
 export const AUTONOMOUS_STALL_LIMIT = 5;
+// Min gap between live_text writes during a turn. The panel polls the DB ~1/s, so
+// writing reasoning faster than this just burns Pi disk I/O for no visible gain.
+export const LIVE_TEXT_THROTTLE_MS = 800;
 
 // Loop discipline appended to an autonomous agent's system prompt. The loop
 // itself (createAgentRuntime) is deterministic code; this just teaches the model
@@ -221,6 +224,9 @@ export interface AgentTask {
   startedAt: number | null;
   finishedAt: number | null;
   pausedUntil: number | null;
+  // Throttled snapshot of the current turn's streaming reasoning/output, for the
+  // separate-process panel's run view. Transient; null when not running.
+  liveText: string | null;
 }
 
 export interface CreateAgentInput {
@@ -367,6 +373,7 @@ interface TaskRow {
   started_at: number | null;
   finished_at: number | null;
   paused_until: number | null;
+  live_text: string | null;
 }
 
 function rowToTask(r: TaskRow): AgentTask {
@@ -395,6 +402,7 @@ function rowToTask(r: TaskRow): AgentTask {
     startedAt: r.started_at,
     finishedAt: r.finished_at,
     pausedUntil: r.paused_until ?? null,
+    liveText: r.live_text ?? null,
   };
 }
 
@@ -432,6 +440,7 @@ export interface AgentRegistry {
         | 'roundsUsed'
         | 'steerQueue'
         | 'checkpointAt'
+        | 'liveText'
       >
     > & { startedAt?: number; finishedAt?: number },
   ): void;
@@ -657,6 +666,7 @@ export function createAgentRegistry(db: DB): AgentRegistry {
         | 'roundsUsed'
         | 'steerQueue'
         | 'checkpointAt'
+        | 'liveText'
       >
     > & { startedAt?: number; finishedAt?: number },
   ): void {
@@ -683,6 +693,7 @@ export function createAgentRegistry(db: DB): AgentRegistry {
     if (patch.steerQueue !== undefined)
       add('steer_queue_json', 'steer_queue_json', JSON.stringify(patch.steerQueue));
     if (patch.checkpointAt !== undefined) add('checkpoint_at', 'checkpoint_at', patch.checkpointAt);
+    if (patch.liveText !== undefined) add('live_text', 'live_text', patch.liveText);
     if (sets.length === 0) return;
     db.prepare(`UPDATE agent_tasks SET ${sets.join(', ')} WHERE id = @id`).run(params);
   }
@@ -1195,6 +1206,24 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
     let buffer = '';
     let finalText: string | undefined;
     let conversationId = 0;
+    // Live reasoning capture for the panel. The panel is a separate process that
+    // only reads the DB, so we throttle-write the rolling thinking/answer to the
+    // task's live_text (~1/s) — enough for a smooth "watch it think" without a
+    // write per token on a Pi. Reasoning arrives in chunk.thinking (Ollama streams
+    // it apart from content); the visible answer is chunk.delta.
+    let thinkingBuf = '';
+    let lastLiveWrite = 0;
+    const tail = (s: string, n: number): string => (s.length > n ? `…${s.slice(-n)}` : s);
+    const flushLive = (force: boolean): void => {
+      const now = Date.now();
+      if (!force && now - lastLiveWrite < LIVE_TEXT_THROTTLE_MS) return;
+      lastLiveWrite = now;
+      const t = thinkingBuf.trim();
+      const a = buffer.trim();
+      const live =
+        t && a ? `${tail(t, 4000)}\n\n[answer so far]\n${tail(a, 2000)}` : tail(t || a, 6000);
+      opts.registry.updateTask(taskId, { liveText: live || null });
+    };
     await orch.handleUserMessage({
       chatId: virtualChatId,
       userId: opts.ownerUserId,
@@ -1202,10 +1231,15 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
       ...(thinkMode ? { thinkMode } : {}),
       ...(images && images.length > 0 ? { images } : {}),
       send: (chunk: ReplyChunk) => {
+        if (chunk.thinking) {
+          thinkingBuf += chunk.thinking;
+          flushLive(false);
+        }
         if (chunk.delta) {
           buffer += chunk.delta;
           onDelta?.(chunk.delta);
           emit(taskId, { type: 'delta', text: chunk.delta });
+          flushLive(false);
         }
         if (chunk.done) {
           // meta.afterTurn.assistantText is the canonical post-guard reply
@@ -1278,6 +1312,7 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
       status: 'done',
       result: text,
       finishedAt: Date.now(),
+      liveText: null, // clear the transient streaming buffer on completion
       ...(conversationId ? { conversationId } : {}),
     });
     emit(taskId, { type: 'done', ok: true });
@@ -1320,6 +1355,7 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
         status: 'done',
         result: text,
         finishedAt: Date.now(),
+        liveText: null, // clear the transient streaming buffer on completion
         ...(conversationId ? { conversationId } : {}),
       });
       emit(taskId, { type: 'done', ok: true });
@@ -1347,6 +1383,16 @@ export function createAgentRuntime(opts: AgentRuntimeOptions): AgentRuntime {
       if (steer.length > 0) opts.registry.updateTask(taskId, { steerQueue: [] });
 
       emit(taskId, { type: 'phase', phase: roundsUsed === 0 ? 'planning' : 'working' });
+      // Light up the step about to be worked so the run view shows a live cursor
+      // (the model can't set 'active' itself — update_plan only takes titles).
+      // complete_step then flips it to 'done'. No-op on turn 0 (no plan yet).
+      if (fresh.plan) {
+        const activated = markActive(fresh.plan);
+        if (activated && activated !== fresh.plan) {
+          opts.registry.updateTask(taskId, { plan: activated });
+          emit(taskId, { type: 'plan', plan: activated });
+        }
+      }
       // Turn 0 starts from the goal; later turns continue the plan. Either way,
       // any pending steer must be folded in (a steer queued before the run
       // started would otherwise be drained and lost on turn 0).

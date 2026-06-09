@@ -6,7 +6,7 @@
 //
 // The panel only does CRUD + dispatch over HTTP; the daemon's resource-aware
 // queue actually runs the tasks (and the heavy-model slot stays single-owner).
-const { useState, useEffect, useCallback, useMemo } = React;
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 const STATUS_TONE = {
   queued: 'neutral',
@@ -1915,6 +1915,42 @@ function AgentEditor({ initial, agents, onClose, onSave, error }) {
   );
 }
 
+// Live view of the model's reasoning as it works. Streamed from the daemon via
+// the task's live_text (throttled ~1/s, since the panel only reads the DB), it
+// auto-scrolls to the newest tokens. Only shown while the task is actually
+// running; cleared by the loop on completion.
+function ThinkingPane({ text, running }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  }, [text]);
+  if (!running || !text) return null;
+  return (
+    <div>
+      <window.Label hint="The model's live reasoning for the current step.">Thinking</window.Label>
+      <pre
+        ref={ref}
+        style={{
+          margin: 0,
+          padding: 10,
+          maxHeight: 200,
+          overflow: 'auto',
+          background: 'var(--surface-2)',
+          borderRadius: 'var(--radius-sm)',
+          border: '1px solid var(--border)',
+          fontSize: 12.5,
+          lineHeight: 1.5,
+          color: 'var(--text-2)',
+          whiteSpace: 'pre-wrap',
+          fontFamily: 'var(--mono, monospace)',
+        }}
+      >
+        {text}
+      </pre>
+    </div>
+  );
+}
+
 // A live checklist of the autonomous plan. Steps flip done as the loop ticks.
 function PlanChecklist({ plan }) {
   if (!plan || !plan.steps || plan.steps.length === 0) return null;
@@ -2145,6 +2181,7 @@ function TaskDetail({ taskId, onClose, onCancelled }) {
             </div>
           )}
           <BudgetGauge task={task} agent={agent} />
+          <ThinkingPane text={task.liveText} running={task.status === 'running'} />
           <PlanChecklist plan={task.plan} />
           {running && agent && agent.mode === 'autonomous' && <SteerBox taskId={taskId} />}
           <ArtifactList artifacts={artifacts} />
