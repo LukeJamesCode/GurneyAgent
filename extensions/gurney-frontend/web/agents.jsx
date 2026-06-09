@@ -882,33 +882,10 @@ function LaunchComposer({ agents, workflows, onDispatchAgent, onRunWorkflow }) {
         )}
       </div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-        <label
-          title="Attach files, images, or PDFs for this run"
-          style={{
-            height: 44,
-            width: 44,
-            flex: 'none',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            borderRadius: 'var(--radius-sm)',
-            border: '1px solid var(--border)',
-            background: 'var(--surface-2)',
-            color: 'var(--text)',
-          }}
-        >
-          <input
-            type="file"
-            multiple
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              att.addFiles(e.target.files);
-              e.target.value = '';
-            }}
-          />
-          <window.Icon name="plus" size={18} />
-        </label>
+        <window.AttachButton
+          onPick={att.addFiles}
+          title="Attach files or a folder for this run"
+        />
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}

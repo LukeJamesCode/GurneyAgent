@@ -539,35 +539,12 @@ function ChatHub({
               </div>
             )}
             <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
-              <label
-                title="Attach files, images, or PDFs"
-                style={{
-                  height: 44,
-                  width: 44,
-                  flex: 'none',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: running ? 'pointer' : 'not-allowed',
-                  borderRadius: 'var(--radius-sm)',
-                  border: '1px solid var(--border-2)',
-                  background: 'var(--surface-2)',
-                  color: 'var(--text)',
-                  opacity: running ? 1 : 0.5,
-                }}
-              >
-                <input
-                  type="file"
-                  multiple
-                  disabled={!running}
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    att.addFiles(e.target.files);
-                    e.target.value = '';
-                  }}
-                />
-                <window.Icon name="plus" size={18} />
-              </label>
+              <window.AttachButton
+                onPick={att.addFiles}
+                openUp
+                disabled={!running}
+                title="Attach files, a folder, images, or PDFs"
+              />
               <textarea
                 ref={inputRef}
                 value={draft}

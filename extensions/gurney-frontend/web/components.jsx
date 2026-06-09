@@ -823,6 +823,98 @@ function AttachChips({ files, onRemove }) {
   );
 }
 
+// A single "+" that picks either loose files or a whole folder — one input
+// can't do both (webkitdirectory forces folder-only), so it opens a tiny menu.
+// `onPick` receives the FileList; folder picks carry webkitRelativePath so the
+// staging path preserves structure. `openUp` renders the menu above the button
+// (for a composer pinned to the bottom of the viewport, e.g. the chat bar).
+function AttachButton({
+  onPick,
+  size = 44,
+  openUp = false,
+  disabled = false,
+  title = 'Attach files or a folder',
+}) {
+  const [open, setOpen] = React.useState(false);
+  const pick = (e) => {
+    onPick(e.target.files);
+    e.target.value = '';
+    setOpen(false);
+  };
+  const item = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 12px',
+    cursor: 'pointer',
+    fontSize: 13,
+    fontWeight: 600,
+    color: 'var(--text)',
+    whiteSpace: 'nowrap',
+  };
+  return (
+    <div style={{ position: 'relative', flex: 'none' }}>
+      <button
+        type="button"
+        title={title}
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          height: size,
+          width: size,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          borderRadius: 'var(--radius-sm)',
+          border: '1px solid var(--border)',
+          background: 'var(--surface-2)',
+          color: 'var(--text)',
+          opacity: disabled ? 0.5 : 1,
+        }}
+      >
+        <Icon name="plus" size={Math.round(size * 0.42)} />
+      </button>
+      {!disabled && open && (
+        <>
+          {/* Click-away backdrop. */}
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 60 }} />
+          <div
+            style={{
+              position: 'absolute',
+              left: 0,
+              zIndex: 61,
+              ...(openUp ? { bottom: size + 6 } : { top: size + 6 }),
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+              overflow: 'hidden',
+              minWidth: 132,
+            }}
+          >
+            <label style={item}>
+              <input type="file" multiple style={{ display: 'none' }} onChange={pick} />
+              <Icon name="paperclip" size={14} /> Files
+            </label>
+            <label style={{ ...item, borderTop: '1px solid var(--border)' }}>
+              <input
+                type="file"
+                webkitdirectory=""
+                directory=""
+                multiple
+                style={{ display: 'none' }}
+                onChange={pick}
+              />
+              <Icon name="folder" size={14} /> Folder
+            </label>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 Object.assign(window, {
   Icon,
   Button,
@@ -842,5 +934,6 @@ Object.assign(window, {
   SectionTitle,
   useAttachments,
   AttachChips,
+  AttachButton,
   classifyAttachment,
 });

@@ -498,32 +498,11 @@ function WorkflowBuilder({ state }) {
             placeholder="Run input (optional)…"
             style={{ minWidth: 180 }}
           />
-          <label
-            title="Attach files, images, or PDFs for this run"
-            style={{
-              height: 36,
-              width: 36,
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              borderRadius: 'var(--radius-sm)',
-              border: '1px solid var(--border)',
-              background: 'var(--surface-2)',
-              color: 'var(--text)',
-            }}
-          >
-            <input
-              type="file"
-              multiple
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                att.addFiles(e.target.files);
-                e.target.value = '';
-              }}
-            />
-            <Icon name="plus" size={16} />
-          </label>
+          <window.AttachButton
+            onPick={att.addFiles}
+            size={36}
+            title="Attach files or a folder for this run"
+          />
           <Button variant="ghost" onClick={saveWorkflow}><Icon name="save" size={16} /> Save</Button>
           <Button variant="primary" onClick={runWorkflow} disabled={!activeWfId}><Icon name="play" size={16} /> Run</Button>
           {activeWfId && <Button variant="danger" onClick={deleteWorkflow}><Icon name="trash" size={16} /> Delete</Button>}
