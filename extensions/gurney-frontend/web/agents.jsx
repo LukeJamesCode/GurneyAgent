@@ -805,13 +805,27 @@ function LaunchComposer({ agents, workflows, onDispatchAgent, onRunWorkflow }) {
   const [text, setText] = useState('');
   // 'inherit' = use the agent's saved think mode; otherwise override this run.
   const [think, setThink] = useState('inherit');
-  const canLaunch = mode === 'agent' ? !!agentId && !!text.trim() : !!workflowId;
+  // Files/images/PDFs for this launch. null = don't block visual drops up front;
+  // the server gates images on the target's model and reports any it skips.
+  const att = window.useAttachments(null);
+  // An agent needs a prompt; a workflow can launch on attachments alone.
+  const canLaunch =
+    mode === 'agent'
+      ? !!agentId && (!!text.trim() || !!att.staged.length)
+      : !!workflowId;
   const launch = () => {
-    if (!canLaunch) return;
+    if (!canLaunch || att.staging) return;
+    const stageToken = att.token;
     if (mode === 'agent')
-      onDispatchAgent(Number(agentId), text.trim(), think === 'inherit' ? undefined : think);
-    else onRunWorkflow(Number(workflowId), text.trim() || null);
+      onDispatchAgent(
+        Number(agentId),
+        text.trim(),
+        think === 'inherit' ? undefined : think,
+        stageToken,
+      );
+    else onRunWorkflow(Number(workflowId), text.trim() || null, stageToken);
     setText('');
+    att.clear();
   };
   return (
     <div className="dash-card" style={{ marginBottom: 20 }}>
@@ -868,6 +882,33 @@ function LaunchComposer({ agents, workflows, onDispatchAgent, onRunWorkflow }) {
         )}
       </div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+        <label
+          title="Attach files, images, or PDFs for this run"
+          style={{
+            height: 44,
+            width: 44,
+            flex: 'none',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--border)',
+            background: 'var(--surface-2)',
+            color: 'var(--text)',
+          }}
+        >
+          <input
+            type="file"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              att.addFiles(e.target.files);
+              e.target.value = '';
+            }}
+          />
+          <window.Icon name="plus" size={18} />
+        </label>
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -888,6 +929,11 @@ function LaunchComposer({ agents, workflows, onDispatchAgent, onRunWorkflow }) {
           Launch
         </window.Button>
       </div>
+      {att.files.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <window.AttachChips files={att.files} onRemove={att.remove} />
+        </div>
+      )}
     </div>
   );
 }
@@ -989,15 +1035,25 @@ function AgentsTab({ state }) {
   };
 
   // Launch composer: dispatch by id / run a saved workflow by id.
-  const dispatchById = async (agentId, prompt, thinkMode) => {
+  const dispatchById = async (agentId, prompt, thinkMode, stageToken) => {
     setError('');
-    const r = await window.api.post(`/api/agents/${agentId}/dispatch`, { prompt, thinkMode });
+    const r = await window.api.post(`/api/agents/${agentId}/dispatch`, {
+      prompt,
+      thinkMode,
+      ...(stageToken ? { stageToken } : {}),
+    });
     if (!r.ok) setError(r.error || 'Dispatch failed');
+    else if (r.data && r.data.rejected && r.data.rejected.length) {
+      setError(`Some attachments were skipped: ${r.data.rejected.join('; ')}`);
+    }
     load();
   };
-  const runWorkflowById = async (workflowId, input) => {
+  const runWorkflowById = async (workflowId, input, stageToken) => {
     setError('');
-    const r = await window.api.post(`/api/workflows/${workflowId}/run`, { input });
+    const r = await window.api.post(`/api/workflows/${workflowId}/run`, {
+      input,
+      ...(stageToken ? { stageToken } : {}),
+    });
     if (!r.ok) setError(r.error || 'Run failed');
     load();
   };
@@ -1325,6 +1381,7 @@ function DispatchModal({ agent, onClose, onDispatch }) {
     <window.Modal
       open
       onClose={onClose}
+      disableOutsideClick
       title={`Dispatch to ${agent.name}`}
       footer={
         <>

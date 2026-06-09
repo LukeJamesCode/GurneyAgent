@@ -121,7 +121,8 @@ function Button({ variant = 'default', size = 'md', icon, children, style, dange
     gap: 8,
     fontFamily: 'var(--font-ui)',
     fontWeight: 600,
-    cursor: 'pointer',
+    cursor: rest.disabled ? 'not-allowed' : 'pointer',
+    opacity: rest.disabled ? 0.5 : 1,
     borderRadius: 'var(--radius-sm)',
     border: '1px solid transparent',
     transition: 'background .15s, border-color .15s, color .15s, transform .05s, box-shadow .15s',
@@ -562,19 +563,19 @@ function Segmented({ value, onChange, options, size = 'md' }) {
 }
 
 /* ---------------------------------------------------------------- Modal */
-function Modal({ open, onClose, title, children, footer, width = 460, tone }) {
+function Modal({ open, onClose, title, children, footer, width = 460, tone, disableOutsideClick }) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && !disableOutsideClick) onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, onClose, disableOutsideClick]);
   if (!open) return null;
   return (
     <div
-      onClick={onClose}
+      onClick={disableOutsideClick ? undefined : onClose}
       style={{
         position: 'fixed',
         inset: 0,
