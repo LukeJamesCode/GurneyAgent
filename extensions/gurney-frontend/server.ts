@@ -1926,7 +1926,11 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
     // SPA fallback to index.html for unknown non-asset routes.
     const index = join(WEB_DIR, 'index.html');
     if (existsSync(index)) {
-      res.writeHead(200, { 'content-type': MIME['.html']!, 'referrer-policy': 'no-referrer' });
+      res.writeHead(200, {
+        'content-type': MIME['.html']!,
+        'referrer-policy': 'no-referrer',
+        'cache-control': 'no-cache',
+      });
       createReadStream(index).pipe(res);
       return;
     }
@@ -1935,7 +1939,10 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
     return;
   }
   const type = MIME[extname(full).toLowerCase()] ?? 'application/octet-stream';
-  const headers: Record<string, string> = { 'content-type': type };
+  // No build step: .jsx/.js are transpiled in-browser and loaded as plain
+  // <script src>. Without this the browser caches an old bundle and keeps
+  // running stale UI after an extension update — force a revalidate each load.
+  const headers: Record<string, string> = { 'content-type': type, 'cache-control': 'no-cache' };
   if (type === MIME['.html']) headers['referrer-policy'] = 'no-referrer';
   res.writeHead(200, headers);
   createReadStream(full).pipe(res);
