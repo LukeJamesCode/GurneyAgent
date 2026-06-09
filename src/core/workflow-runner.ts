@@ -10,10 +10,12 @@
 // agent nodes (which use runtime.runTask inline, like spawn_agent's await mode)
 // never contend for the single resident heavy-model slot.
 
+import { join } from 'node:path';
 import type { Logger } from '../util/log.js';
 import type { AgentRegistry, AgentRuntime } from './agents.js';
 import type { ToolRegistry } from './tools.js';
 import type { LLM, ToolCall } from './llm.js';
+import { ingestStagedDir, removeStagedBatch } from './agent-attachments.js';
 import {
   topoOrder,
   type WorkflowNode,
@@ -32,6 +34,10 @@ export interface WorkflowRunnerDeps {
   log: Logger;
   // User id stamped on agent-node conversation rows (same as AgentRuntime).
   ownerUserId: number;
+  // Root for task input attachments (~/.gurney/agent-attachments). When set, a
+  // run's staged upload batch is ingested into each agent-node task. Optional so
+  // tests can omit it; production (start.ts) always wires it.
+  attachmentsDir?: string;
   // Poll cadence for claiming queued runs. 0/unset disables the timer (tests
   // drive runOnce() directly).
   pollMs?: number;
@@ -206,6 +212,25 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
         const thinkMode =
           nodeThink === 'auto' || nodeThink === 'on' || nodeThink === 'off' ? nodeThink : undefined;
         const task = deps.agents.enqueue({ agentId, prompt, ...(thinkMode ? { thinkMode } : {}) });
+        // Ingest the run's uploaded batch into this node's task before it runs,
+        // so the agent's model sees images and read_file/list_dir pin to the
+        // files. keepStaging leaves the batch for sibling agent nodes; runOnce
+        // removes it once the run drains. Images are gated on the node agent's
+        // own multimodal capability.
+        const run = deps.registry.getRun(runId);
+        if (run?.stageToken && deps.attachmentsDir) {
+          const model = deps.llm?.resolveModel(agent.profile);
+          const allowVisual =
+            model && deps.llm?.supportsVision ? await deps.llm.supportsVision(model) : false;
+          await ingestStagedDir({
+            registry: deps.agents,
+            baseDir: deps.attachmentsDir,
+            taskId: task.id,
+            stagingDir: join(deps.attachmentsDir, 'staging', run.stageToken),
+            allowVisual,
+            keepStaging: true,
+          });
+        }
         // The agent_tasks id is returned in ctx; executeRun writes it onto the
         // step row so mission-control can surface the transcript.
         const result = await deps.runtime.runTask(task.id);
@@ -352,6 +377,15 @@ export function createWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
     const run = deps.registry.claimNextQueuedRun();
     if (!run) return false;
     await executeRun(run.id);
+    // The run is over (done/error/cancelled) — every agent node that was going
+    // to read the uploaded batch has. Remove it once, regardless of outcome.
+    if (run.stageToken && deps.attachmentsDir) {
+      try {
+        removeStagedBatch(deps.attachmentsDir, run.stageToken);
+      } catch {
+        /* best effort — a leftover staging dir must not break the runner */
+      }
+    }
     // The run finished (done/error/cancelled). If nothing else is queued, the
     // workflow side has drained — unload the resident heavy model the run's
     // agent nodes may have loaded, rather than letting it pin RAM through the

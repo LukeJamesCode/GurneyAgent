@@ -1387,7 +1387,7 @@ function DispatchModal({ agent, onClose, onDispatch }) {
               style={{ display: 'none' }}
               onChange={(e) => addFiles(e.target.files)}
             />
-            <window.Icon name="paperclip" size={15} /> Add files
+            <window.Icon name="plus" size={15} /> Add files
           </label>
           <label style={PICK_BTN}>
             <input

@@ -204,6 +204,10 @@ export async function ingestStagedDir(opts: {
   taskId: number;
   stagingDir: string;
   allowVisual: boolean;
+  // Leave the staging dir in place after ingest. A workflow run shares one batch
+  // across several agent-node tasks, so each node ingests with keepStaging:true
+  // and the runner removes the batch once (removeStagedBatch) when the run ends.
+  keepStaging?: boolean;
 }): Promise<{ ingested: number; rejected: string[] }> {
   const { registry, baseDir, taskId, stagingDir, allowVisual } = opts;
   if (!existsSync(stagingDir)) return { ingested: 0, rejected: [] };
@@ -212,8 +216,64 @@ export async function ingestStagedDir(opts: {
     bytes: readFileSync(abs),
   }));
   const result = await ingestFiles({ registry, baseDir, taskId, allowVisual, files });
-  rmSync(stagingDir, { recursive: true, force: true });
+  if (!opts.keepStaging) rmSync(stagingDir, { recursive: true, force: true });
   return result;
+}
+
+// Remove a staged batch by token (best-effort). The staging layout is
+// <baseDir>/staging/<token>; callers that ingest with keepStaging:true use this
+// to clean up once, after every consumer has read the batch.
+export function removeStagedBatch(baseDir: string, token: string): void {
+  rmSync(join(baseDir, 'staging', token), { recursive: true, force: true });
+}
+
+// Read a staged batch (raw bytes under stagingDir) into in-memory attachments
+// for a turn-scoped surface that has no task to pin to — i.e. direct chat.
+// Images come back base64 for a multimodal model's messages[].images; files and
+// PDFs come back as extracted text the caller inlines into the prompt. The
+// caller deletes stagingDir. Mirrors ingestFiles' classification, minus the
+// registry/disk side effects.
+export async function readStagedAttachments(stagingDir: string): Promise<{
+  images: { name: string; base64: string }[];
+  texts: { name: string; text: string }[];
+  rejected: string[];
+}> {
+  const images: { name: string; base64: string }[] = [];
+  const texts: { name: string; text: string }[] = [];
+  const rejected: string[] = [];
+  if (!existsSync(stagingDir)) return { images, texts, rejected };
+  for (const abs of walkFiles(stagingDir)) {
+    const rel = relative(stagingDir, abs);
+    const name = rel.split(/[/\\]/).pop() ?? rel;
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(abs);
+    } catch {
+      rejected.push(`${rel} (unreadable)`);
+      continue;
+    }
+    if (bytes.length > MAX_ATTACHMENT_BYTES) {
+      rejected.push(`${rel} is too large (max ${MAX_ATTACHMENT_BYTES} bytes)`);
+      continue;
+    }
+    const kind = classifyKind(name);
+    if (kind === 'image') {
+      images.push({ name, base64: bytes.toString('base64') });
+    } else if (kind === 'pdf') {
+      try {
+        const res = await extractText(new Uint8Array(bytes), { mergePages: true });
+        const text = typeof res.text === 'string' ? res.text : (res.text as string[]).join('\n\n');
+        texts.push({ name, text });
+      } catch (e) {
+        rejected.push(
+          `could not read PDF ${name}: ${e instanceof Error ? e.message : 'parse error'}`,
+        );
+      }
+    } else {
+      texts.push({ name, text: bytes.toString('utf8') });
+    }
+  }
+  return { images, texts, rejected };
 }
 
 // Base64 of every image attached to a task, in drop order, for a multimodal

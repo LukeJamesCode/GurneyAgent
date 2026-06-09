@@ -39,7 +39,11 @@ import {
   type AgentExecutionMode,
   type CreateAgentInput,
 } from '../../src/core/agents.js';
-import { ingestStagedDir } from '../../src/core/agent-attachments.js';
+import {
+  ingestStagedDir,
+  readStagedAttachments,
+  removeStagedBatch,
+} from '../../src/core/agent-attachments.js';
 import { createAgentScheduleStore } from '../../src/core/agent-schedules.js';
 import { createAgentApprovalStore } from '../../src/core/agent-approvals.js';
 import {
@@ -1075,9 +1079,13 @@ async function getDirectChatRuntime(cfg: GurneyConfig): Promise<DirectChatRuntim
 }
 
 async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const body = await readJson<{ text?: string; thinkMode?: string }>(req);
+  const body = await readJson<{ text?: string; thinkMode?: string; stageToken?: string }>(req);
   const text = (body.text ?? '').trim();
-  if (!text) {
+  const stageToken =
+    typeof body.stageToken === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(body.stageToken)
+      ? body.stageToken
+      : undefined;
+  if (!text && !stageToken) {
     sendJson(res, 400, { error: 'empty message' });
     return;
   }
@@ -1091,7 +1099,7 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
     return;
   }
-  chatHistory.push({ role: 'user', text, time: hhmm() });
+  chatHistory.push({ role: 'user', text: text || '📎 (attachments)', time: hhmm() });
 
   res.writeHead(200, {
     'content-type': 'text/event-stream',
@@ -1115,6 +1123,46 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     for (const finish of [...runtime.pendingConfirms.values()]) finish(false);
   });
 
+  // Ingest any uploaded batch staged for this turn. Images ride the turn for a
+  // vision model (orchestrator's per-turn `images`); files and PDFs are inlined
+  // as text the model can reference. Both are turn-scoped — never persisted —
+  // so the batch is deleted right after reading. The intercept chain still sees
+  // the user's plain `text`; only the orchestrator gets the file-augmented one.
+  let orchestratorText = text;
+  let turnImages: string[] = [];
+  if (stageToken) {
+    const stagingDir = join(homeDir(), 'agent-attachments', 'staging', stageToken);
+    try {
+      const staged = await readStagedAttachments(stagingDir);
+      const chatModel = runtime.llm.resolveModel('chat');
+      const allowVisual = runtime.llm.supportsVision
+        ? await runtime.llm.supportsVision(chatModel)
+        : false;
+      const skipped = [...staged.rejected];
+      if (staged.images.length && !allowVisual) {
+        skipped.push(`${staged.images.map((i) => i.name).join(', ')} (needs a vision model)`);
+      } else {
+        turnImages = staged.images.map((i) => i.base64);
+      }
+      if (staged.texts.length) {
+        // Cap each inlined file so a large upload can't blow a Pi's context.
+        const CAP = 100_000;
+        const blocks = staged.texts.map((t) => {
+          const clipped = t.text.length > CAP ? `${t.text.slice(0, CAP)}\n…[truncated]` : t.text;
+          return `--- Attached file: ${t.name} ---\n${clipped}`;
+        });
+        orchestratorText = text ? `${blocks.join('\n\n')}\n\n${text}` : blocks.join('\n\n');
+      }
+      if (skipped.length) sse('instant', { text: `⚠️ Skipped: ${skipped.join('; ')}` });
+    } catch (e) {
+      sse('instant', {
+        text: `⚠️ Could not read attachments: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    } finally {
+      removeStagedBatch(join(homeDir(), 'agent-attachments'), stageToken);
+    }
+  }
+
   // Mirror the Telegram adapter: run the registered intercept chain first so
   // extensions like gurney-instant-responses get a crack at the message before
   // the orchestrator does. An intercept that fully handles the turn (a trivial
@@ -1131,7 +1179,8 @@ async function streamChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     await runtime.orchestrator.handleUserMessage({
       chatId: runtime.chatId,
       userId: runtime.userId,
-      text,
+      text: orchestratorText,
+      ...(turnImages.length ? { images: turnImages } : {}),
       ...(turnThinkMode !== 'auto' ? { thinkMode: turnThinkMode } : {}),
       send: (chunk) => {
         if (controller.signal.aborted) return;
@@ -2587,11 +2636,15 @@ async function handleApi(
     const workflowRunMatch = /^\/api\/workflows\/(\d+)\/run$/.exec(path);
     if (workflowRunMatch && method === 'POST') {
       const id = Number(workflowRunMatch[1]);
-      const body = await readJson<{ input?: string }>(req);
+      const body = await readJson<{ input?: string; stageToken?: string }>(req);
+      const stageToken =
+        typeof body.stageToken === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(body.stageToken)
+          ? body.stageToken
+          : null;
       const run = withDb((db) => {
         const reg = createWorkflowRegistry(db);
         if (!reg.get(id)) return null;
-        return reg.enqueueRun(id, body.input ?? null);
+        return reg.enqueueRun(id, body.input ?? null, stageToken);
       });
       return sendJson(res, run ? 200 : 404, run ? { run } : { error: 'workflow not found' });
     }

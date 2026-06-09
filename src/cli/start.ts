@@ -505,6 +505,7 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     llm,
     log,
     ownerUserId: ownerId,
+    attachmentsDir,
     pollMs: 2500,
   });
   workflowRunner.start();

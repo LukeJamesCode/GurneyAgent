@@ -97,6 +97,9 @@ function ChatHub({
   const scrollRef = useRefCH(null);
   const streamRef = useRefCH(null); // active postStream handle (for abort)
   const inputRef = useRefCH(null);
+  // File/image/PDF uploads for the next turn. null = don't block visual drops
+  // up front; the server gates images on the chat model and reports any skips.
+  const att = window.useAttachments(null);
 
   useEffectCH(
     () => () => {
@@ -154,7 +157,21 @@ function ChatHub({
 
   // Stream a normal (non-slash) message through the orchestrator.
   const stream = (text) => {
-    setMessages((m) => [...m, { id: Date.now(), role: 'user', text, time: now() }]);
+    // Snapshot the staged batch for this turn, then clear so the next message
+    // starts fresh (the server deletes the batch once the turn reads it).
+    const stageToken = att.token;
+    const attachLabels = att.staged.map((f) => f.rel);
+    att.clear();
+    setMessages((m) => [
+      ...m,
+      {
+        id: Date.now(),
+        role: 'user',
+        text: text || '📎 ' + attachLabels.join(', '),
+        time: now(),
+        ...(attachLabels.length ? { attachments: attachLabels } : {}),
+      },
+    ]);
     setPhase('streaming');
     setStreamText('');
     setStreamThink('');
@@ -165,7 +182,7 @@ function ChatHub({
     let metaAcc = null;
     streamRef.current = window.api.postStream(
       '/api/chat',
-      { text, thinkMode },
+      { text, thinkMode, ...(stageToken ? { stageToken } : {}) },
       {
         onEvent: (ev, data) => {
           if (ev === 'delta' && data && data.delta) {
@@ -298,7 +315,8 @@ function ChatHub({
   // Single entry point for sending — handles slash commands and plain messages.
   const submit = (raw) => {
     const text = (raw || '').trim();
-    if (!text || !running || phase !== 'idle') return;
+    // An attachments-only turn (no typed text) is allowed once a file has staged.
+    if ((!text && !att.staged.length) || !running || phase !== 'idle') return;
     setDraft('');
     if (text.startsWith('/')) {
       runCommandLine(text);
@@ -515,7 +533,41 @@ function ChatHub({
                 ]}
               />
             </div>
+            {att.files.length > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                <window.AttachChips files={att.files} onRemove={att.remove} />
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+              <label
+                title="Attach files, images, or PDFs"
+                style={{
+                  height: 44,
+                  width: 44,
+                  flex: 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: running ? 'pointer' : 'not-allowed',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid var(--border-2)',
+                  background: 'var(--surface-2)',
+                  color: 'var(--text)',
+                  opacity: running ? 1 : 0.5,
+                }}
+              >
+                <input
+                  type="file"
+                  multiple
+                  disabled={!running}
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    att.addFiles(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
+                <window.Icon name="plus" size={18} />
+              </label>
               <textarea
                 ref={inputRef}
                 value={draft}
@@ -571,8 +623,12 @@ function ChatHub({
                   variant="primary"
                   icon="send"
                   onClick={send}
-                  disabled={!running || !draft.trim()}
-                  style={{ height: 44, opacity: !running || !draft.trim() ? 0.5 : 1 }}
+                  disabled={!running || att.staging || (!draft.trim() && !att.staged.length)}
+                  style={{
+                    height: 44,
+                    opacity:
+                      !running || att.staging || (!draft.trim() && !att.staged.length) ? 0.5 : 1,
+                  }}
                 >
                   Send
                 </window.Button>

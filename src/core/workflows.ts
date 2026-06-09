@@ -68,6 +68,10 @@ export interface WorkflowRun {
   workflowId: number;
   status: WorkflowRunStatus;
   input: string | null;
+  // Staging token for files/images/PDFs uploaded with the run, or null. Bytes
+  // live under <attachmentsDir>/staging/<stageToken>/; the runner ingests them
+  // into each agent-node task. See 0019_workflow_run_attachments.
+  stageToken: string | null;
   output: string | null;
   error: string | null;
   createdAt: number;
@@ -274,6 +278,7 @@ interface RunRow {
   workflow_id: number;
   status: string;
   input_json: string | null;
+  stage_token: string | null;
   output: string | null;
   error: string | null;
   created_at: number;
@@ -287,6 +292,7 @@ function rowToRun(r: RunRow): WorkflowRun {
     workflowId: r.workflow_id,
     status: r.status as WorkflowRunStatus,
     input: r.input_json === null ? null : extractInput(r.input_json),
+    stageToken: r.stage_token,
     output: r.output,
     error: r.error,
     createdAt: r.created_at,
@@ -350,7 +356,7 @@ export interface WorkflowRegistry {
   update(id: number, patch: UpdateWorkflowInput): WorkflowDefinition | undefined;
   remove(id: number): boolean;
 
-  enqueueRun(workflowId: number, input?: string | null): WorkflowRun;
+  enqueueRun(workflowId: number, input?: string | null, stageToken?: string | null): WorkflowRun;
   // Atomically claim the oldest queued run (UPDATE ... WHERE status='queued').
   // Returns it flipped to 'running', or undefined when none are waiting. Safe
   // across processes: only one caller wins a given row.
@@ -393,8 +399,8 @@ export function createWorkflowRegistry(db: DB): WorkflowRegistry {
   const deleteById = db.prepare(`DELETE FROM workflows WHERE id = ?`);
 
   const insertRun = db.prepare(
-    `INSERT INTO workflow_runs (workflow_id, status, input_json, created_at)
-     VALUES (@workflow_id, 'queued', @input_json, @created_at)`,
+    `INSERT INTO workflow_runs (workflow_id, status, input_json, stage_token, created_at)
+     VALUES (@workflow_id, 'queued', @input_json, @stage_token, @created_at)`,
   );
   const selectRunById = db.prepare(`SELECT * FROM workflow_runs WHERE id = ?`);
 
@@ -465,10 +471,15 @@ export function createWorkflowRegistry(db: DB): WorkflowRegistry {
     return row ? rowToRun(row) : undefined;
   }
 
-  function enqueueRun(workflowId: number, input?: string | null): WorkflowRun {
+  function enqueueRun(
+    workflowId: number,
+    input?: string | null,
+    stageToken?: string | null,
+  ): WorkflowRun {
     const info = insertRun.run({
       workflow_id: workflowId,
       input_json: input == null ? null : JSON.stringify({ input }),
+      stage_token: stageToken ?? null,
       created_at: Date.now(),
     });
     return getRun(Number(info.lastInsertRowid))!;

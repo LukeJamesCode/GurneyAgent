@@ -730,6 +730,98 @@ function SectionTitle({ children, sub, right }) {
   );
 }
 
+/* ----------------------------------------------------------- Attachments
+   Shared file-upload staging used by Chat, Agents, and Workflows. Each picked
+   file's bytes are staged to the server under one batch token; the caller hands
+   `stageToken` to its chat/dispatch/run endpoint, which ingests then deletes the
+   batch. `multimodal === false` blocks image/PDF drops up front; null/true lets
+   them through and the server reports anything it had to skip. */
+const ATTACH_IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'];
+function classifyAttachment(name, type) {
+  const lower = (name || '').toLowerCase();
+  if ((type || '').startsWith('image/') || ATTACH_IMAGE_EXTS.some((e) => lower.endsWith(e)))
+    return 'image';
+  if ((type || '') === 'application/pdf' || lower.endsWith('.pdf')) return 'pdf';
+  return 'file';
+}
+function useAttachments(multimodal) {
+  const stageToken = React.useMemo(
+    () =>
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID().replace(/-/g, '')
+        : Array.from({ length: 32 }, () => Math.floor(Math.random() * 36).toString(36)).join(''),
+    [],
+  );
+  // { id, rel, kind, status: 'staging'|'ready'|'blocked'|'error', err? }
+  const [files, setFiles] = React.useState([]);
+  const [staging, setStaging] = React.useState(false);
+
+  const addFiles = async (fileList) => {
+    const picked = Array.from(fileList || []);
+    if (!picked.length) return;
+    setStaging(true);
+    for (const f of picked) {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const rel = f.webkitRelativePath || f.name;
+      const kind = classifyAttachment(f.name, f.type);
+      // Block visual drops up front only when we know the model can't see them.
+      if (kind !== 'file' && multimodal === false) {
+        setFiles((prev) => [...prev, { id, rel, kind, status: 'blocked' }]);
+        continue;
+      }
+      setFiles((prev) => [...prev, { id, rel, kind, status: 'staging' }]);
+      const r = await window.api.postRaw('/api/agents/attachments/stage', f, {
+        'x-stage-token': stageToken,
+        'x-filename': rel,
+      });
+      setFiles((prev) =>
+        prev.map((x) =>
+          x.id === id
+            ? { ...x, status: r.ok ? 'ready' : 'error', ...(r.ok ? {} : { err: r.error }) }
+            : x,
+        ),
+      );
+    }
+    setStaging(false);
+  };
+
+  const remove = (id) => setFiles((prev) => prev.filter((x) => x.id !== id));
+  const clear = () => setFiles([]);
+  const staged = files.filter((f) => f.status === 'ready');
+  // Only a token worth sending when at least one file actually staged.
+  const token = staged.length ? stageToken : undefined;
+  return { stageToken, token, files, staged, staging, addFiles, remove, clear };
+}
+
+const ATTACH_KIND_ICON = { image: 'image', pdf: 'file-text', file: 'doc' };
+const ATTACH_TONE = { ready: 'ok', staging: 'neutral', blocked: 'err', error: 'err' };
+// Renders the staged-file badges for a useAttachments() result. Click removes.
+function AttachChips({ files, onRemove }) {
+  if (!files || !files.length) return null;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+      {files.map((f) => (
+        <Badge key={f.id} tone={ATTACH_TONE[f.status] || 'neutral'}>
+          <Icon name={ATTACH_KIND_ICON[f.kind] || 'file'} size={12} /> {f.rel}
+          {f.status === 'staging' && ' …'}
+          {f.status === 'blocked' && ' (needs vision model)'}
+          {f.status === 'error' && ` (${f.err || 'failed'})`}
+          {onRemove && (
+            <span
+              role="button"
+              title="Remove"
+              onClick={() => onRemove(f.id)}
+              style={{ cursor: 'pointer', marginLeft: 2, opacity: 0.7 }}
+            >
+              <Icon name="x" size={11} />
+            </span>
+          )}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
 Object.assign(window, {
   Icon,
   Button,
@@ -747,4 +839,7 @@ Object.assign(window, {
   Modal,
   Help,
   SectionTitle,
+  useAttachments,
+  AttachChips,
+  classifyAttachment,
 });

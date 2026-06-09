@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { open } from '../storage/db.js';
@@ -422,6 +422,69 @@ test('cancellation between nodes stops the walk', async () => {
     assert.ok(!h.reg.listStepRuns(run.id).some((s) => s.nodeId === 'after'));
   } finally {
     h.close();
+  }
+});
+
+test('a run with a stage token ingests the uploaded batch into each agent-node task', async () => {
+  // WHY: uploading files to a workflow run must make them visible to the run's
+  // agents — the runner ingests the staged batch into every agent node's task
+  // (so read_file/list_dir pin to them) and cleans the batch up when the run ends.
+  const dir = tmp();
+  const db = open({ path: join(dir, 't.db'), log: silentLogger() });
+  try {
+    const reg = createWorkflowRegistry(db);
+    const agents = createAgentRegistry(db);
+    const tools = createToolRegistry({ log: silentLogger() });
+    const agent = agents.create({ name: 'reader', systemPrompt: 's', toolAllowlist: [] });
+
+    const attachmentsDir = join(dir, 'agent-attachments');
+    const token = 'wfbatch1';
+    const staging = join(attachmentsDir, 'staging', token);
+    mkdirSync(staging, { recursive: true });
+    writeFileSync(join(staging, 'spec.md'), '# Spec\nbuild the thing');
+
+    const runtime = {
+      runTask: async (taskId: number) => {
+        agents.updateTask(taskId, { status: 'done', result: 'ok' });
+        return { ok: true, text: 'ok', conversationId: 0 };
+      },
+    } as unknown as Parameters<typeof createWorkflowRunner>[0]['runtime'];
+
+    const runner = createWorkflowRunner({
+      registry: reg,
+      agents,
+      runtime,
+      tools,
+      log: silentLogger(),
+      ownerUserId: 1,
+      attachmentsDir,
+    });
+
+    const graph: WorkflowGraph = {
+      nodes: [
+        { id: 't1', type: 'trigger', pos: { x: 0, y: 0 }, config: {} },
+        {
+          id: 'a1',
+          type: 'agent',
+          pos: { x: 1, y: 0 },
+          config: { agentId: agent.id, promptTemplate: 'go' },
+        },
+      ],
+      edges: [{ from: 't1', to: 'a1' }],
+    };
+    const wf = reg.create({ name: 'ingestflow', graph });
+    reg.enqueueRun(wf.id, null, token);
+    await runner.runOnce();
+
+    const task = agents.listTasks()[0]!;
+    const atts = agents.listAttachments(task.id);
+    assert.equal(atts.length, 1);
+    assert.equal(atts[0]!.name, 'spec.md');
+    // The batch is removed once the run drains (single cleanup, not per node).
+    assert.equal(existsSync(staging), false);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

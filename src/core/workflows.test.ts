@@ -133,6 +133,26 @@ test('claimNextQueuedRun hands each queued run to exactly one caller', () => {
   }
 });
 
+test('enqueueRun persists an uploaded batch token through claim, null when absent', () => {
+  // The token is how the runner finds a run's uploaded files; it must survive
+  // the queue→claim round-trip and stay null for runs with no attachments.
+  const dir = tmp();
+  try {
+    const db = open({ path: join(dir, 't.db'), log: silentLogger() });
+    const reg = createWorkflowRegistry(db);
+    const wf = reg.create({ name: 'demo', graph: linearGraph() });
+    const withFiles = reg.enqueueRun(wf.id, 'a', 'batch_abc');
+    const plain = reg.enqueueRun(wf.id, 'b');
+    assert.equal(withFiles.stageToken, 'batch_abc');
+    assert.equal(plain.stageToken, null);
+    assert.equal(reg.getRun(withFiles.id)!.stageToken, 'batch_abc');
+    assert.equal(reg.claimNextQueuedRun()!.stageToken, 'batch_abc');
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('seedStarterWorkflows: seeds the code-review example once and is idempotent', () => {
   const dir = tmp();
   try {

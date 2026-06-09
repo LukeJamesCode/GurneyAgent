@@ -20,6 +20,9 @@ import {
   loadImageAttachmentsBase64,
   taskFilesDir,
   classifyKind,
+  readStagedAttachments,
+  removeStagedBatch,
+  MAX_ATTACHMENT_BYTES,
 } from './agent-attachments.js';
 
 function harness() {
@@ -167,6 +170,58 @@ test('ingestStagedDir: ingests a folder, gating images out when not multimodal',
       readFileSync(join(taskFilesDir(h.baseDir, h.taskId), 'src', 'a.ts'), 'utf8'),
       'export const a = 1;',
     );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ingestStagedDir keepStaging:true leaves the batch for sibling consumers', async () => {
+  const h = harness();
+  try {
+    const staging = join(h.baseDir, 'staging', 'tok-keep');
+    mkdirSync(staging, { recursive: true });
+    writeFile(join(staging, 'a.ts'), 'export const a = 1;');
+    const r = await ingestStagedDir({
+      registry: h.registry,
+      baseDir: h.baseDir,
+      taskId: h.taskId,
+      stagingDir: staging,
+      allowVisual: false,
+      keepStaging: true,
+    });
+    assert.equal(r.ingested, 1);
+    // Batch is still on disk — a second agent node could ingest the same files.
+    assert.equal(existsSync(join(staging, 'a.ts')), true);
+    // removeStagedBatch(token) is the single cleanup the runner calls at run end.
+    removeStagedBatch(h.baseDir, 'tok-keep');
+    assert.equal(existsSync(staging), false);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('readStagedAttachments: images→base64, files→text, oversize rejected (no registry, for chat)', async () => {
+  const h = harness();
+  try {
+    const staging = join(h.baseDir, 'staging', 'chat-tok');
+    mkdirSync(staging, { recursive: true });
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    writeFile(join(staging, 'shot.png'), png);
+    writeFile(join(staging, 'notes.txt'), 'remember the milk');
+    writeFile(join(staging, 'huge.txt'), Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, 0x61));
+
+    const r = await readStagedAttachments(staging);
+    // Image comes back base64 for messages[].images — never written to a task dir.
+    assert.equal(r.images.length, 1);
+    assert.equal(r.images[0]!.base64, png.toString('base64'));
+    // Text file content is inlined verbatim for the prompt.
+    assert.equal(r.texts.find((t) => t.name === 'notes.txt')?.text, 'remember the milk');
+    // The over-cap file is reported, not silently dropped (Pi RAM guard).
+    assert.equal(
+      r.texts.some((t) => t.name === 'huge.txt'),
+      false,
+    );
+    assert.match(r.rejected.join(' '), /huge\.txt.*too large/);
   } finally {
     h.cleanup();
   }

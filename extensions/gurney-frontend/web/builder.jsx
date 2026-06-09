@@ -290,6 +290,10 @@ function WorkflowBuilder({ state }) {
 
   // Run visualization state
   const [runInput, setRunInput] = useState('');
+  // Files/images/PDFs uploaded with the run; the runner ingests them into each
+  // agent node's task. null = don't block visual drops; the runner gates images
+  // per agent's own model.
+  const att = window.useAttachments(null);
   const [runId, setRunId] = useState(null);
   const [runSteps, setRunSteps] = useState([]); // Array of step rows
   const [runStatus, setRunStatus] = useState(null);
@@ -381,9 +385,14 @@ function WorkflowBuilder({ state }) {
     // better to save, get id, then run.
     if (!targetId) return;
     const input = runInput.trim() || null;
+    const stageToken = att.token;
     clearRun();
-    const res = await window.api.post(`/api/workflows/${targetId}/run`, { input });
+    const res = await window.api.post(`/api/workflows/${targetId}/run`, {
+      input,
+      ...(stageToken ? { stageToken } : {}),
+    });
     if (res.ok) {
+      att.clear();
       setRunId(res.data.run.id);
       setRunStatus('queued');
     }
@@ -489,11 +498,43 @@ function WorkflowBuilder({ state }) {
             placeholder="Run input (optional)…"
             style={{ minWidth: 180 }}
           />
+          <label
+            title="Attach files, images, or PDFs for this run"
+            style={{
+              height: 36,
+              width: 36,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--border)',
+              background: 'var(--surface-2)',
+              color: 'var(--text)',
+            }}
+          >
+            <input
+              type="file"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                att.addFiles(e.target.files);
+                e.target.value = '';
+              }}
+            />
+            <Icon name="plus" size={16} />
+          </label>
           <Button variant="ghost" onClick={saveWorkflow}><Icon name="save" size={16} /> Save</Button>
           <Button variant="primary" onClick={runWorkflow} disabled={!activeWfId}><Icon name="play" size={16} /> Run</Button>
           {activeWfId && <Button variant="danger" onClick={deleteWorkflow}><Icon name="trash" size={16} /> Delete</Button>}
         </div>
       </div>
+
+      {att.files.length > 0 && (
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)' }}>
+          <window.AttachChips files={att.files} onRemove={att.remove} />
+        </div>
+      )}
 
       <div className="wf-workspace">
         <div className="wf-palette">
