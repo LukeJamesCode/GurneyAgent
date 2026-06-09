@@ -114,6 +114,7 @@ export async function runAuthForExt(
       stats: () => ({ hits: 0, misses: 0, size: 0 }),
     },
     prompts: { contribute: () => {} },
+    guards: { register: () => () => {} },
     auth: {
       flow: (f) => {
         captured = f;

@@ -189,6 +189,11 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   const now = opts.now ?? (() => new Date());
   const jobs = new Map<string, InternalJob>(); // keyed by `${extension}:${name}`
   const seenKeys = new Map<string, number>(); // dispatched-at ms (in-mem mirror of nudge_log keys)
+  // Throttle the lazy GC of seenKeys below. Walking the whole map on every send
+  // is O(n) for no reason; entries only need to be gone eventually (the DB is
+  // the source of truth for dedup), so sweeping at most once a minute is plenty.
+  const GC_MIN_INTERVAL_MS = 60_000;
+  let lastGcAt = 0;
   const dedupTtlMs = opts.dedupTtlMs ?? DEFAULT_DEDUP_TTL_MS;
   const rateLimit = opts.rateLimit ?? DEFAULT_RATE_LIMIT;
   const cache = createFastCache({ now: () => now().getTime() });
@@ -288,9 +293,12 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     const t = now().getTime();
     if (n.key) {
       seenKeys.set(n.key, t);
-      // Lazy GC of the in-mem mirror.
-      for (const [k, ts] of seenKeys) {
-        if (t - ts > dedupTtlMs) seenKeys.delete(k);
+      // Lazy GC of the in-mem mirror, throttled (see GC_MIN_INTERVAL_MS).
+      if (t - lastGcAt > GC_MIN_INTERVAL_MS) {
+        lastGcAt = t;
+        for (const [k, ts] of seenKeys) {
+          if (t - ts > dedupTtlMs) seenKeys.delete(k);
+        }
       }
     }
     if (opts.db) {

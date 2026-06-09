@@ -98,6 +98,24 @@ export function build(opts: BuildOptions): BuiltPrompt {
     truncated = true;
   }
 
+  // Symmetric to the leading peel: a crash between persisting an assistant
+  // tool-call turn and its tool results (the very gap flushRound's transaction
+  // defends against) can leave a trailing assistant `tool_calls` message with
+  // no following results. Strict backends reject that turn just as they reject a
+  // leading orphan, so peel any trailing orphaned tool-call turns off the end.
+  // Only past the pinned user turn — that's always kept, and a real tool round
+  // carries its results after the assistant, so a non-last tool-call turn isn't
+  // an orphan.
+  while (
+    history.length - 1 > pinnedIdx &&
+    history[history.length - 1]!.role === 'assistant' &&
+    (history[history.length - 1]!.tool_calls?.length ?? 0) > 0
+  ) {
+    const dropped = history.pop()!;
+    historyTokens -= tokensOf(dropped);
+    truncated = true;
+  }
+
   const messages: ChatMessage[] = [];
   if (prefixText) messages.push({ role: 'system', content: prefixText });
   for (const h of history) {

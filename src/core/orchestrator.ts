@@ -49,54 +49,6 @@ export function looksLikeFakeToolCall(text: string, allowedTools: ReadonlySet<st
   return false;
 }
 
-// Detect the "I removed that for you" hallucination. qwen3.5:0.8b/2b will
-// regularly answer a delete/cancel request by printing a confirmation in
-// plaintext WITHOUT calling the destructive tool — leaving the user thinking
-// the event/task/reminder is gone when it's still on the calendar. We catch
-// this when three things line up:
-//   - the user message contained a delete-shaped verb
-//   - no destructive tool ran this turn (matched by name suffix)
-//   - the model's reply contains a past-tense completion claim
-// Both halves are necessary — the model legitimately uses "removed/deleted"
-// when describing what it CAN do, or when summarizing a real delete result.
-const DESTRUCTIVE_TOOL_PATTERN = /(?:_|^)(delete|cancel|remove|clear|wipe|drop)(?:_|$)/i;
-const USER_DELETE_VERB_PATTERN = /\b(cancel|delete|remove|drop|wipe|clear|nuke|get rid of)\b/i;
-const ASSISTANT_FAKE_CONFIRM_PATTERN =
-  /\b(removed|deleted|cancell?ed|cleared|wiped|dropped|gone|nuked)\b/i;
-export function looksLikeFakeActionConfirmation(args: {
-  userText: string;
-  assistantText: string;
-  toolCallNames: readonly string[];
-}): boolean {
-  if (!USER_DELETE_VERB_PATTERN.test(args.userText)) return false;
-  if (!ASSISTANT_FAKE_CONFIRM_PATTERN.test(args.assistantText)) return false;
-  const ranDestructive = args.toolCallNames.some((n) => DESTRUCTIVE_TOOL_PATTERN.test(n));
-  return !ranDestructive;
-}
-
-// Detect the "let me make up a forecast" hallucination. The 2B tool model
-// will sometimes answer "what's the forecast for the next few days" from
-// training data instead of calling `weather_get`, producing fabricated
-// temperatures and precipitation odds. The shape is reliable: the user
-// message contains a weather keyword, no weather tool ran this round, and
-// the reply contains forecast-like content (a temperature unit or one of
-// the standard weather nouns paired with a number).
-const USER_WEATHER_QUESTION_PATTERN =
-  /\b(weather|forecast|temperature|rain|raining|snow|snowing|sunny|cloudy|overcast|humid|humidity|degrees?|celsius|fahrenheit)\b/i;
-const ASSISTANT_WEATHER_CLAIM_PATTERN =
-  /(°\s?[CF]\b|\b\d{1,3}\s?(?:°|deg|degrees?)\b|\b(?:precip|precipitation|overcast|sunny|partly cloudy|mostly cloudy|chance of rain|chance of snow|showers?)\b)/i;
-const WEATHER_TOOL_PATTERN = /(?:^|_)weather(?:_|$)/i;
-export function looksLikeFakeWeatherAnswer(args: {
-  userText: string;
-  assistantText: string;
-  toolCallNames: readonly string[];
-}): boolean {
-  if (!USER_WEATHER_QUESTION_PATTERN.test(args.userText)) return false;
-  if (!ASSISTANT_WEATHER_CLAIM_PATTERN.test(args.assistantText)) return false;
-  const ranWeather = args.toolCallNames.some((n) => WEATHER_TOOL_PATTERN.test(n));
-  return !ranWeather;
-}
-
 // Ollama returns HTTP 500 with an XML/JSON parse error message when the model
 // emits a malformed tool-call payload that its parser can't decode. This is
 // not a backend outage — it's a model misfire, so we recover the same way we
@@ -113,9 +65,9 @@ function isMalformedToolCallError(e: unknown): boolean {
     m.includes('parse')
   );
 }
-import type { ToolRegistry } from './tools.js';
+import { toSchema, type ToolRegistry } from './tools.js';
 import { build as buildContext, type HistoryMessage } from './context.js';
-import type { AfterTurnContext, AfterTurnToolCallSummary } from './extensions.js';
+import type { AfterTurnContext, AfterTurnToolCallSummary, TurnGuard } from './extensions.js';
 
 // Cap on how much of a tool's output we re-feed to the model on the next
 // round. Verbose tool output (a 5KB web-search dump, a 30-event calendar
@@ -218,6 +170,13 @@ export interface OrchestratorOptions {
   // with its own model and tool grant, so a global autoRoute (e.g. codex
   // escalating on the word "research") must not hijack its turn.
   autoRouteEnabled?: boolean;
+  // Post-turn reply guards. Called fresh each turn (so hot-reloaded extensions
+  // show up without an orchestrator restart) to get the active guard list. Each
+  // guard may overwrite the finalized reply — used to catch domain-specific
+  // hallucinations (e.g. "I deleted it" with no destructive tool call). First
+  // guard to return a non-null replacement wins. Unset → no guards run, which is
+  // the right default for agent orchestrators and tests.
+  turnGuards?: () => TurnGuard[];
 }
 
 export interface Orchestrator {
@@ -654,7 +613,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         // Make sure the forced tool is the per-turn allowed set so the loop's
         // schema gate (allowedToolNames) admits it even if intent pruning
         // wouldn't have surfaced it.
-        toolSchemas = opts.tools.schemas().filter((s) => s.function.name === h.name);
+        toolSchemas = [toSchema(h)];
         cl.info('turn auto-routed to tool', { tool: h.name });
         break;
       }
@@ -716,6 +675,20 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
     // guarantees a usable answer. For a model that can't think this is a no-op
     // (llm.ts never sends `think` to such a model).
     const recoveryThinkOpt = { thinkMode: 'off' as const, ...timeoutOpt };
+    // One recovery shape, shared by both fallbacks: the post-loop empty-text
+    // safety net and the empty-response/malformed-tool-call catch. Re-ask on the
+    // escalation profile with tools off (buildPromptForTurn(true) also drops the
+    // tool-prompt fragment) and thinking forced off, so the model is made to
+    // answer in plain language. Kept as one closure so a fix to the retry can't
+    // drift between the two call sites.
+    const retryWithToolsOff = (): AsyncIterable<ChatChunk> =>
+      opts.llm.chat({
+        profile: escalationProfile,
+        messages: buildPromptForTurn(true).messages,
+        ...recoveryThinkOpt,
+        signal: abort.signal,
+        context: { chatId: msg.chatId, conversationId },
+      });
     try {
       const profileForTurn: ProfileName = toolSchemas.length > 0 ? toolProfile : defaultProfile;
       if (forcedCall) {
@@ -794,7 +767,6 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
         // by emitting a name it memorized in training. That defeats the whole
         // pruning strategy and routes "Plan my day" to briefing_today,
         // "Cancel the camping event" to tasks_complete, etc. Enforce the
-        // per-turn schema as the source of truth for what's callable.
         // per-turn schema as the source of truth for what's callable.
         for (const call of lastChunk.toolCalls) {
           if (!allowedToolNames.has(call.name)) {
@@ -928,14 +900,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           hadToolCalls: !!lastChunk?.toolCalls?.length,
           escalateTo: escalationProfile,
         });
-        const noToolsFollowup = opts.llm.chat({
-          profile: escalationProfile,
-          messages: buildPromptForTurn(true).messages,
-          ...recoveryThinkOpt,
-          signal: abort.signal,
-          context: { chatId: msg.chatId, conversationId },
-        });
-        lastChunk = await drain(noToolsFollowup);
+        lastChunk = await drain(retryWithToolsOff());
       }
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
@@ -961,14 +926,7 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
           { error: e instanceof Error ? e.message : String(e) },
         );
         try {
-          const noToolsFollowup = opts.llm.chat({
-            profile: escalationProfile,
-            messages: buildPromptForTurn(true).messages,
-            ...recoveryThinkOpt,
-            signal: abort.signal,
-            context: { chatId: msg.chatId, conversationId },
-          });
-          lastChunk = await drain(noToolsFollowup);
+          lastChunk = await drain(retryWithToolsOff());
         } catch (e2) {
           const m = e2 instanceof Error ? e2.message : String(e2);
           lastErrors.set(msg.chatId, m);
@@ -993,46 +951,36 @@ export function createOrchestrator(opts: OrchestratorOptions): Orchestrator {
       slot.abort = null;
     }
 
-    // Hallucination guard. If the user asked to delete something and the
-    // model replied with "I removed it" but never actually called a
-    // destructive tool, scrub the reply so the user knows the action didn't
-    // happen. The corrected text REPLACES whatever streamed (the Telegram
-    // adapter only renders on done) and gets persisted so the next turn's
-    // context doesn't carry the lie forward.
+    // Post-turn reply guards. Extensions register these (host.guards.register)
+    // to catch domain-specific hallucinations — e.g. the model replying "I
+    // removed it" without ever calling a destructive tool, or fabricating a
+    // forecast instead of calling weather_get. A guard's replacement REPLACES
+    // whatever streamed (the Telegram adapter only renders on done) and gets
+    // persisted so the next turn's context doesn't carry the lie forward. First
+    // guard to claim the reply wins; the rest are skipped.
     let replacement: string | undefined;
-    const okToolNames = afterTurnToolCalls.filter((c) => c.ok).map((c) => c.name);
-    if (
-      assistantText &&
-      looksLikeFakeActionConfirmation({
-        userText: msg.text,
-        assistantText,
-        toolCallNames: okToolNames,
-      })
-    ) {
-      cl.warn('blocked fake action confirmation — model claimed delete with no tool call', {
-        userSample: msg.text.slice(0, 120),
-        assistantSample: assistantText.slice(0, 200),
-        ranTools: afterTurnToolCalls.map((c) => c.name),
-      });
-      replacement =
-        "I didn't actually run the delete — I can see the item but the action didn't go through. Try the request again, ideally naming the date or id.";
-      assistantText = replacement;
-    } else if (
-      assistantText &&
-      looksLikeFakeWeatherAnswer({
-        userText: msg.text,
-        assistantText,
-        toolCallNames: okToolNames,
-      })
-    ) {
-      cl.warn('blocked fake weather answer — model wrote a forecast without calling weather_get', {
-        userSample: msg.text.slice(0, 120),
-        assistantSample: assistantText.slice(0, 200),
-        ranTools: afterTurnToolCalls.map((c) => c.name),
-      });
-      replacement =
-        "I didn't actually check the forecast — that reply was made up. Ask again and I'll pull the real conditions.";
-      assistantText = replacement;
+    if (assistantText) {
+      for (const guard of opts.turnGuards?.() ?? []) {
+        let replaced: string | null = null;
+        try {
+          replaced = guard({ userText: msg.text, assistantText, toolCalls: afterTurnToolCalls });
+        } catch (e) {
+          cl.warn('turn guard threw; ignoring', {
+            error: e instanceof Error ? e.message : String(e),
+          });
+          continue;
+        }
+        if (replaced !== null) {
+          cl.warn('turn guard overrode reply', {
+            userSample: msg.text.slice(0, 120),
+            assistantSample: assistantText.slice(0, 200),
+            ranTools: afterTurnToolCalls.map((c) => c.name),
+          });
+          replacement = replaced;
+          assistantText = replaced;
+          break;
+        }
+      }
     }
     if (assistantText) {
       trackingAppend('assistant', assistantText, {

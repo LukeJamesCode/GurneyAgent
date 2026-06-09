@@ -261,6 +261,9 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
       idleEvictionMs,
       ...(inferenceTimeoutMs !== undefined ? { inferenceTimeoutMs } : {}),
     }),
+    // Routed providers inherit the same hard inference cap as the base, so a
+    // hung provider can't wedge the user queue.
+    inferenceTimeoutMs !== undefined ? { providerTimeoutMs: inferenceTimeoutMs } : {},
   );
 
   // Confirm-tier gate. The Telegram adapter (built further down) provides the
@@ -365,6 +368,7 @@ export async function run(options: StartRunOptions = {}): Promise<void> {
     log,
     promptFragmentProvider: (filter) => loader.promptFragment(filter),
     toolIntentFilter: (message) => loader.relevantExtensions(message),
+    turnGuards: () => loader.turnGuards().map((r) => r.guard),
     budgetTokens,
     toolResultMaxChars,
     ...(cfg.models.tools ? { toolProfile: 'tools' as const } : {}),

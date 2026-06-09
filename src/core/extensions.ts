@@ -155,6 +155,22 @@ export interface AfterTurnContext {
 
 export type AfterTurnHandler = (ctx: AfterTurnContext) => Promise<void>;
 
+// Post-turn reply guard. Runs after a turn's visible text is finalized but
+// BEFORE it's sent, so a guard can overwrite a hallucinated reply (e.g. the
+// model claiming "I deleted it" without ever calling a destructive tool).
+// Synchronous and side-effect-free by contract: it sits on the reply hot path
+// and must not do I/O. Return a replacement string to override the reply, or
+// null to let it through. Guards run in registration order; the first non-null
+// wins. Domain guards (weather/delete vocabulary) live in the extension that
+// owns those tools, not in core — a host without the extension has neither the
+// tools nor the failure mode they guard.
+export interface TurnGuardInput {
+  userText: string;
+  assistantText: string;
+  toolCalls: AfterTurnToolCallSummary[];
+}
+export type TurnGuard = (input: TurnGuardInput) => string | null;
+
 // Voice-note payload an extension hands the Telegram adapter. Either an
 // in-memory buffer or a path to a file the adapter can stream from disk.
 export interface VoicePayload {
@@ -411,6 +427,12 @@ export interface Host {
   prompts: {
     contribute: (fragment: string) => void;
   };
+  guards: {
+    // Register a post-turn reply guard (see TurnGuard). Surface-agnostic — runs
+    // on the main chat orchestrator's turns. Returns a disposer; the loader also
+    // drops it automatically on unload.
+    register: (guard: TurnGuard) => () => void;
+  };
   auth: {
     flow: (flow: AuthFlow) => void;
   };
@@ -458,6 +480,11 @@ export interface ExtensionAfterReplyRecord {
 export interface ExtensionAfterTurnRecord {
   extension: string;
   handler: AfterTurnHandler;
+}
+
+export interface ExtensionTurnGuardRecord {
+  extension: string;
+  guard: TurnGuard;
 }
 
 export interface ExtensionCallbackRecord {
@@ -550,6 +577,9 @@ export interface ExtensionLoader {
   intercepts(): ExtensionInterceptRecord[];
   afterReplies(): ExtensionAfterReplyRecord[];
   afterTurns(): ExtensionAfterTurnRecord[];
+  // Post-turn reply guards contributed by extensions, in registration order.
+  // The orchestrator runs them after finalizing a reply; first non-null wins.
+  turnGuards(): ExtensionTurnGuardRecord[];
   callbacks(): ExtensionCallbackRecord[];
   voiceMessages(): ExtensionVoiceMessageRecord[];
   authFlows(): ExtensionAuthRecord[];
@@ -596,6 +626,7 @@ interface RegistrationsForExtension {
   intercepts: ExtensionInterceptRecord[];
   afterReplies: ExtensionAfterReplyRecord[];
   afterTurns: ExtensionAfterTurnRecord[];
+  turnGuards: ExtensionTurnGuardRecord[];
   callbacks: ExtensionCallbackRecord[];
   voiceMessages: ExtensionVoiceMessageRecord[];
   chatSurfaces: ExtensionChatSurfaceRecord[];
@@ -864,6 +895,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
       intercepts: [],
       afterReplies: [],
       afterTurns: [],
+      turnGuards: [],
       callbacks: [],
       voiceMessages: [],
       chatSurfaces: [],
@@ -1023,6 +1055,18 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
           reg.disposers.push(() => {
             reg.promptFragment = before;
           });
+        },
+      },
+      guards: {
+        register: (guard) => {
+          const record: ExtensionTurnGuardRecord = { extension: manifest.name, guard };
+          reg.turnGuards.push(record);
+          const off = (): void => {
+            const idx = reg.turnGuards.indexOf(record);
+            if (idx >= 0) reg.turnGuards.splice(idx, 1);
+          };
+          reg.disposers.push(off);
+          return off;
         },
       },
       auth: {
@@ -1451,6 +1495,11 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
     for (const r of registrations.values()) out.push(...r.afterTurns);
     return out;
   }
+  function turnGuards(): ExtensionTurnGuardRecord[] {
+    const out: ExtensionTurnGuardRecord[] = [];
+    for (const r of registrations.values()) out.push(...r.turnGuards);
+    return out;
+  }
   function callbacks(): ExtensionCallbackRecord[] {
     const out: ExtensionCallbackRecord[] = [];
     for (const r of registrations.values()) out.push(...r.callbacks);
@@ -1586,6 +1635,7 @@ export function createExtensionLoader(opts: ExtensionLoaderOptions): ExtensionLo
     intercepts,
     afterReplies,
     afterTurns,
+    turnGuards,
     callbacks,
     voiceMessages,
     authFlows,

@@ -281,9 +281,15 @@ export function createToolRegistry(opts: RegistryOptions): ToolRegistry {
       const childCtx: ToolContext = { ...ctx, ...(signal ? { signal } : {}) };
 
       try {
+        // The timeout can win this race, leaving h.invoke() still pending. A
+        // tool that ignores the abort signal AND later rejects would then throw
+        // with no handler attached → unhandledRejection (fatal on the daemon).
+        // Attach a terminal no-op catch so a late loser-rejection is swallowed.
+        const invocation = h.invoke(call.arguments, childCtx);
+        invocation.catch(() => {});
         const output = await Promise.race([
-          h.invoke(call.arguments, childCtx),
-          ...(toolTimeout > 0 ? [timeoutPromise] : [])
+          invocation,
+          ...(toolTimeout > 0 ? [timeoutPromise] : []),
         ]);
         const result: ToolResult = { call, ok: true, output };
         const listeners = afterExecute.get(call.name);
@@ -437,7 +443,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
-function toSchema(h: ToolHandler): ToolSchema {
+export function toSchema(h: ToolHandler): ToolSchema {
   return {
     type: 'function',
     function: {
