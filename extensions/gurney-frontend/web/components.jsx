@@ -796,12 +796,61 @@ function useAttachments(multimodal) {
 
 const ATTACH_KIND_ICON = { image: 'image', pdf: 'file-text', file: 'doc' };
 const ATTACH_TONE = { ready: 'ok', staging: 'neutral', blocked: 'err', error: 'err' };
+// Folder uploads carry a webkitRelativePath ("proj/src/foo.ts"), so a big project
+// would otherwise render one chip per file. Collapse each top-level folder into a
+// single chip (count + worst-status-wins + the ids to remove); loose files stay as-is.
+function groupAttachments(files) {
+  const folders = new Map(); // name -> file[]
+  const loose = [];
+  for (const f of files) {
+    const slash = f.rel.indexOf('/');
+    if (slash > 0) {
+      const name = f.rel.slice(0, slash);
+      if (!folders.has(name)) folders.set(name, []);
+      folders.get(name).push(f);
+    } else {
+      loose.push(f);
+    }
+  }
+  const folderItems = [];
+  for (const [name, fs] of folders) {
+    const status = fs.some((f) => f.status === 'error')
+      ? 'error'
+      : fs.some((f) => f.status === 'blocked')
+        ? 'blocked'
+        : fs.some((f) => f.status === 'staging')
+          ? 'staging'
+          : 'ready';
+    folderItems.push({ name, count: fs.length, status, ids: fs.map((f) => f.id) });
+  }
+  return { folderItems, loose };
+}
 // Renders the staged-file badges for a useAttachments() result. Click removes.
 function AttachChips({ files, onRemove }) {
   if (!files || !files.length) return null;
+  const { folderItems, loose } = groupAttachments(files);
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-      {files.map((f) => (
+      {folderItems.map((d) => (
+        <Badge key={`dir:${d.name}`} tone={ATTACH_TONE[d.status] || 'neutral'}>
+          <Icon name="folder" size={12} /> {d.name}/ ({d.count}{' '}
+          {d.count === 1 ? 'file' : 'files'})
+          {d.status === 'staging' && ' …'}
+          {d.status === 'blocked' && ' (some need vision model)'}
+          {d.status === 'error' && ' (some failed)'}
+          {onRemove && (
+            <span
+              role="button"
+              title="Remove folder"
+              onClick={() => d.ids.forEach((id) => onRemove(id))}
+              style={{ cursor: 'pointer', marginLeft: 2, opacity: 0.7 }}
+            >
+              <Icon name="x" size={11} />
+            </span>
+          )}
+        </Badge>
+      ))}
+      {loose.map((f) => (
         <Badge key={f.id} tone={ATTACH_TONE[f.status] || 'neutral'}>
           <Icon name={ATTACH_KIND_ICON[f.kind] || 'file'} size={12} /> {f.rel}
           {f.status === 'staging' && ' …'}
