@@ -1226,6 +1226,37 @@ function classifyDrop(name, type) {
   return 'file';
 }
 
+// Folder uploads carry a webkitRelativePath ("proj/src/foo.ts"), so a big project
+// would otherwise render one chip per file. Collapse each top-level folder into a
+// single chip (with a count + aggregate status); loose files stay as-is.
+function groupAttachments(files) {
+  const folders = new Map(); // name -> file[]
+  const loose = [];
+  for (const f of files) {
+    const slash = f.rel.indexOf('/');
+    if (slash > 0) {
+      const name = f.rel.slice(0, slash);
+      if (!folders.has(name)) folders.set(name, []);
+      folders.get(name).push(f);
+    } else {
+      loose.push(f);
+    }
+  }
+  const folderItems = [];
+  for (const [name, fs] of folders) {
+    // Worst status wins so a single failure/blocked file stays visible at the folder level.
+    const status = fs.some((f) => f.status === 'error')
+      ? 'error'
+      : fs.some((f) => f.status === 'blocked')
+        ? 'blocked'
+        : fs.some((f) => f.status === 'staging')
+          ? 'staging'
+          : 'ready';
+    folderItems.push({ id: `dir:${name}`, name, count: fs.length, status });
+  }
+  return { folderItems, loose };
+}
+
 function DispatchModal({ agent, onClose, onDispatch }) {
   const [prompt, setPrompt] = useState('');
   // 'inherit' keeps the agent's saved think mode; the rest override this run.
@@ -1286,6 +1317,7 @@ function DispatchModal({ agent, onClose, onDispatch }) {
   };
 
   const staged = files.filter((f) => f.status === 'ready');
+  const { folderItems, loose } = groupAttachments(files);
   const KIND_ICON = { image: 'image', pdf: 'file-text', file: 'doc' };
   const TONE = { ready: 'ok', staging: 'neutral', blocked: 'err', error: 'err' };
 
@@ -1371,7 +1403,16 @@ function DispatchModal({ agent, onClose, onDispatch }) {
         </div>
         {files.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {files.map((f) => (
+            {folderItems.map((d) => (
+              <window.Badge key={d.id} tone={TONE[d.status] || 'neutral'}>
+                <window.Icon name="folder" size={12} /> {d.name}/ ({d.count}{' '}
+                {d.count === 1 ? 'file' : 'files'})
+                {d.status === 'staging' && ' …'}
+                {d.status === 'blocked' && ' (some need vision model)'}
+                {d.status === 'error' && ' (some failed)'}
+              </window.Badge>
+            ))}
+            {loose.map((f) => (
               <window.Badge key={f.id} tone={TONE[f.status] || 'neutral'}>
                 <window.Icon name={KIND_ICON[f.kind] || 'file'} size={12} />{' '}
                 {f.rel}
